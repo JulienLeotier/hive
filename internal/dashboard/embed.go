@@ -13,7 +13,10 @@ var assets embed.FS
 // Handler returns an HTTP handler that serves the embedded dashboard files.
 // For SPA routing, any path that doesn't match a real file serves index.html.
 func Handler() http.Handler {
-	sub, _ := fs.Sub(assets, "dist")
+	sub, err := fs.Sub(assets, "dist")
+	if err != nil {
+		panic("dashboard: embedded assets missing: " + err.Error())
+	}
 	fileServer := http.FileServer(http.FS(sub))
 
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

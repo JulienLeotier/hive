@@ -2,6 +2,7 @@ package trust
 
 import (
 	"context"
+	"fmt"
 	"testing"
 
 	"github.com/JulienLeotier/hive/internal/storage"
@@ -35,11 +36,11 @@ func setupEngine(t *testing.T) *Engine {
 func insertTasks(t *testing.T, e *Engine, agentID string, completed, failed int) {
 	for i := 0; i < completed; i++ {
 		e.db.Exec(`INSERT INTO tasks (id, workflow_id, type, status, agent_id, input) VALUES (?, 'wf', 'test', 'completed', ?, '{}')`,
-			"t-c-"+string(rune(i+'A')), agentID)
+			fmt.Sprintf("t-c-%d", i), agentID)
 	}
 	for i := 0; i < failed; i++ {
 		e.db.Exec(`INSERT INTO tasks (id, workflow_id, type, status, agent_id, input) VALUES (?, 'wf', 'test', 'failed', ?, '{}')`,
-			"t-f-"+string(rune(i+'A')), agentID)
+			fmt.Sprintf("t-f-%d", i), agentID)
 	}
 }
 

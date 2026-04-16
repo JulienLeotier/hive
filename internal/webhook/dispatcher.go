@@ -3,18 +3,42 @@ package webhook
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
 	"database/sql"
 	"encoding/json"
 	"fmt"
 	"log/slog"
 	"net/http"
+	"net/url"
+	"strings"
 	"time"
-
-	"crypto/rand"
 
 	"github.com/JulienLeotier/hive/internal/event"
 	"github.com/oklog/ulid/v2"
 )
+
+// validateWebhookURL rejects URLs targeting private/internal IPs (SSRF prevention).
+func validateWebhookURL(rawURL string) error {
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return fmt.Errorf("invalid URL: %w", err)
+	}
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return fmt.Errorf("only http/https URLs allowed, got %s", u.Scheme)
+	}
+	host := strings.ToLower(u.Hostname())
+	blocked := []string{"localhost", "127.0.0.1", "0.0.0.0", "169.254.169.254", "[::1]", "metadata.google.internal"}
+	for _, b := range blocked {
+		if host == b {
+			return fmt.Errorf("URL targeting %s is not allowed (SSRF prevention)", host)
+		}
+	}
+	// Block 10.x.x.x, 172.16-31.x.x, 192.168.x.x
+	if strings.HasPrefix(host, "10.") || strings.HasPrefix(host, "192.168.") || strings.HasPrefix(host, "172.") {
+		return fmt.Errorf("URL targeting private IP %s is not allowed", host)
+	}
+	return nil
+}
 
 // Config represents a webhook configuration stored in the database.
 type Config struct {
@@ -41,7 +65,12 @@ func NewDispatcher(db *sql.DB) *Dispatcher {
 }
 
 // Add registers a new webhook configuration.
+// Rejects URLs targeting private/internal IPs to prevent SSRF.
 func (d *Dispatcher) Add(ctx context.Context, name, url, whType, eventFilter string) (*Config, error) {
+	if err := validateWebhookURL(url); err != nil {
+		return nil, fmt.Errorf("invalid webhook URL: %w", err)
+	}
+
 	id := ulid.MustNew(ulid.Timestamp(time.Now()), rand.Reader)
 
 	_, err := d.db.ExecContext(ctx,

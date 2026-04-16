@@ -55,7 +55,10 @@ func TestDispatchMatchingEvent(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	d.Add(context.Background(), "test-hook", srv.URL, "generic", `["task.failed"]`)
+	// Insert directly to bypass SSRF validation (test uses localhost)
+	d.db.ExecContext(context.Background(),
+		`INSERT INTO webhooks (id, name, url, type, event_filter, enabled) VALUES ('wh1', 'test-hook', ?, 'generic', '["task.failed"]', 1)`,
+		srv.URL)
 
 	d.Dispatch(context.Background(), event.Event{
 		ID: 1, Type: "task.failed", Source: "system", Payload: `{"task_id":"t1"}`,
@@ -76,7 +79,10 @@ func TestDispatchNonMatchingEvent(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	d.Add(context.Background(), "test-hook", srv.URL, "generic", `["task.failed"]`)
+	// Insert directly to bypass SSRF validation (test uses localhost)
+	d.db.ExecContext(context.Background(),
+		`INSERT INTO webhooks (id, name, url, type, event_filter, enabled) VALUES ('wh2', 'test-hook', ?, 'generic', '["task.failed"]', 1)`,
+		srv.URL)
 
 	d.Dispatch(context.Background(), event.Event{
 		Type: "task.completed", Source: "system", CreatedAt: time.Now(),

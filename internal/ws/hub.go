@@ -3,25 +3,52 @@ package ws
 import (
 	"log/slog"
 	"net/http"
+	"strings"
 	"sync"
 
 	"github.com/JulienLeotier/hive/internal/event"
 	"github.com/gorilla/websocket"
 )
 
-var upgrader = websocket.Upgrader{
-	CheckOrigin: func(r *http.Request) bool { return true },
-}
-
 // Hub manages WebSocket connections and broadcasts events to all clients.
 type Hub struct {
-	mu      sync.RWMutex
-	clients map[*websocket.Conn]bool
+	mu      sync.Mutex
+	clients map[*client]bool
+}
+
+// client wraps a websocket.Conn with a write mutex for concurrency safety.
+type client struct {
+	conn *websocket.Conn
+	wmu  sync.Mutex
 }
 
 // NewHub creates a WebSocket hub.
 func NewHub() *Hub {
-	return &Hub{clients: make(map[*websocket.Conn]bool)}
+	return &Hub{clients: make(map[*client]bool)}
+}
+
+// AllowedOrigins configures which origins can connect. Empty means localhost only.
+var AllowedOrigins []string
+
+func checkOrigin(r *http.Request) bool {
+	origin := r.Header.Get("Origin")
+	if origin == "" {
+		return true // same-origin or non-browser
+	}
+	// Allow localhost always
+	if strings.Contains(origin, "localhost") || strings.Contains(origin, "127.0.0.1") {
+		return true
+	}
+	for _, allowed := range AllowedOrigins {
+		if origin == allowed {
+			return true
+		}
+	}
+	return false
+}
+
+var upgrader = websocket.Upgrader{
+	CheckOrigin: checkOrigin,
 }
 
 // HandleWS upgrades an HTTP connection to WebSocket and registers the client.
@@ -32,8 +59,10 @@ func (h *Hub) HandleWS(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	c := &client{conn: conn}
+
 	h.mu.Lock()
-	h.clients[conn] = true
+	h.clients[c] = true
 	h.mu.Unlock()
 
 	slog.Debug("websocket client connected", "remote", conn.RemoteAddr())
@@ -42,7 +71,7 @@ func (h *Hub) HandleWS(w http.ResponseWriter, r *http.Request) {
 	go func() {
 		defer func() {
 			h.mu.Lock()
-			delete(h.clients, conn)
+			delete(h.clients, c)
 			h.mu.Unlock()
 			conn.Close()
 			slog.Debug("websocket client disconnected", "remote", conn.RemoteAddr())
@@ -57,8 +86,8 @@ func (h *Hub) HandleWS(w http.ResponseWriter, r *http.Request) {
 
 // Broadcast sends an event to all connected WebSocket clients.
 func (h *Hub) Broadcast(evt event.Event) {
-	h.mu.RLock()
-	defer h.mu.RUnlock()
+	h.mu.Lock()
+	defer h.mu.Unlock()
 
 	msg := map[string]any{
 		"id":         evt.ID,
@@ -68,18 +97,25 @@ func (h *Hub) Broadcast(evt event.Event) {
 		"created_at": evt.CreatedAt,
 	}
 
-	for conn := range h.clients {
-		if err := conn.WriteJSON(msg); err != nil {
+	var failed []*client
+	for c := range h.clients {
+		c.wmu.Lock()
+		err := c.conn.WriteJSON(msg)
+		c.wmu.Unlock()
+		if err != nil {
 			slog.Debug("websocket write failed", "error", err)
-			conn.Close()
-			delete(h.clients, conn)
+			c.conn.Close()
+			failed = append(failed, c)
 		}
+	}
+	for _, c := range failed {
+		delete(h.clients, c)
 	}
 }
 
 // ClientCount returns the number of connected clients.
 func (h *Hub) ClientCount() int {
-	h.mu.RLock()
-	defer h.mu.RUnlock()
+	h.mu.Lock()
+	defer h.mu.Unlock()
 	return len(h.clients)
 }

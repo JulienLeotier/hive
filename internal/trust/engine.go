@@ -80,13 +80,17 @@ func (e *Engine) GetStats(ctx context.Context, agentID string) (AgentStats, erro
 		return stats, err
 	}
 
-	e.db.QueryRowContext(ctx,
+	if err := e.db.QueryRowContext(ctx,
 		`SELECT COUNT(*) FROM tasks WHERE agent_id = ? AND status = 'completed'`, agentID,
-	).Scan(&stats.Successes)
+	).Scan(&stats.Successes); err != nil {
+		return stats, fmt.Errorf("counting successes: %w", err)
+	}
 
-	e.db.QueryRowContext(ctx,
+	if err := e.db.QueryRowContext(ctx,
 		`SELECT COUNT(*) FROM tasks WHERE agent_id = ? AND status = 'failed'`, agentID,
-	).Scan(&stats.Failures)
+	).Scan(&stats.Failures); err != nil {
+		return stats, fmt.Errorf("counting failures: %w", err)
+	}
 
 	if stats.TotalTasks > 0 {
 		stats.ErrorRate = float64(stats.Failures) / float64(stats.TotalTasks)
