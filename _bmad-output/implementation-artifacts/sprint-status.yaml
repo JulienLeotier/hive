@@ -34,7 +34,7 @@ development_status:
   # Epic 1: Agent Registration & Communication
   epic-1: in-progress
   1-1-project-bootstrap-storage-layer: done
-  1-2-agent-adapter-protocol-http-implementation: backlog
+  1-2-agent-adapter-protocol-http-implementation: done
   1-3-agent-registration-via-cli: backlog
   1-4-agent-health-listing: backlog
   1-5-claude-code-adapter: backlog
