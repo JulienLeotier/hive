@@ -58,6 +58,45 @@ func TestSchedulerActiveCount(t *testing.T) {
 	assert.Equal(t, 1, sched.ActiveCount())
 }
 
+// TestSchedulerTriggerWakeUp covers Story 4.2 AC:
+// "heartbeats can also be triggered by events (hybrid scheduling)".
+func TestSchedulerTriggerWakeUp(t *testing.T) {
+	var count atomic.Int32
+	sched := NewScheduler(func(ctx context.Context, name string) error {
+		count.Add(1)
+		return nil
+	})
+	defer sched.StopAll()
+
+	// Register with a long interval so the tick never fires during the test.
+	sched.Register("worker", time.Hour)
+
+	sched.TriggerWakeUp("worker")
+	sched.TriggerWakeUp("worker")
+
+	// Give the goroutines a moment to execute the handler.
+	time.Sleep(50 * time.Millisecond)
+
+	if count.Load() < 2 {
+		t.Fatalf("expected at least 2 handler invocations, got %d", count.Load())
+	}
+}
+
+func TestSchedulerTriggerIgnoresUnknownAgent(t *testing.T) {
+	var count atomic.Int32
+	sched := NewScheduler(func(ctx context.Context, name string) error {
+		count.Add(1)
+		return nil
+	})
+	defer sched.StopAll()
+
+	sched.TriggerWakeUp("never-registered")
+	time.Sleep(20 * time.Millisecond)
+	if count.Load() != 0 {
+		t.Fatalf("TriggerWakeUp on unknown agent must not run the handler")
+	}
+}
+
 func TestSchedulerStopAll(t *testing.T) {
 	sched := NewScheduler(func(ctx context.Context, name string) error { return nil })
 

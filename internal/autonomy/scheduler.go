@@ -90,6 +90,30 @@ func (s *Scheduler) Register(agentName string, interval time.Duration) {
 	}()
 }
 
+// TriggerWakeUp fires a wake-up for the named agent outside the normal
+// interval — lets the event bus push a wake-up when something interesting
+// happens. Story 4.2 AC: "heartbeats can also be triggered by events".
+// Respects the backpressure cap; dropped ticks are logged.
+func (s *Scheduler) TriggerWakeUp(agentName string) {
+	s.mu.Lock()
+	_, registered := s.stopChs[agentName]
+	s.mu.Unlock()
+	if !registered {
+		return
+	}
+	select {
+	case s.concurrency <- struct{}{}:
+		go func() {
+			defer func() { <-s.concurrency }()
+			if err := s.handler(context.Background(), agentName); err != nil {
+				slog.Error("event-triggered wake-up failed", "agent", agentName, "error", err)
+			}
+		}()
+	default:
+		slog.Warn("backpressure: event wake-up dropped", "agent", agentName)
+	}
+}
+
 // Unregister stops heartbeat scheduling for an agent.
 func (s *Scheduler) Unregister(agentName string) {
 	s.mu.Lock()
