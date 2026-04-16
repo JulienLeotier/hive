@@ -132,6 +132,81 @@ func (e *Engine) Evaluate(ctx context.Context, agentID string) (promoted bool, n
 	return true, targetLevel, nil
 }
 
+// SetOverride records a trust override scoped to a specific task type.
+// Returns an error if the level is invalid.
+func (e *Engine) SetOverride(ctx context.Context, agentID, taskType, level, reason string) error {
+	if !IsValidLevel(level) {
+		return fmt.Errorf("invalid trust level: %s", level)
+	}
+	_, err := e.db.ExecContext(ctx,
+		`INSERT INTO agent_trust_overrides (agent_id, task_type, level, reason)
+		 VALUES (?, ?, ?, ?)
+		 ON CONFLICT(agent_id, task_type) DO UPDATE SET level = excluded.level, reason = excluded.reason`,
+		agentID, taskType, level, reason)
+	return err
+}
+
+// RemoveOverride clears a per-task-type override.
+func (e *Engine) RemoveOverride(ctx context.Context, agentID, taskType string) error {
+	_, err := e.db.ExecContext(ctx,
+		`DELETE FROM agent_trust_overrides WHERE agent_id = ? AND task_type = ?`,
+		agentID, taskType)
+	return err
+}
+
+// EffectiveLevel returns the trust level for an agent *for a given task type*.
+// If an override exists it wins, otherwise the agent's base level is returned.
+func (e *Engine) EffectiveLevel(ctx context.Context, agentID, taskType string) (string, error) {
+	var override string
+	err := e.db.QueryRowContext(ctx,
+		`SELECT level FROM agent_trust_overrides WHERE agent_id = ? AND task_type = ?`,
+		agentID, taskType,
+	).Scan(&override)
+	if err == nil {
+		return override, nil
+	}
+	if err != sql.ErrNoRows {
+		return "", err
+	}
+
+	var base string
+	if err := e.db.QueryRowContext(ctx,
+		`SELECT trust_level FROM agents WHERE id = ?`, agentID,
+	).Scan(&base); err != nil {
+		return "", fmt.Errorf("agent %s not found", agentID)
+	}
+	return base, nil
+}
+
+// ListOverrides returns all per-task-type overrides for an agent.
+func (e *Engine) ListOverrides(ctx context.Context, agentID string) (map[string]string, error) {
+	rows, err := e.db.QueryContext(ctx,
+		`SELECT task_type, level FROM agent_trust_overrides WHERE agent_id = ?`, agentID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	out := make(map[string]string)
+	for rows.Next() {
+		var tt, lvl string
+		if err := rows.Scan(&tt, &lvl); err != nil {
+			return nil, err
+		}
+		out[tt] = lvl
+	}
+	return out, rows.Err()
+}
+
+// IsValidLevel reports whether the string is one of the four known trust levels.
+func IsValidLevel(level string) bool {
+	switch level {
+	case LevelSupervised, LevelGuided, LevelAutonomous, LevelTrusted:
+		return true
+	}
+	return false
+}
+
 // SetManual manually sets an agent's trust level.
 func (e *Engine) SetManual(ctx context.Context, agentID, newLevel string) error {
 	var currentLevel string

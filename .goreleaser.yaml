@@ -1,0 +1,82 @@
+version: 2
+
+project_name: hive
+
+before:
+  hooks:
+    - go mod tidy
+
+builds:
+  - id: hive
+    main: ./cmd/hive
+    binary: hive
+    env:
+      - CGO_ENABLED=0
+    ldflags:
+      - -s -w
+      - -X github.com/JulienLeotier/hive/internal/cli.Version={{.Version}}
+      - -X github.com/JulienLeotier/hive/internal/cli.Commit={{.ShortCommit}}
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - amd64
+      - arm64
+
+archives:
+  - id: hive
+    name_template: >-
+      {{ .ProjectName }}_{{ .Version }}_
+      {{- title .Os }}_
+      {{- if eq .Arch "amd64" }}x86_64
+      {{- else if eq .Arch "386" }}i386
+      {{- else }}{{ .Arch }}{{ end }}
+    format_overrides:
+      - goos: windows
+        format: zip
+
+checksum:
+  name_template: "checksums.txt"
+
+snapshot:
+  version_template: "{{ incpatch .Version }}-next"
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+      - "^chore:"
+
+dockers:
+  - image_templates:
+      - "ghcr.io/julienleotier/hive:{{ .Version }}-amd64"
+      - "ghcr.io/julienleotier/hive:latest-amd64"
+    dockerfile: Dockerfile
+    use: buildx
+    build_flag_templates:
+      - "--platform=linux/amd64"
+    goos: linux
+    goarch: amd64
+
+  - image_templates:
+      - "ghcr.io/julienleotier/hive:{{ .Version }}-arm64"
+      - "ghcr.io/julienleotier/hive:latest-arm64"
+    dockerfile: Dockerfile
+    use: buildx
+    build_flag_templates:
+      - "--platform=linux/arm64"
+    goos: linux
+    goarch: arm64
+
+docker_manifests:
+  - name_template: "ghcr.io/julienleotier/hive:{{ .Version }}"
+    image_templates:
+      - "ghcr.io/julienleotier/hive:{{ .Version }}-amd64"
+      - "ghcr.io/julienleotier/hive:{{ .Version }}-arm64"
+  - name_template: "ghcr.io/julienleotier/hive:latest"
+    image_templates:
+      - "ghcr.io/julienleotier/hive:latest-amd64"
+      - "ghcr.io/julienleotier/hive:latest-arm64"

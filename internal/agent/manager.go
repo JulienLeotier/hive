@@ -73,6 +73,43 @@ func (m *Manager) Register(ctx context.Context, name, agentType, baseURL string)
 	}, nil
 }
 
+// RegisterLocal registers a local-only agent that cannot be HTTP-health-checked.
+// The capabilities map is stored as-is; the caller is responsible for populating it.
+func (m *Manager) RegisterLocal(ctx context.Context, name, agentType, path string, caps map[string]any) (*Agent, error) {
+	if caps == nil {
+		caps = map[string]any{"name": name, "task_types": []string{}}
+	}
+	capsJSON, err := json.Marshal(caps)
+	if err != nil {
+		return nil, fmt.Errorf("marshaling capabilities: %w", err)
+	}
+	configJSON, err := json.Marshal(map[string]string{"path": path})
+	if err != nil {
+		return nil, fmt.Errorf("marshaling config: %w", err)
+	}
+
+	id := ulid.MustNew(ulid.Timestamp(time.Now()), rand.Reader)
+
+	if _, err := m.db.ExecContext(ctx,
+		`INSERT INTO agents (id, name, type, config, capabilities, health_status, trust_level)
+		 VALUES (?, ?, ?, ?, ?, 'healthy', 'scripted')`,
+		id.String(), name, agentType, string(configJSON), string(capsJSON),
+	); err != nil {
+		return nil, fmt.Errorf("inserting local agent %s: %w", name, err)
+	}
+
+	slog.Info("local agent registered", "name", name, "type", agentType, "path", path)
+	return &Agent{
+		ID:           id.String(),
+		Name:         name,
+		Type:         agentType,
+		Config:       string(configJSON),
+		Capabilities: string(capsJSON),
+		HealthStatus: "healthy",
+		TrustLevel:   "scripted",
+	}, nil
+}
+
 // List returns registered agents with a default limit of 1000.
 func (m *Manager) List(ctx context.Context) ([]Agent, error) {
 	return m.ListWithLimit(ctx, 1000)
