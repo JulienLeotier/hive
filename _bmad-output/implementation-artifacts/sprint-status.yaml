@@ -65,13 +65,13 @@ development_status:
   epic-3-retrospective: optional
 
   # Epic 4: Agent Autonomy & Self-Direction
-  epic-4: backlog
-  4-1-agent-identity-behavioral-plan-parser: backlog
-  4-2-heartbeat-scheduler: backlog
-  4-3-state-observer: backlog
-  4-4-task-self-assignment: backlog
-  4-5-idle-detection-busywork-prevention: backlog
-  4-6-wake-up-decision-logging: backlog
+  epic-4: done
+  4-1-agent-identity-behavioral-plan-parser: done
+  4-2-heartbeat-scheduler: done
+  4-3-state-observer: done
+  4-4-task-self-assignment: done
+  4-5-idle-detection-busywork-prevention: done
+  4-6-wake-up-decision-logging: done
   epic-4-retrospective: optional
 
   # Epic 5: Resilience & Self-Healing
