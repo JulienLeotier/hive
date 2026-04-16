@@ -79,6 +79,7 @@ var optimizeCmd = &cobra.Command{
 				return err
 			}
 			bus := event.NewBus(store.DB)
+			baselineJSON, _ := json.Marshal(baseline)
 			for _, t := range tunings {
 				_, _ = bus.Publish(ctx, "system.optimization.applied", "optimize_cli", map[string]any{
 					"setting":   t.Setting,
@@ -87,6 +88,11 @@ var optimizeCmd = &cobra.Command{
 					"rationale": t.Rationale,
 					"baseline":  baseline,
 				})
+				// Story 23.1: persist into the optimizations table too.
+				_, _ = store.DB.ExecContext(ctx,
+					`INSERT INTO optimizations (id, setting, old_value, new_value, rationale, baseline)
+					 VALUES (lower(hex(randomblob(16))), ?, ?, ?, ?, ?)`,
+					t.Setting, t.OldValue, t.NewValue, t.Rationale, string(baselineJSON))
 				fmt.Printf("Applied: %s = %.2f (%s)\n", t.Setting, t.NewValue, t.Rationale)
 			}
 			if len(tunings) == 0 {

@@ -59,7 +59,7 @@ func TestMigrationsAreIdempotent(t *testing.T) {
 	var count int
 	err = store2.DB.QueryRow("SELECT COUNT(*) FROM schema_versions").Scan(&count)
 	require.NoError(t, err)
-	assert.Equal(t, 6, count, "all migrations should be recorded exactly once each")
+	assert.Equal(t, 7, count, "all migrations should be recorded exactly once each")
 }
 
 func TestSchemaVersionTracked(t *testing.T) {
