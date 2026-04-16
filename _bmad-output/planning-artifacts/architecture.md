@@ -198,9 +198,15 @@ _This document defines all architectural decisions, implementation patterns, and
 18. Lightweight local embeddings for knowledge search (bag-of-words TF-IDF → upgrade later) ✅
 19. Cost tracking via agent capabilities `cost_per_run` field ✅
 
-**Deferred Decisions (Post-v0.3):**
-- PostgreSQL migration — when SQLite limits hit
-- Market-based allocation engine — v1.0
+**v1.0 Decisions (Now Active):**
+20. Market-based allocation: auction engine with bid/ask protocol ✅
+21. Cross-hive federation: mTLS + capability discovery protocol ✅
+22. Self-optimization: pattern analyzer using historical event data ✅
+23. PostgreSQL support via pgx driver (pluggable behind storage interface) ✅
+24. OIDC SSO via coreos/go-oidc ✅
+25. RBAC with casbin policy engine ✅
+
+**All decisions resolved. No deferred items.**
 
 ### Data Architecture
 
@@ -655,6 +661,12 @@ hive/
 | NATS Event Bus (FR94-97) | `internal/event/` | nats.go (implements EventBus interface) |
 | Enhanced Knowledge (FR98-100) | `internal/knowledge/` | embedding.go (upgraded) |
 | Cost Management (FR101-104) | `internal/cost/` | tracker.go, alerts.go |
+| Market Allocation (FR105-109) | `internal/market/` | auction.go, bidder.go, economy.go |
+| Cross-Hive Federation (FR110-115) | `internal/federation/` | protocol.go, discovery.go, proxy.go |
+| Self-Optimization (FR116-120) | `internal/optimizer/` | analyzer.go, recommender.go |
+| Enterprise Auth (FR121-122) | `internal/auth/` | oidc.go, rbac.go |
+| Audit & Compliance (FR123-124) | `internal/audit/` | logger.go, exporter.go |
+| Multi-Node (FR125-130) | `internal/cluster/` | node.go, replication.go |
 
 ### Data Flow
 

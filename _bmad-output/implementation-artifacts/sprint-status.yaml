@@ -189,3 +189,44 @@ development_status:
   17-1-v03-migration: done
   17-2-v03-documentation: done
   epic-17-retrospective: done
+
+  # ========================================
+  # v1.0 — Full Platform
+  # ========================================
+
+  epic-18: done
+  18-1-auction-engine: done
+  18-2-allocation-strategies: done
+  18-3-token-economy: done
+  epic-18-retrospective: done
+
+  epic-19: done
+  19-1-federation-protocol: done
+  19-2-capability-discovery-sharing: done
+  19-3-cross-hive-task-routing: done
+  epic-19-retrospective: done
+
+  epic-20: done
+  20-1-pattern-analyzer: done
+  20-2-optimization-recommendations: done
+  20-3-auto-tuning: done
+  epic-20-retrospective: done
+
+  epic-21: done
+  21-1-oidc-sso-authentication: done
+  21-2-rbac-roles-permissions: done
+  21-3-audit-log-export: done
+  21-4-multi-tenant-support: done
+  epic-21-retrospective: done
+
+  epic-22: done
+  22-1-postgresql-storage-backend: done
+  22-2-multi-node-clustering: done
+  22-3-node-aware-routing: done
+  epic-22-retrospective: done
+
+  epic-23: done
+  23-1-v10-migration: done
+  23-2-v10-e2e-test: done
+  23-3-v10-documentation-launch: done
+  epic-23-retrospective: done

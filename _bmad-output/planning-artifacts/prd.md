@@ -119,12 +119,16 @@ Proves one thing: **agents from different frameworks can be orchestrated togethe
 - Agent cost tracking: per-agent and per-workflow cost aggregation with budget alerts
 - `hive publish` and `hive search` CLI commands for HiveHub
 
-### Vision (Future — v1.0+)
+### v1.0 Scope — Full Platform
 
-- Market-based task allocation with internal economy
-- Cross-hive networking (inter-organizational agent collaboration)
-- Hive Cloud (managed orchestration-as-a-service)
-- Self-optimizing orchestration (AI-driven pattern optimization)
+**Goal:** Complete the platform with market allocation, cross-hive networking, self-optimization, and multi-node production readiness.
+
+- Market-based task allocation: agents bid on tasks, internal token economy drives optimal allocation
+- Cross-hive networking: secure federation between independent Hive deployments for inter-org collaboration
+- Self-optimizing orchestration: AI analyzes execution patterns and auto-tunes routing, scheduling, agent selection
+- Multi-node deployment: horizontal scaling with NATS cluster, shared SQLite via Litestream or PostgreSQL option
+- Enterprise features: SSO (OIDC), RBAC, audit log export, compliance dashboards
+- Hive Cloud: managed SaaS deployment (API-first, multi-tenant)
 
 ## User Journeys
 
@@ -535,6 +539,47 @@ interface HiveAdapter {
 - FR102: System tracks cumulative cost per workflow execution
 - FR103: User can set budget alerts per agent or per workflow (e.g., "alert when agent exceeds $10/day")
 - FR104: Budget alerts trigger webhook notifications when thresholds are exceeded
+
+### Market-Based Task Allocation (v1.0)
+
+- FR105: Agents can bid on tasks with price and estimated duration
+- FR106: System selects winning bid based on configurable strategy (lowest cost, fastest, best reputation)
+- FR107: User can configure allocation strategy per workflow (auction, round-robin, capability-match, market)
+- FR108: System tracks bid history and win rates per agent
+- FR109: Agents accumulate internal tokens based on task completions (token economy)
+
+### Cross-Hive Networking (v1.0)
+
+- FR110: User can connect two Hive deployments via secure federation protocol
+- FR111: Federated hives can share agent capabilities across organizational boundaries
+- FR112: Tasks can be routed to agents in federated hives when local agents lack capability
+- FR113: Federation uses mTLS for secure inter-hive communication
+- FR114: Each hive maintains data isolation — only capability metadata is shared, not task data
+- FR115: User can configure federation rules (which capabilities to share, which hives to trust)
+
+### Self-Optimizing Orchestration (v1.0)
+
+- FR116: System analyzes historical execution patterns to identify optimization opportunities
+- FR117: System auto-tunes task routing based on agent performance history (prefer faster/cheaper/more reliable agents)
+- FR118: System suggests workflow optimizations (parallelize sequential tasks, eliminate bottlenecks)
+- FR119: User can view optimization recommendations via `hive optimize` command
+- FR120: System applies approved optimizations automatically on next workflow run
+
+### Enterprise Features (v1.0)
+
+- FR121: System supports SSO via OIDC (OpenID Connect) for user authentication
+- FR122: User can define RBAC roles (admin, operator, viewer) with configurable permissions
+- FR123: System exports audit logs in standard format (JSON, CSV) for compliance
+- FR124: Dashboard includes compliance view showing audit trail, access history, and policy violations
+- FR125: System supports multi-tenant deployment with data isolation per tenant
+
+### Multi-Node Deployment (v1.0)
+
+- FR126: System supports horizontal scaling with multiple Hive nodes sharing NATS event bus
+- FR127: Agent registration is replicated across nodes via NATS
+- FR128: Task routing considers agent location (prefer local node, fallback to remote)
+- FR129: System supports PostgreSQL as storage backend for multi-node deployments
+- FR130: User can configure storage backend via `hive.yaml` (`storage: sqlite` or `storage: postgres`)
 
 ## Non-Functional Requirements
 

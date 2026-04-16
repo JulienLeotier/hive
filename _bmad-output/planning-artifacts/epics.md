@@ -1421,3 +1421,292 @@ So that I can use adapters, HiveHub, NATS, and cost management.
 **Given** all v0.3 features implemented
 **When** docs are updated
 **Then** new docs: adapters-guide.md (CrewAI, LangChain, AutoGen, OpenAI), hivehub-guide.md, nats-setup.md, cost-management.md
+
+---
+
+# v1.0 Epics — Full Platform
+
+## Epic 18: Market-Based Task Allocation
+
+Agents bid on tasks through an internal auction, optimizing allocation via price signals.
+
+### Story 18.1: Auction Engine
+
+As a user,
+I want tasks allocated through an auction where agents bid,
+So that the best agent for each task is selected automatically.
+
+**Acceptance Criteria:**
+
+**Given** a task is created with allocation_strategy: "market"
+**When** capable agents are notified
+**Then** each agent submits a bid (price + estimated duration)
+**And** the system selects the winner based on configured strategy (lowest cost, fastest, best reputation)
+**And** a `task.auction.won` event is emitted with bid details (FR105, FR106)
+
+### Story 18.2: Allocation Strategies
+
+As a user,
+I want to configure different allocation strategies per workflow,
+So that I can optimize for cost, speed, or quality depending on the use case.
+
+**Acceptance Criteria:**
+
+**Given** a workflow with `allocation: market` or `allocation: round-robin` or `allocation: capability-match`
+**When** tasks are created
+**Then** the system uses the configured strategy for agent selection
+**And** `hive validate` checks that the strategy is valid (FR107)
+
+### Story 18.3: Token Economy
+
+As the system,
+I want agents to accumulate internal tokens based on task completions,
+So that the market has price signals for optimal allocation.
+
+**Acceptance Criteria:**
+
+**Given** an agent completes a task
+**When** the result is accepted
+**Then** the agent earns tokens proportional to task value
+**And** token balance is tracked in the agents table
+**And** bid history and win rates are queryable via `hive agent stats <name>` (FR108, FR109)
+
+---
+
+## Epic 19: Cross-Hive Federation
+
+Independent Hive deployments can securely share agent capabilities across organizational boundaries.
+
+### Story 19.1: Federation Protocol
+
+As a user,
+I want to connect my Hive to another organization's Hive,
+So that we can share agent capabilities for collaboration.
+
+**Acceptance Criteria:**
+
+**Given** two Hive deployments with mTLS certificates
+**When** the user runs `hive federation connect --url hive.partner.com --cert ./partner.pem`
+**Then** a secure federation link is established
+**And** capability metadata is exchanged (not task data)
+**And** connection health is monitored (FR110, FR113, FR114)
+
+### Story 19.2: Capability Discovery & Sharing
+
+As a user,
+I want to configure which capabilities my hive shares with federated partners,
+So that I control what's exposed.
+
+**Acceptance Criteria:**
+
+**Given** a federation link is established
+**When** the user configures `federation.share: [code-review, summarize]` in `hive.yaml`
+**Then** only the listed capabilities are visible to the partner hive
+**And** the partner can route tasks requiring those capabilities to our agents (FR111, FR115)
+
+### Story 19.3: Cross-Hive Task Routing
+
+As the system,
+I want to route tasks to federated agents when local agents can't handle them,
+So that the network effect increases available capabilities.
+
+**Acceptance Criteria:**
+
+**Given** a task requires capability "data-analysis" and no local agent has it
+**When** a federated hive has an agent with that capability
+**Then** the task is proxied to the federated hive via the federation protocol
+**And** results are returned to the originating hive
+**And** a `task.federated` event records the cross-hive routing (FR112)
+
+---
+
+## Epic 20: Self-Optimizing Orchestration
+
+The system analyzes its own execution patterns and suggests or applies optimizations.
+
+### Story 20.1: Pattern Analyzer
+
+As the system,
+I want to analyze historical execution data for optimization patterns,
+So that I can identify bottlenecks and inefficiencies.
+
+**Acceptance Criteria:**
+
+**Given** the system has executed multiple workflows
+**When** the analyzer runs (triggered by `hive optimize` or on schedule)
+**Then** it identifies: slow agents (p95 duration), underutilized agents, sequential tasks that could parallelize, frequently failing task types
+**And** findings are stored for recommendation generation (FR116)
+
+### Story 20.2: Optimization Recommendations
+
+As a user,
+I want to see actionable optimization recommendations,
+So that I can improve my hive's performance.
+
+**Acceptance Criteria:**
+
+**Given** the analyzer has identified patterns
+**When** the user runs `hive optimize`
+**Then** recommendations are displayed: "Agent X is 3x slower than Agent Y for code-review tasks", "Tasks A and B in workflow W could run in parallel", "Agent Z has 40% idle rate — consider reducing heartbeat interval"
+**And** each recommendation includes estimated impact (FR118, FR119)
+
+### Story 20.3: Auto-Tuning
+
+As the system,
+I want to automatically apply approved optimizations,
+So that performance improves without manual intervention.
+
+**Acceptance Criteria:**
+
+**Given** the user approves an optimization via `hive optimize --apply`
+**When** the next workflow run executes
+**Then** the approved optimizations are applied (e.g., prefer faster agent, parallelize tasks)
+**And** results are compared to pre-optimization baseline
+**And** a `system.optimization.applied` event is logged (FR117, FR120)
+
+---
+
+## Epic 21: Enterprise Features
+
+SSO, RBAC, audit logging, and multi-tenant support for enterprise deployments.
+
+### Story 21.1: OIDC SSO Authentication
+
+As an enterprise admin,
+I want users to authenticate via SSO (OpenID Connect),
+So that access is managed through our identity provider.
+
+**Acceptance Criteria:**
+
+**Given** OIDC is configured in `hive.yaml` (issuer URL, client ID, client secret)
+**When** a user accesses the dashboard or API
+**Then** they are redirected to the OIDC provider for authentication
+**And** JWT tokens are validated on each request (FR121)
+
+### Story 21.2: RBAC Roles & Permissions
+
+As an admin,
+I want to define roles with specific permissions,
+So that users only access what they're authorized to.
+
+**Acceptance Criteria:**
+
+**Given** roles defined: admin (full access), operator (manage agents/workflows), viewer (read-only)
+**When** a user with "viewer" role tries to register an agent
+**Then** the request is rejected with 403 Forbidden
+**And** roles are configurable via `hive.yaml` or API (FR122)
+
+### Story 21.3: Audit Log Export
+
+As a compliance officer,
+I want audit logs exported in standard formats,
+So that I can meet regulatory requirements.
+
+**Acceptance Criteria:**
+
+**Given** the system has been running with events
+**When** the user runs `hive audit export --format json --since 30d --output audit.json`
+**Then** all system events, auth events, and agent actions are exported
+**And** CSV format is also supported (FR123)
+
+### Story 21.4: Multi-Tenant Support
+
+As a platform operator,
+I want to run multiple tenants on a single Hive deployment,
+So that I can offer Hive as a service.
+
+**Acceptance Criteria:**
+
+**Given** multi-tenant mode is enabled in `hive.yaml`
+**When** tenants are created via `hive tenant create <name>`
+**Then** each tenant has isolated: agents, workflows, tasks, events, knowledge
+**And** tenant data never leaks across boundaries (FR125)
+
+---
+
+## Epic 22: Multi-Node & PostgreSQL
+
+Horizontal scaling with PostgreSQL storage and NATS cluster for production deployments.
+
+### Story 22.1: PostgreSQL Storage Backend
+
+As a user,
+I want to use PostgreSQL instead of SQLite for production deployments,
+So that my hive can handle higher concurrency and larger datasets.
+
+**Acceptance Criteria:**
+
+**Given** `storage: postgres` and `postgres_url: postgres://...` in `hive.yaml`
+**When** the system starts
+**Then** it connects to PostgreSQL and runs migrations
+**And** all features work identically to SQLite mode (FR129, FR130)
+
+### Story 22.2: Multi-Node Clustering
+
+As a user,
+I want to run multiple Hive nodes for high availability,
+So that my hive survives node failures.
+
+**Acceptance Criteria:**
+
+**Given** multiple Hive nodes connected via NATS cluster
+**When** an agent registers on node A
+**Then** the registration is replicated to node B via NATS events
+**And** tasks can be routed to agents on any node (FR126, FR127, FR128)
+
+### Story 22.3: Node-Aware Routing
+
+As the system,
+I want task routing to prefer local agents over remote ones,
+So that latency is minimized.
+
+**Acceptance Criteria:**
+
+**Given** agents exist on multiple nodes
+**When** a task is routed
+**Then** the router prefers agents on the same node
+**And** falls back to remote agents if no local agent has the capability
+**And** routing preference is configurable: `routing: local-first` or `routing: best-fit` (FR128)
+
+---
+
+## Epic 23: v1.0 Integration, Polish & Launch
+
+### Story 23.1: v1.0 Migration
+
+As a developer,
+I want the v1.0 database migration,
+So that all new tables are created on upgrade.
+
+**Acceptance Criteria:**
+
+**Given** an existing v0.3 database
+**When** the v1.0 binary starts
+**Then** migration 004 runs creating: bids, federation_links, optimizations, tenants, roles tables
+**And** existing data preserved, migration idempotent
+
+### Story 23.2: v1.0 End-to-End Test
+
+As a developer,
+I want a comprehensive E2E test covering all v1.0 features,
+So that I'm confident the full platform works.
+
+**Acceptance Criteria:**
+
+**Given** the full v1.0 system
+**When** the E2E test runs
+**Then** it exercises: market allocation, federation (mock), optimization analysis, RBAC enforcement, multi-tenant isolation
+**And** all assertions pass
+
+### Story 23.3: v1.0 Documentation & Launch
+
+As a user,
+I want complete documentation for the v1.0 platform,
+So that I can deploy and operate Hive in production.
+
+**Acceptance Criteria:**
+
+**Given** all v1.0 features implemented
+**When** docs are finalized
+**Then** docs cover: market allocation, federation setup, optimization guide, enterprise deployment (SSO, RBAC, audit), multi-node setup (PostgreSQL + NATS cluster), API reference
+**And** README updated with v1.0 feature overview
