@@ -184,10 +184,16 @@ _This document defines all architectural decisions, implementation patterns, and
 8. Event sourcing for all state changes ✅
 9. Interface-based abstractions for pluggable components ✅
 
-**Deferred Decisions (Post-MVP):**
+**v0.2 Decisions (Now Active):**
+10. WebSocket for real-time dashboard updates ✅
+11. Svelte 5 dashboard embedded in Go binary ✅
+12. Trust engine with SQLite-backed scoring ✅
+13. Knowledge layer with sqlite-vec for vector search ✅
+14. Gorilla/websocket for WS transport ✅
+
+**Deferred Decisions (Post-v0.2):**
 - Distributed event bus (NATS) — when multi-node needed
 - PostgreSQL migration — when SQLite limits hit
-- WebSocket streaming — v0.2 for real-time dashboard
 - Market-based allocation engine — v0.3
 
 ### Data Architecture
@@ -247,13 +253,59 @@ CREATE TABLE workflows (
     created_at TEXT DEFAULT (datetime('now'))
 );
 
--- Shared knowledge layer (v0.2, schema reserved)
+-- Shared knowledge layer (v0.2)
 CREATE TABLE knowledge (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     task_type TEXT NOT NULL,
     approach TEXT NOT NULL,
     outcome TEXT NOT NULL,         -- 'success' or 'failure'
     context TEXT,                  -- JSON
+    embedding BLOB,               -- vector embedding for similarity search
+    created_at TEXT DEFAULT (datetime('now'))
+);
+CREATE INDEX idx_knowledge_task_type ON knowledge(task_type);
+CREATE INDEX idx_knowledge_outcome ON knowledge(outcome);
+
+-- Trust history (v0.2)
+CREATE TABLE trust_history (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    agent_id TEXT NOT NULL,
+    old_level TEXT NOT NULL,
+    new_level TEXT NOT NULL,
+    reason TEXT NOT NULL,          -- 'auto_promotion', 'manual_override', 'demotion'
+    criteria TEXT,                 -- JSON: metrics that triggered change
+    created_at TEXT DEFAULT (datetime('now'))
+);
+CREATE INDEX idx_trust_history_agent ON trust_history(agent_id);
+
+-- Agent dialog threads (v0.2)
+CREATE TABLE dialog_threads (
+    id TEXT PRIMARY KEY,
+    initiator_agent_id TEXT NOT NULL,
+    participant_agent_id TEXT NOT NULL,
+    topic TEXT NOT NULL,
+    status TEXT DEFAULT 'active',  -- 'active', 'completed'
+    created_at TEXT DEFAULT (datetime('now')),
+    completed_at TEXT
+);
+
+CREATE TABLE dialog_messages (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    thread_id TEXT NOT NULL REFERENCES dialog_threads(id),
+    sender_agent_id TEXT NOT NULL,
+    content TEXT NOT NULL,
+    created_at TEXT DEFAULT (datetime('now'))
+);
+CREATE INDEX idx_dialog_messages_thread ON dialog_messages(thread_id);
+
+-- Webhook configurations (v0.2)
+CREATE TABLE webhooks (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL UNIQUE,
+    url TEXT NOT NULL,
+    type TEXT NOT NULL,            -- 'slack', 'github', 'email', 'generic'
+    event_filter TEXT,             -- JSON: event types to notify on
+    enabled INTEGER DEFAULT 1,
     created_at TEXT DEFAULT (datetime('now'))
 );
 ```
@@ -286,6 +338,13 @@ CREATE TABLE knowledge (
 - 5 endpoints per agent: `/declare`, `/invoke`, `/health`, `/checkpoint`, `/resume`
 - Request timeout: configurable per agent (default 30s)
 - Circuit breaker: open after 3 consecutive failures, half-open after 30s
+
+**WebSocket (v0.2 — dashboard real-time):**
+- Endpoint: `/ws` for dashboard event streaming
+- Library: `github.com/gorilla/websocket`
+- Clients subscribe to event types (same prefix matching as event bus)
+- Server pushes events to connected clients as they occur
+- Heartbeat ping/pong every 30s to detect stale connections
 
 **Event protocol:**
 - Events are JSON objects: `{"id": 1, "type": "task.created", "source": "system", "payload": {...}, "timestamp": "..."}`
@@ -452,11 +511,33 @@ hive/
 │   │   ├── circuit_breaker_test.go
 │   │   ├── failover.go              # Agent failover logic (FR54)
 │   │   └── failover_test.go
+│   ├── trust/                       # v0.2: Graduated autonomy engine
+│   │   ├── engine.go                # Trust level tracking + auto-promotion (FR63-FR69)
+│   │   ├── engine_test.go
+│   │   ├── scorer.go                # Performance scoring (success rate, error rate)
+│   │   └── scorer_test.go
+│   ├── knowledge/                   # v0.2: Shared knowledge layer
+│   │   ├── store.go                 # Knowledge CRUD + vector search (FR70-FR75)
+│   │   ├── store_test.go
+│   │   ├── embedding.go             # Text-to-vector embedding
+│   │   └── embedding_test.go
+│   ├── dialog/                      # v0.2: Agent-to-agent collaboration
+│   │   ├── thread.go                # Dialog thread management (FR76-FR79)
+│   │   └── thread_test.go
+│   ├── webhook/                     # v0.2: Notification integrations
+│   │   ├── dispatcher.go            # Webhook delivery + retry (FR80-FR83)
+│   │   ├── dispatcher_test.go
+│   │   ├── slack.go                 # Slack format
+│   │   └── github.go                # GitHub format
+│   ├── ws/                          # v0.2: WebSocket for dashboard
+│   │   ├── hub.go                   # Connection hub + broadcast
+│   │   └── hub_test.go
 │   ├── storage/
 │   │   ├── sqlite.go                # SQLite connection + migrations
 │   │   ├── sqlite_test.go
 │   │   ├── migrations/
 │   │   │   ├── 001_initial.sql
+│   │   │   ├── 002_v02_knowledge_trust_dialog_webhook.sql  # v0.2
 │   │   │   └── embed.go             # Embedded migrations
 │   │   └── queries.go               # Prepared SQL queries
 │   ├── api/
@@ -558,6 +639,11 @@ hive/
 | Observability (FR29-33) | `internal/api/` | handlers_metrics.go, handlers_event.go |
 | Agent Autonomy (FR43-51) | `internal/autonomy/` | plan.go, scheduler.go, observer.go |
 | Error Handling (FR52-56) | `internal/resilience/` | circuit_breaker.go, failover.go |
+| Dashboard (FR57-62) | `internal/api/` + `internal/ws/` + `web/` | server.go, hub.go, Svelte app |
+| Graduated Autonomy (FR63-69) | `internal/trust/` | engine.go, scorer.go |
+| Knowledge Layer (FR70-75) | `internal/knowledge/` | store.go, embedding.go |
+| Agent Dialog (FR76-79) | `internal/dialog/` | thread.go |
+| Webhooks (FR80-83) | `internal/webhook/` | dispatcher.go, slack.go, github.go |
 
 ### Data Flow
 
