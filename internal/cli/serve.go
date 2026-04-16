@@ -12,9 +12,12 @@ import (
 
 	"github.com/JulienLeotier/hive/internal/agent"
 	"github.com/JulienLeotier/hive/internal/api"
+	"github.com/JulienLeotier/hive/internal/auth"
 	"github.com/JulienLeotier/hive/internal/config"
+	"github.com/JulienLeotier/hive/internal/cost"
 	"github.com/JulienLeotier/hive/internal/dashboard"
 	"github.com/JulienLeotier/hive/internal/event"
+	"github.com/JulienLeotier/hive/internal/federation"
 	"github.com/JulienLeotier/hive/internal/resilience"
 	"github.com/JulienLeotier/hive/internal/storage"
 	"github.com/JulienLeotier/hive/internal/task"
@@ -31,16 +34,35 @@ var serveCmd = &cobra.Command{
 			return err
 		}
 
-		store, err := storage.Open(cfg.DataDir)
+		// Story 22.1: dispatch storage backend from config.
+		store, err := storage.Open2(storage.Backend{
+			Type:        cfg.Storage,
+			DataDir:     cfg.DataDir,
+			PostgresURL: cfg.PostgresURL,
+		})
 		if err != nil {
 			return err
 		}
 		defer store.Close()
 
-		mgr := agent.NewManager(store.DB)
 		bus := event.NewBus(store.DB)
+
+		// Story 22.2: wire agent manager to publish lifecycle events. When a
+		// NATS bus is configured this fan-out reaches peer nodes automatically.
+		mgr := agent.NewManager(store.DB).WithPublisher(bus.PublishErr)
+
 		breakers := resilience.NewBreakerRegistry(resilience.DefaultBreakerConfig())
-		router := task.NewRouter(store.DB).WithBus(bus)
+
+		// Story 19.3: federation resolver + proxy. When no local agent is
+		// capable, Router.WithFederation hands control to the resolver.
+		fedStore := federation.NewStore(store.DB)
+		fedResolver, fedProxy := federation.NewResolver(context.Background(), fedStore)
+		router := task.NewRouter(store.DB).WithBus(bus).WithFederation(
+			func(ctx context.Context, taskType string) (string, string, bool) {
+				return fedResolver(ctx, taskType)
+			},
+		)
+		_ = fedProxy // kept alive as long as serve is running
 
 		// Auto-isolate agents and failover their tasks when the breaker opens.
 		watcher := agent.NewHealthWatcher(mgr, router, bus)
@@ -54,9 +76,13 @@ var serveCmd = &cobra.Command{
 		supervisor.Start(supervisorCtx)
 		defer supervisor.Stop()
 
-		keyMgr := api.NewKeyManager(store.DB)
+		// Cost tracker with bus so budget breaches emit cost.alert events.
+		_ = cost.NewTracker(store.DB).WithBus(bus.PublishErr)
 
-		srv := api.NewServer(mgr, bus, breakers, keyMgr)
+		keyMgr := api.NewKeyManager(store.DB)
+		users := auth.NewUserStore(store.DB)
+
+		apiSrv := api.NewServer(mgr, bus, breakers, keyMgr).WithUsers(users)
 
 		// WebSocket hub — broadcast events to dashboard clients
 		hub := ws.NewHub()
@@ -70,7 +96,7 @@ var serveCmd = &cobra.Command{
 		mux.HandleFunc("/ws", hub.HandleWS)
 
 		// API routes (authenticated)
-		mux.Handle("/api/", srv.Handler())
+		mux.Handle("/api/", apiSrv.Handler())
 
 		// Dashboard (static, no auth)
 		mux.Handle("/", dashboard.Handler())
@@ -83,7 +109,10 @@ var serveCmd = &cobra.Command{
 		signal.Notify(done, os.Interrupt, syscall.SIGTERM)
 
 		go func() {
-			slog.Info("hive server started", "addr", addr, "dashboard", fmt.Sprintf("http://localhost:%d", cfg.Port))
+			slog.Info("hive server started",
+				"addr", addr,
+				"dashboard", fmt.Sprintf("http://localhost:%d", cfg.Port),
+				"storage", storageLabel(cfg))
 			if err := httpSrv.ListenAndServe(); err != http.ErrServerClosed {
 				slog.Error("server error", "error", err)
 			}
@@ -96,6 +125,13 @@ var serveCmd = &cobra.Command{
 		defer cancel()
 		return httpSrv.Shutdown(ctx)
 	},
+}
+
+func storageLabel(cfg config.Config) string {
+	if cfg.Storage == "postgres" {
+		return "postgres"
+	}
+	return "sqlite:" + cfg.DataDir
 }
 
 func init() {

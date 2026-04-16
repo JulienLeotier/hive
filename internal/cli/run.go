@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"time"
 
 	"github.com/JulienLeotier/hive/internal/agent"
 	"github.com/JulienLeotier/hive/internal/config"
@@ -75,25 +76,40 @@ var runCmd = &cobra.Command{
 		if !quiet {
 			fmt.Printf("Agents: %d registered\n", len(agents))
 			fmt.Println("---")
+
+			// Story 3.3: real-time progress via bus subscriptions — print each
+			// task state transition as it fires rather than waiting for the end.
+			bus.Subscribe("task", func(e event.Event) {
+				fmt.Printf("[%s] %-18s %s\n", e.CreatedAt.Format("15:04:05"), e.Type, e.Payload)
+			})
+			bus.Subscribe("workflow", func(e event.Event) {
+				fmt.Printf("[%s] %-18s %s\n", e.CreatedAt.Format("15:04:05"), e.Type, e.Payload)
+			})
 		}
 
 		// Execute workflow
+		started := time.Now()
 		result, err := engine.Run(context.Background(), wfConfig)
+		elapsed := time.Since(started)
 
 		if jsonOutput {
-			json.NewEncoder(cmd.OutOrStdout()).Encode(result)
+			json.NewEncoder(cmd.OutOrStdout()).Encode(map[string]any{
+				"result":      result,
+				"duration_ms": elapsed.Milliseconds(),
+			})
 			return err
 		}
 
 		if err != nil {
-			fmt.Printf("FAILED: %s\n", err)
+			fmt.Printf("FAILED after %s: %s\n", elapsed, err)
 			return err
 		}
 
 		if !quiet {
 			fmt.Println("---")
 			fmt.Printf("Workflow completed: %s\n", result.WorkflowID)
-			fmt.Printf("Tasks completed: %d\n", len(result.TaskResults))
+			fmt.Printf("Tasks completed:    %d\n", len(result.TaskResults))
+			fmt.Printf("Duration:           %s\n", elapsed)
 			for name, t := range result.TaskResults {
 				fmt.Printf("  %s: %s (agent: %s)\n", name, t.Status, t.AgentID)
 			}

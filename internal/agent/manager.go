@@ -160,7 +160,23 @@ func (m *Manager) ListWithLimit(ctx context.Context, limit int) ([]Agent, error)
 }
 
 // Remove deletes an agent by name.
+// Story 1.3 AC: "any queued tasks for that agent are returned to the unassigned pool".
 func (m *Manager) Remove(ctx context.Context, name string) error {
+	// Find the agent ID so we can requeue its tasks before deleting.
+	var agentID string
+	_ = m.db.QueryRowContext(ctx, `SELECT id FROM agents WHERE name = ?`, name).Scan(&agentID)
+
+	requeued := int64(0)
+	if agentID != "" {
+		res, err := m.db.ExecContext(ctx,
+			`UPDATE tasks SET status = 'pending', agent_id = ''
+			 WHERE agent_id = ? AND status IN ('assigned','running')`, agentID)
+		if err != nil {
+			return fmt.Errorf("requeueing tasks for agent %s: %w", name, err)
+		}
+		requeued, _ = res.RowsAffected()
+	}
+
 	result, err := m.db.ExecContext(ctx, `DELETE FROM agents WHERE name = ?`, name)
 	if err != nil {
 		return fmt.Errorf("removing agent %s: %w", name, err)
@@ -169,9 +185,12 @@ func (m *Manager) Remove(ctx context.Context, name string) error {
 	if n == 0 {
 		return fmt.Errorf("agent %s not found", name)
 	}
-	slog.Info("agent removed", "name", name)
+	slog.Info("agent removed", "name", name, "requeued_tasks", requeued)
 	if m.bus != nil {
-		_ = m.bus(ctx, "agent.removed", name, map[string]string{"name": name})
+		_ = m.bus(ctx, "agent.removed", name, map[string]any{
+			"name":           name,
+			"requeued_tasks": requeued,
+		})
 	}
 	return nil
 }

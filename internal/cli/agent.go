@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/JulienLeotier/hive/internal/adapter"
@@ -46,6 +47,26 @@ func countByStatus(ctx context.Context, db *sql.DB, table string) (map[string]in
 		out[s] = n
 	}
 	return out, rows.Err()
+}
+
+// confirmDetectedType asks the user to accept or change the auto-detected type
+// (Story 7.2 AC). Non-TTY stdin = auto-accept so CI doesn't stall.
+func confirmDetectedType(detected string) string {
+	info, err := os.Stdin.Stat()
+	if err != nil || (info.Mode()&os.ModeCharDevice) == 0 {
+		return detected
+	}
+	fmt.Printf("Detected agent type: %s — accept? [Y/n/<override>] ", detected)
+	var answer string
+	fmt.Scanln(&answer)
+	answer = strings.TrimSpace(answer)
+	if answer == "" || answer == "y" || answer == "Y" {
+		return detected
+	}
+	if answer == "n" || answer == "N" {
+		return ""
+	}
+	return answer
 }
 
 // detectAgentType inspects a local path for well-known files and infers an adapter type.
@@ -126,7 +147,14 @@ var addAgentCmd = &cobra.Command{
 				return fmt.Errorf("agent path: %w", err)
 			}
 			if agentType == "" || agentType == "http" {
-				agentType = detectAgentType(abs)
+				detected := detectAgentType(abs)
+				// Story 7.2 AC: confirm detected type with user before registering.
+				// --yes skips the prompt for scripted callers (CI etc.).
+				if yes, _ := cmd.Flags().GetBool("yes"); yes {
+					agentType = detected
+				} else {
+					agentType = confirmDetectedType(detected)
+				}
 			}
 			if url == "" {
 				url = "file://" + abs
@@ -288,10 +316,14 @@ var statusCmd = &cobra.Command{
 			return nil
 		}
 
-		fmt.Printf("%-20s %-10s %-12s %-10s\n", "NAME", "TYPE", "HEALTH", "TRUST")
-		fmt.Printf("%-20s %-10s %-12s %-10s\n", "----", "----", "------", "-----")
+		fmt.Printf("%-20s %-10s %-12s %-10s %-20s\n", "NAME", "TYPE", "HEALTH", "TRUST", "LAST CHECK")
+		fmt.Printf("%-20s %-10s %-12s %-10s %-20s\n", "----", "----", "------", "-----", "----------")
 		for _, a := range agents {
-			fmt.Printf("%-20s %-10s %-12s %-10s\n", a.Name, a.Type, a.HealthStatus, a.TrustLevel)
+			lastCheck := a.UpdatedAt.Format("2006-01-02 15:04:05")
+			if a.UpdatedAt.IsZero() {
+				lastCheck = "—"
+			}
+			fmt.Printf("%-20s %-10s %-12s %-10s %-20s\n", a.Name, a.Type, a.HealthStatus, a.TrustLevel, lastCheck)
 		}
 		fmt.Printf("\nTotal: %d agents\n", len(agents))
 
@@ -614,6 +646,7 @@ func init() {
 	addAgentCmd.Flags().String("assistant-id", "", "OpenAI assistant ID (required for --type openai)")
 	addAgentCmd.Flags().String("api-key", "", "OpenAI API key (falls back to $OPENAI_API_KEY)")
 	addAgentCmd.Flags().String("config", "", "YAML file providing name/type/url/path (CLI flags override file)")
+	addAgentCmd.Flags().Bool("yes", false, "accept auto-detected type without prompting")
 
 	agentTrustOverrideCmd.Flags().String("reason", "", "why this override is being set")
 

@@ -40,6 +40,11 @@ func (r *Router) WithBus(bus *event.Bus) *Router {
 	return r
 }
 
+// CapacityLimit caps the number of simultaneously assigned/running tasks per
+// agent before routing considers it saturated (Story 2.3 AC: "healthy, not at
+// capacity"). Default matches the common desktop-concurrency ceiling.
+var CapacityLimit = 10
+
 // FindCapableAgent returns the ID and name of a healthy agent capable of handling the given task type.
 // Returns empty strings if no capable agent is available.
 func (r *Router) FindCapableAgent(ctx context.Context, taskType string) (agentID, agentName string, err error) {
@@ -52,23 +57,38 @@ func (r *Router) FindCapableAgent(ctx context.Context, taskType string) (agentID
 	defer rows.Close()
 
 	considered := 0
+	type candidate struct{ id, name, capsJSON string }
+	var candidates []candidate
 	for rows.Next() {
 		var id, name, capsJSON string
 		if err := rows.Scan(&id, &name, &capsJSON); err != nil {
 			continue
 		}
+		candidates = append(candidates, candidate{id, name, capsJSON})
+	}
+
+	for _, c := range candidates {
 		considered++
 
 		var caps adapter.AgentCapabilities
-		if err := json.Unmarshal([]byte(capsJSON), &caps); err != nil {
+		if err := json.Unmarshal([]byte(c.capsJSON), &caps); err != nil {
 			continue
 		}
 
 		for _, tt := range caps.TaskTypes {
 			if tt == taskType {
-				slog.Debug("routed task to agent", "task_type", taskType, "agent", name)
-				r.emitRouteDecision(ctx, taskType, name, "capability_match", considered)
-				return id, name, nil
+				// Capacity check: how many in-flight tasks does this agent hold?
+				var inFlight int
+				_ = r.db.QueryRowContext(ctx,
+					`SELECT COUNT(*) FROM tasks WHERE agent_id = ? AND status IN ('assigned','running')`,
+					c.id).Scan(&inFlight)
+				if inFlight >= CapacityLimit {
+					slog.Debug("agent at capacity; skipping", "agent", c.name, "in_flight", inFlight)
+					continue
+				}
+				slog.Debug("routed task to agent", "task_type", taskType, "agent", c.name, "in_flight", inFlight)
+				r.emitRouteDecision(ctx, taskType, c.name, "capability_match", considered)
+				return c.id, c.name, nil
 			}
 		}
 	}

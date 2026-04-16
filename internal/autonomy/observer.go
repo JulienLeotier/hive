@@ -42,6 +42,41 @@ func NewObserver(db *sql.DB) *Observer {
 	return &Observer{db: db}
 }
 
+// DetectBusywork reports agent names that appear to be generating tasks without
+// an upstream trigger or backlog source (Story 4.5 AC). Heuristic: an agent
+// created N > threshold tasks in the window where each task has no depends_on,
+// no workflow_id matching a real workflow row, and the agent itself is the
+// source.
+//
+// Returns the map of agent_name → offending task count; callers can emit
+// agent.busywork events or page a human.
+func (o *Observer) DetectBusywork(ctx context.Context, window time.Duration, threshold int) (map[string]int, error) {
+	cutoff := time.Now().Add(-window).UTC().Format("2006-01-02 15:04:05")
+	rows, err := o.db.QueryContext(ctx, `
+		SELECT a.name, COUNT(*) AS task_count
+		FROM tasks t
+		JOIN agents a ON a.id = t.agent_id
+		WHERE t.created_at >= ?
+		  AND (t.depends_on IS NULL OR t.depends_on = '' OR t.depends_on = '[]')
+		  AND t.workflow_id NOT IN (SELECT id FROM workflows)
+		GROUP BY a.name
+		HAVING task_count >= ?`, cutoff, threshold)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	offenders := map[string]int{}
+	for rows.Next() {
+		var name string
+		var n int
+		if err := rows.Scan(&name, &n); err == nil {
+			offenders[name] = n
+		}
+	}
+	return offenders, rows.Err()
+}
+
 // Snapshot returns the current Observation for an agent.
 func (o *Observer) Snapshot(ctx context.Context, agentName string) (Observation, error) {
 	var obs Observation

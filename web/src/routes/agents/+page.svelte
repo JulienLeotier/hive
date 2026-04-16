@@ -9,6 +9,7 @@
 	};
 
 	let agents = $state<Agent[]>([]);
+	let ws: WebSocket | null = $state(null);
 
 	async function loadAgents() {
 		try {
@@ -18,10 +19,31 @@
 		} catch { /* API not ready */ }
 	}
 
+	// Story 8.2 AC: health updates in real-time via WebSocket without page refresh.
+	function connectWS() {
+		const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+		ws = new WebSocket(`${proto}//${location.host}/ws`);
+		ws.onmessage = (msg) => {
+			try {
+				const evt = JSON.parse(msg.data);
+				// Any agent lifecycle / health change triggers a reload.
+				if (typeof evt.type === 'string' && evt.type.startsWith('agent.')) {
+					loadAgents();
+				}
+			} catch { /* ignore malformed frame */ }
+		};
+		ws.onclose = () => setTimeout(connectWS, 3000);
+	}
+
 	$effect(() => {
 		loadAgents();
-		const interval = setInterval(loadAgents, 3000);
-		return () => clearInterval(interval);
+		connectWS();
+		// Fallback polling in case WS is blocked or the server is behind a proxy.
+		const interval = setInterval(loadAgents, 10000);
+		return () => {
+			ws?.close();
+			clearInterval(interval);
+		};
 	});
 
 	function statusColor(status: string): string {

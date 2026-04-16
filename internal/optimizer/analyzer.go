@@ -196,6 +196,76 @@ func (a *Analyzer) Analyze(ctx context.Context) ([]Recommendation, error) {
 		recs = append(recs, parallelOps...)
 	}
 
+	// 4. Story 20.2: "Agent X is 3x slower than Agent Y for code-review tasks".
+	comparative, err := a.findComparativeSlowdowns(ctx)
+	if err == nil {
+		recs = append(recs, comparative...)
+	}
+
+	return recs, nil
+}
+
+// findComparativeSlowdowns groups durations per (task_type, agent) and flags
+// cases where one agent averages ≥ 2x the fastest on the same task type.
+// Story 20.2.
+func (a *Analyzer) findComparativeSlowdowns(ctx context.Context) ([]Recommendation, error) {
+	rows, err := a.db.QueryContext(ctx, `
+		SELECT t.type, COALESCE(ag.name, t.agent_id) AS agent,
+		       AVG((JULIANDAY(t.completed_at) - JULIANDAY(t.started_at)) * 86400) AS avg_duration,
+		       COUNT(*) AS n
+		FROM tasks t
+		LEFT JOIN agents ag ON ag.id = t.agent_id
+		WHERE t.status = 'completed'
+		  AND t.started_at IS NOT NULL AND t.completed_at IS NOT NULL
+		  AND t.agent_id <> ''
+		GROUP BY t.type, t.agent_id
+		HAVING n >= 5
+	`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	type row struct {
+		agent    string
+		duration float64
+	}
+	perType := map[string][]row{}
+	for rows.Next() {
+		var tType, agent string
+		var dur float64
+		var n int
+		if err := rows.Scan(&tType, &agent, &dur, &n); err == nil && dur > 0 {
+			perType[tType] = append(perType[tType], row{agent: agent, duration: dur})
+		}
+	}
+
+	var recs []Recommendation
+	for tType, agents := range perType {
+		if len(agents) < 2 {
+			continue
+		}
+		fastest := agents[0]
+		for _, a := range agents[1:] {
+			if a.duration < fastest.duration {
+				fastest = a
+			}
+		}
+		for _, other := range agents {
+			if other.agent == fastest.agent {
+				continue
+			}
+			if other.duration >= fastest.duration*2 {
+				ratio := other.duration / fastest.duration
+				recs = append(recs, Recommendation{
+					Type:        "comparative-slowdown",
+					Description: fmt.Sprintf("Agent %s is %.1fx slower than Agent %s for %s tasks", other.agent, ratio, fastest.agent, tType),
+					Impact:      fmt.Sprintf("Prefer %s to drop avg duration from %.1fs to %.1fs", fastest.agent, other.duration, fastest.duration),
+					Confidence:  0.8,
+				})
+			}
+		}
+	}
 	return recs, nil
 }
 
