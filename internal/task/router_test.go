@@ -128,6 +128,35 @@ func TestReassign(t *testing.T) {
 	assert.Empty(t, agentID)
 }
 
+func TestRouterPrefersLocalNode(t *testing.T) {
+	st, err := storage.Open(t.TempDir())
+	require.NoError(t, err)
+	t.Cleanup(func() { st.Close() })
+	router := NewRouter(st.DB)
+
+	// Remote agent
+	capsJSON, _ := json.Marshal(adapter.AgentCapabilities{TaskTypes: []string{"code-review"}})
+	_, err = st.DB.Exec(
+		`INSERT INTO agents (id, name, type, config, capabilities, health_status, node_id)
+		 VALUES ('r','remote','http','{}',?,'healthy','other-node')`, string(capsJSON))
+	require.NoError(t, err)
+	// Local agent
+	_, err = st.DB.Exec(
+		`INSERT INTO agents (id, name, type, config, capabilities, health_status, node_id)
+		 VALUES ('l','local','http','{}',?,'healthy','local-node')`, string(capsJSON))
+	require.NoError(t, err)
+
+	oldID, oldMode := LocalNodeID, RoutingMode
+	LocalNodeID = "local-node"
+	RoutingMode = "local-first"
+	t.Cleanup(func() { LocalNodeID, RoutingMode = oldID, oldMode })
+
+	id, name, err := router.FindCapableAgent(context.Background(), "code-review")
+	require.NoError(t, err)
+	assert.Equal(t, "l", id)
+	assert.Equal(t, "local", name)
+}
+
 func TestRouterFallsBackToFederation(t *testing.T) {
 	st, err := storage.Open(t.TempDir())
 	require.NoError(t, err)

@@ -34,6 +34,12 @@ func (w *HealthWatcher) Hook() resilience.StateChangeHook {
 		ctx := context.Background()
 		switch to {
 		case resilience.StateOpen:
+			// Story 5.1 AC: "a `agent.circuit_open` event is emitted".
+			if w.bus != nil {
+				_, _ = w.bus.Publish(ctx, event.AgentCircuitOpen, agentName, map[string]any{
+					"from": string(from), "to": string(to),
+				})
+			}
 			w.isolate(ctx, agentName)
 		case resilience.StateClosed:
 			w.restore(ctx, agentName)

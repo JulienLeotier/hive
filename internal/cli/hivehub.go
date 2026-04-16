@@ -33,14 +33,19 @@ var searchCmd = &cobra.Command{
 			fmt.Println("No matching templates in HiveHub.")
 			return nil
 		}
-		fmt.Printf("%-25s %-12s %-10s %s\n", "NAME", "VERSION", "CATEGORY", "DESCRIPTION")
-		fmt.Printf("%-25s %-12s %-10s %s\n", "----", "-------", "--------", "-----------")
+		// Story 14.2 AC: show name, version, author, download count, description.
+		fmt.Printf("%-24s %-10s %-15s %-10s %s\n", "NAME", "VERSION", "AUTHOR", "DOWNLOADS", "DESCRIPTION")
+		fmt.Printf("%-24s %-10s %-15s %-10s %s\n", "----", "-------", "------", "---------", "-----------")
 		for _, t := range results {
 			desc := t.Description
 			if len(desc) > 60 {
 				desc = desc[:57] + "…"
 			}
-			fmt.Printf("%-25s %-12s %-10s %s\n", t.Name, t.Version, t.Category, desc)
+			author := t.Author
+			if author == "" {
+				author = "—"
+			}
+			fmt.Printf("%-24s %-10s %-15s %-10d %s\n", t.Name, t.Version, author, t.Downloads, desc)
 		}
 		return nil
 	},

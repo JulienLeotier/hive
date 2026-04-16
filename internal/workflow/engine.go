@@ -277,8 +277,11 @@ func (e *Engine) executeLevel(ctx context.Context, workflowID string, level []Ta
 
 		agentID, agentName, err := e.pickAgent(ctx, td.Type, e.allocation)
 		if err != nil || agentID == "" {
-			e.taskStore.Fail(ctx, t.ID, "no capable agent for type: "+td.Type)
-			return fmt.Errorf("no agent available for task type %s", td.Type)
+			// Story 2.3 AC: task remains `pending` with a task.unroutable event.
+			// task.Router.FindCapableAgent already emits task.unroutable; we
+			// deliberately do NOT Fail() the task so a late-arriving capable
+			// agent can still claim it via the self-assignment path.
+			return fmt.Errorf("no agent available for task type %s (task %s left pending)", td.Type, t.ID)
 		}
 
 		e.taskStore.Assign(ctx, t.ID, agentID)
