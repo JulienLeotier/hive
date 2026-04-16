@@ -93,14 +93,14 @@ development_status:
   epic-6-retrospective: optional
 
   # Epic 7: CLI & Developer Experience
-  epic-7: backlog
-  7-1-hive-init-project-scaffolding: backlog
-  7-2-agent-auto-detection: backlog
-  7-3-hive-run-terminal-output: backlog
-  7-4-adapter-template-generator: backlog
-  7-5-example-template-code-review-hive: backlog
-  7-6-example-template-content-pipeline-hive: backlog
-  7-7-example-template-research-hive: backlog
-  7-8-shell-completion: backlog
-  7-9-cicd-pipeline-cross-platform-build: backlog
+  epic-7: done
+  7-1-hive-init-project-scaffolding: done
+  7-2-agent-auto-detection: done
+  7-3-hive-run-terminal-output: done
+  7-4-adapter-template-generator: done
+  7-5-example-template-code-review-hive: done
+  7-6-example-template-content-pipeline-hive: done
+  7-7-example-template-research-hive: done
+  7-8-shell-completion: done
+  7-9-cicd-pipeline-cross-platform-build: done
   epic-7-retrospective: optional
