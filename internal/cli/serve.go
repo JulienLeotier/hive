@@ -17,6 +17,7 @@ import (
 	"github.com/JulienLeotier/hive/internal/event"
 	"github.com/JulienLeotier/hive/internal/resilience"
 	"github.com/JulienLeotier/hive/internal/storage"
+	"github.com/JulienLeotier/hive/internal/ws"
 	"github.com/spf13/cobra"
 )
 
@@ -42,7 +43,16 @@ var serveCmd = &cobra.Command{
 
 		srv := api.NewServer(mgr, bus, breakers, keyMgr)
 
+		// WebSocket hub — broadcast events to dashboard clients
+		hub := ws.NewHub()
+		bus.Subscribe("*", func(e event.Event) {
+			hub.Broadcast(e)
+		})
+
 		mux := http.NewServeMux()
+
+		// WebSocket endpoint
+		mux.HandleFunc("/ws", hub.HandleWS)
 
 		// API routes (authenticated)
 		mux.Handle("/api/", srv.Handler())
