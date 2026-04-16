@@ -110,8 +110,8 @@ development_status:
   # ========================================
 
   # Epic 8: Dashboard UI
-  epic-8: backlog
-  8-1-svelte-project-setup-embedding: backlog
+  epic-8: in-progress
+  8-1-svelte-project-setup-embedding: done
   8-2-agent-health-dashboard-page: backlog
   8-3-task-flow-visualization: backlog
   8-4-event-timeline: backlog
