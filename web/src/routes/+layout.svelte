@@ -9,6 +9,7 @@
 		{ href: '/agents', label: 'Agents' },
 		{ href: '/tasks', label: 'Tasks' },
 		{ href: '/events', label: 'Events' },
+		{ href: '/costs', label: 'Costs' },
 	];
 </script>
 

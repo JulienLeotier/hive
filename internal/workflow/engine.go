@@ -111,6 +111,26 @@ func (e *Engine) executeLevel(ctx context.Context, workflowID string, level []Ta
 
 	var prepared []preparedTask
 	for _, td := range level {
+		// Story 3.5: skip tasks whose condition evaluates to false.
+		if td.Condition != "" {
+			evalCtx := buildEvalContext(result, td.DependsOn)
+			ok, err := EvaluateCondition(td.Condition, evalCtx)
+			if err != nil {
+				return fmt.Errorf("evaluating condition for task %s: %w", td.Name, err)
+			}
+			if !ok {
+				slog.Info("task skipped by condition", "task", td.Name, "condition", td.Condition)
+				if e.eventBus != nil {
+					_, _ = e.eventBus.Publish(ctx, "task.skipped", "workflow_engine", map[string]string{
+						"workflow_id": workflowID,
+						"task":        td.Name,
+						"condition":   td.Condition,
+					})
+				}
+				continue
+			}
+		}
+
 		inputJSON := e.buildInput(td, result)
 
 		t, err := e.taskStore.Create(ctx, workflowID, td.Type, inputJSON, td.DependsOn)
