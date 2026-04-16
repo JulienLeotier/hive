@@ -28,13 +28,24 @@ type Record struct {
 	ClosedAt   *time.Time
 }
 
+// PublishFunc matches the shim published by event.Bus.PublishErr so we avoid a
+// cycle with the event package.
+type PublishFunc func(ctx context.Context, eventType, source string, payload any) error
+
 // Store persists auctions, bids, and agent token balances.
 type Store struct {
-	db *sql.DB
+	db  *sql.DB
+	bus PublishFunc
 }
 
 // NewStore creates a market store.
 func NewStore(db *sql.DB) *Store { return &Store{db: db} }
+
+// WithBus installs a publisher so auction lifecycle transitions emit events.
+func (s *Store) WithBus(p PublishFunc) *Store {
+	s.bus = p
+	return s
+}
 
 // Open creates a new auction row and returns its ID.
 func (s *Store) Open(ctx context.Context, taskID string, strategy Strategy) (string, error) {
@@ -103,7 +114,25 @@ func (s *Store) Close(ctx context.Context, auctionID, winningBidID string) error
 		`UPDATE bids SET won = 1 WHERE id = ?`, winningBidID); err != nil {
 		return err
 	}
-	return tx.Commit()
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+
+	if s.bus != nil {
+		// Grab the winning bid's agent name for the event payload.
+		var agentName string
+		var price float64
+		_ = s.db.QueryRowContext(ctx,
+			`SELECT agent_name, price FROM bids WHERE id = ?`, winningBidID,
+		).Scan(&agentName, &price)
+		_ = s.bus(ctx, "task.auction.won", "market", map[string]any{
+			"auction_id": auctionID,
+			"bid_id":     winningBidID,
+			"agent":      agentName,
+			"price":      price,
+		})
+	}
+	return nil
 }
 
 // Cancel voids an auction without a winner.

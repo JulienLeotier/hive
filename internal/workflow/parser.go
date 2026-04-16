@@ -9,9 +9,10 @@ import (
 
 // Config is the parsed representation of a hive.yaml workflow file.
 type Config struct {
-	Name    string       `yaml:"name"`
-	Tasks   []TaskDef    `yaml:"tasks"`
-	Trigger *TriggerDef  `yaml:"trigger,omitempty"`
+	Name       string      `yaml:"name"`
+	Tasks      []TaskDef   `yaml:"tasks"`
+	Trigger    *TriggerDef `yaml:"trigger,omitempty"`
+	Allocation string      `yaml:"allocation,omitempty"` // "capability-match" (default), "market", "round-robin"
 }
 
 // TaskDef defines a single task within a workflow.
@@ -56,12 +57,24 @@ func Parse(data []byte) (*Config, error) {
 	return &cfg, nil
 }
 
+// validAllocations lists the strategies understood by the engine.
+// Kept here (not in engine.go) so the parser validates them before runtime.
+var validAllocations = map[string]bool{
+	"":                  true, // default — capability match
+	"capability-match":  true,
+	"market":            true,
+	"round-robin":       true,
+}
+
 func validate(cfg *Config) error {
 	if cfg.Name == "" {
 		return fmt.Errorf("workflow name is required")
 	}
 	if len(cfg.Tasks) == 0 {
 		return fmt.Errorf("workflow must have at least one task")
+	}
+	if !validAllocations[cfg.Allocation] {
+		return fmt.Errorf("workflow allocation %q not supported (use capability-match, market, or round-robin)", cfg.Allocation)
 	}
 
 	taskNames := make(map[string]bool)

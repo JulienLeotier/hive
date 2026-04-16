@@ -74,8 +74,8 @@ var auditListCmd = &cobra.Command{
 
 var auditExportCmd = &cobra.Command{
 	Use:   "export [path]",
-	Short: "Export audit entries to a file (JSON or CSV by extension)",
-	Args:  cobra.ExactArgs(1),
+	Short: "Export audit entries to a file (JSON or CSV by extension, --format override available)",
+	Args:  cobra.MaximumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		since, _ := cmd.Flags().GetString("since")
 		sinceT := time.Now().Add(-30 * 24 * time.Hour)
@@ -101,15 +101,36 @@ var auditExportCmd = &cobra.Command{
 			return err
 		}
 
-		path := args[0]
+		// Story 21.3: support --output (preferred) or a positional [path].
+		path, _ := cmd.Flags().GetString("output")
+		if path == "" && len(args) > 0 {
+			path = args[0]
+		}
+		format, _ := cmd.Flags().GetString("format")
+		if format == "" {
+			if hasExt(path, ".csv") {
+				format = "csv"
+			} else {
+				format = "json"
+			}
+		}
+
 		var data []byte
-		if hasExt(path, ".csv") {
+		switch format {
+		case "csv":
 			data = []byte(logger.ExportCSV(entries))
-		} else {
+		case "json":
 			data, err = logger.ExportJSON(entries)
 			if err != nil {
 				return err
 			}
+		default:
+			return fmt.Errorf("unknown format %q — use json or csv", format)
+		}
+
+		if path == "" {
+			_, err = cmd.OutOrStdout().Write(data)
+			return err
 		}
 		if err := os.WriteFile(path, data, 0o644); err != nil {
 			return err
@@ -201,6 +222,8 @@ func init() {
 	auditListCmd.Flags().Int("limit", 50, "max entries to return")
 	auditListCmd.Flags().String("format", "table", "output format (table|json|csv)")
 	auditExportCmd.Flags().String("since", "30d", "time window (e.g., 1h, 7d, 30d)")
+	auditExportCmd.Flags().String("format", "", "output format (json|csv); inferred from --output extension when empty")
+	auditExportCmd.Flags().String("output", "", "output file path (prints to stdout when omitted)")
 
 	auditCmd.AddCommand(auditListCmd)
 	auditCmd.AddCommand(auditExportCmd)

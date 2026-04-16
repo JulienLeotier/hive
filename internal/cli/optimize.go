@@ -6,6 +6,7 @@ import (
 	"fmt"
 
 	"github.com/JulienLeotier/hive/internal/config"
+	"github.com/JulienLeotier/hive/internal/event"
 	"github.com/JulienLeotier/hive/internal/optimizer"
 	"github.com/JulienLeotier/hive/internal/storage"
 	"github.com/spf13/cobra"
@@ -65,6 +66,30 @@ var optimizeCmd = &cobra.Command{
 			return nil
 		}
 
+		if apply, _ := cmd.Flags().GetBool("apply"); apply {
+			// Story 20.3: record that the user approved the current tunings.
+			// Actual config-file rewriting is out of scope; we log the decision
+			// so subsequent agents can pick up the approved values from events.
+			tunings, err := an.AutoTune(ctx)
+			if err != nil {
+				return err
+			}
+			bus := event.NewBus(store.DB)
+			for _, t := range tunings {
+				_, _ = bus.Publish(ctx, "system.optimization.applied", "optimize_cli", map[string]any{
+					"setting":   t.Setting,
+					"old_value": t.OldValue,
+					"new_value": t.NewValue,
+					"rationale": t.Rationale,
+				})
+				fmt.Printf("Applied: %s = %.2f (%s)\n", t.Setting, t.NewValue, t.Rationale)
+			}
+			if len(tunings) == 0 {
+				fmt.Println("Nothing to apply — no tunings suggested.")
+			}
+			return nil
+		}
+
 		recs, err := an.Analyze(ctx)
 		if err != nil {
 			return err
@@ -87,6 +112,7 @@ func init() {
 	optimizeCmd.Flags().Bool("json", false, "output in JSON format")
 	optimizeCmd.Flags().Bool("trend", false, "show trend snapshot (current vs previous window)")
 	optimizeCmd.Flags().Bool("auto-tune", false, "suggest configuration tunings based on trends")
+	optimizeCmd.Flags().Bool("apply", false, "emit system.optimization.applied events recording approval of the suggested tunings")
 	optimizeCmd.Flags().Int("window", 7, "analysis window in days (for --trend / --auto-tune)")
 	rootCmd.AddCommand(optimizeCmd)
 }

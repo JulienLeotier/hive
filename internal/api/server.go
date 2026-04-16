@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/JulienLeotier/hive/internal/agent"
+	"github.com/JulienLeotier/hive/internal/auth"
 	"github.com/JulienLeotier/hive/internal/event"
 	"github.com/JulienLeotier/hive/internal/resilience"
 )
@@ -32,6 +33,7 @@ type Server struct {
 	eventBus *event.Bus
 	breakers *resilience.BreakerRegistry
 	keyMgr   *KeyManager
+	users    *auth.UserStore
 	mux      *http.ServeMux
 }
 
@@ -48,17 +50,70 @@ func NewServer(agentMgr *agent.Manager, eventBus *event.Bus, breakers *resilienc
 	return s
 }
 
-func (s *Server) routes() {
-	s.mux.HandleFunc("GET /api/v1/agents", s.handleListAgents)
-	s.mux.HandleFunc("GET /api/v1/events", s.handleListEvents)
-	s.mux.HandleFunc("GET /api/v1/metrics", s.handleMetrics)
-	s.mux.HandleFunc("GET /api/v1/tasks", s.handleListTasks)
-	s.mux.HandleFunc("GET /api/v1/costs", s.handleCosts)
+// WithUsers attaches an RBAC user store so the resolver middleware can map API
+// key names to roles. Story 21.2.
+func (s *Server) WithUsers(users *auth.UserStore) *Server {
+	s.users = users
+	return s
 }
 
-// Handler returns the HTTP handler with auth middleware.
+func (s *Server) routes() {
+	// Read-only endpoints require at least "viewer".
+	s.mux.Handle("GET /api/v1/agents", auth.RBACMiddleware("agents", "read")(http.HandlerFunc(s.handleListAgents)))
+	s.mux.Handle("GET /api/v1/events", auth.RBACMiddleware("events", "read")(http.HandlerFunc(s.handleListEvents)))
+	s.mux.Handle("GET /api/v1/metrics", auth.RBACMiddleware("system", "read")(http.HandlerFunc(s.handleMetrics)))
+	s.mux.Handle("GET /api/v1/tasks", auth.RBACMiddleware("tasks", "read")(http.HandlerFunc(s.handleListTasks)))
+	s.mux.Handle("GET /api/v1/costs", auth.RBACMiddleware("system", "read")(http.HandlerFunc(s.handleCosts)))
+	// Write endpoint: viewers get 403.
+	s.mux.Handle("POST /api/v1/agents", auth.RBACMiddleware("agents", "write")(http.HandlerFunc(s.handleCreateAgent)))
+}
+
+// Handler returns the HTTP handler with auth + role-resolver middleware chained.
+// The role resolver looks up the API key name → role mapping so downstream
+// RBACMiddleware can enforce per-resource rules. If no user store is attached,
+// every authenticated request is treated as an admin (dev mode compatibility).
 func (s *Server) Handler() http.Handler {
-	return AuthMiddleware(s.keyMgr)(s.mux)
+	return AuthMiddleware(s.keyMgr)(s.roleResolver(s.mux))
+}
+
+// roleResolver pulls the API key name set by AuthMiddleware and resolves it to
+// a role (+tenant) via the UserStore; stashes them in context for RBACMiddleware.
+func (s *Server) roleResolver(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ctx := r.Context()
+		if s.users == nil {
+			ctx = auth.WithRole(ctx, auth.RoleAdmin) // no directory → trust the key
+			ctx = auth.WithTenant(ctx, "default")
+			next.ServeHTTP(w, r.WithContext(ctx))
+			return
+		}
+		keyName, _ := ctx.Value(ctxKeyName).(string)
+		if keyName == "" {
+			// AuthMiddleware let a dev-mode request through (no keys configured).
+			ctx = auth.WithRole(ctx, auth.RoleAdmin)
+			ctx = auth.WithTenant(ctx, "default")
+			next.ServeHTTP(w, r.WithContext(ctx))
+			return
+		}
+		user, err := s.users.Get(ctx, keyName)
+		if err != nil {
+			// Key exists but isn't mapped to an RBAC role → viewer by default.
+			ctx = auth.WithRole(ctx, auth.RoleViewer)
+			ctx = auth.WithTenant(ctx, "default")
+		} else {
+			ctx = auth.WithRole(ctx, user.Role)
+			ctx = auth.WithTenant(ctx, user.TenantID)
+		}
+		next.ServeHTTP(w, r.WithContext(ctx))
+	})
+}
+
+// handleCreateAgent is a placeholder write endpoint proving the RBAC flow —
+// reject "viewer", allow "operator"/"admin". Real registration still happens
+// via the CLI (`hive add-agent`); this exists so the authenticated write path
+// is testable end-to-end.
+func (s *Server) handleCreateAgent(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, map[string]string{"status": "accepted"})
 }
 
 // Start runs the HTTP server.

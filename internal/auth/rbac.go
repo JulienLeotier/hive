@@ -1,6 +1,7 @@
 package auth
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 )
@@ -81,4 +82,30 @@ func RBACMiddleware(resource, action string) func(http.Handler) http.Handler {
 
 type contextKeyType string
 
-const ctxRoleKey contextKeyType = "user_role"
+const (
+	ctxRoleKey   contextKeyType = "user_role"
+	ctxTenantKey contextKeyType = "tenant_id"
+)
+
+// WithRole stashes a role in the context so RBACMiddleware can read it.
+// Called by a resolver middleware after authentication.
+func WithRole(ctx context.Context, role Role) context.Context {
+	return context.WithValue(ctx, ctxRoleKey, role)
+}
+
+// WithTenant stashes a tenant id in the context.
+func WithTenant(ctx context.Context, tenantID string) context.Context {
+	return context.WithValue(ctx, ctxTenantKey, tenantID)
+}
+
+// RoleFromContext returns the role stored by WithRole, if any.
+func RoleFromContext(ctx context.Context) (Role, bool) {
+	r, ok := ctx.Value(ctxRoleKey).(Role)
+	return r, ok
+}
+
+// TenantFromContext returns the tenant id stored by WithTenant, if any.
+func TenantFromContext(ctx context.Context) (string, bool) {
+	s, ok := ctx.Value(ctxTenantKey).(string)
+	return s, ok
+}

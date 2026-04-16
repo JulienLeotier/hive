@@ -18,9 +18,10 @@ var federationCmd = &cobra.Command{
 }
 
 var federationAddCmd = &cobra.Command{
-	Use:   "add [name] [url]",
-	Short: "Register a federation link",
-	Args:  cobra.ExactArgs(2),
+	Use:     "add [name] [url]",
+	Aliases: []string{"connect"}, // Story 19.1 AC uses `hive federation connect`
+	Short:   "Register a federation link (alias: connect)",
+	Args:    cobra.ExactArgs(2),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		shared, _ := cmd.Flags().GetString("shared")
 		caFile, _ := cmd.Flags().GetString("ca")

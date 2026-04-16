@@ -180,6 +180,11 @@ func (h *DefaultHandler) Handle(ctx context.Context, agentName string) error {
 
 	if h.bus != nil {
 		_, _ = h.bus.Publish(ctx, WakeUpEventType, agentName, d)
+		if d.Action == "idle" {
+			_, _ = h.bus.Publish(ctx, event.AgentIdle, agentName, map[string]string{
+				"reason": d.Reason,
+			})
+		}
 	}
 	return nil
 }

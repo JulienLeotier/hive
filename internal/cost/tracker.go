@@ -25,9 +25,21 @@ type Summary struct {
 	TaskCount  int     `json:"task_count"`
 }
 
+// PublishFunc is the minimal surface we need from event.Bus; keeps this package
+// from importing event (and making cycles). *event.Bus.Publish satisfies it
+// modulo the return type — wrap with event.PublishFunc(bus.Publish).
+type PublishFunc func(ctx context.Context, eventType, source string, payload any) error
+
 // Tracker manages cost tracking for agents and workflows.
 type Tracker struct {
-	db *sql.DB
+	db  *sql.DB
+	bus PublishFunc
+}
+
+// WithBus installs a publisher so budget breaches emit cost.alert events.
+func (t *Tracker) WithBus(publish PublishFunc) *Tracker {
+	t.bus = publish
+	return t
 }
 
 // NewTracker creates a cost tracker.

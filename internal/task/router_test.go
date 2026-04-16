@@ -128,6 +128,25 @@ func TestReassign(t *testing.T) {
 	assert.Empty(t, agentID)
 }
 
+func TestRouterFallsBackToFederation(t *testing.T) {
+	st, err := storage.Open(t.TempDir())
+	require.NoError(t, err)
+	t.Cleanup(func() { st.Close() })
+	router := NewRouter(st.DB)
+
+	router.WithFederation(func(ctx context.Context, taskType string) (string, string, bool) {
+		if taskType == "exotic-task" {
+			return "peer-hive", "https://peer.example.com", true
+		}
+		return "", "", false
+	})
+
+	id, name, err := router.FindCapableAgent(context.Background(), "exotic-task")
+	require.NoError(t, err)
+	assert.Equal(t, "federation:peer-hive", id)
+	assert.Equal(t, "peer-hive", name)
+}
+
 func TestReassignAgentTasks(t *testing.T) {
 	router := setupRouter(t)
 	ctx := context.Background()

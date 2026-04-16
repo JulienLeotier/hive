@@ -43,6 +43,13 @@ func NewBus(db *sql.DB) *Bus {
 // bus don't need to plumb the *sql.DB separately.
 func (b *Bus) DB() *sql.DB { return b.db }
 
+// PublishErr is a convenience shim for callers that want `error` only
+// (most subscribers don't need the resulting Event).
+func (b *Bus) PublishErr(ctx context.Context, eventType, source string, payload any) error {
+	_, err := b.Publish(ctx, eventType, source, payload)
+	return err
+}
+
 // Publish persists an event to SQLite then delivers it to matching subscribers.
 func (b *Bus) Publish(ctx context.Context, eventType, source string, payload any) (Event, error) {
 	payloadJSON, err := json.Marshal(payload)

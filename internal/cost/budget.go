@@ -75,6 +75,7 @@ func (t *Tracker) ListBudgets(ctx context.Context) ([]Budget, error) {
 }
 
 // EvaluateAlerts returns breach status for every configured budget.
+// When an event bus is attached via WithBus, breaches emit cost.alert events.
 func (t *Tracker) EvaluateAlerts(ctx context.Context) ([]Alert, error) {
 	budgets, err := t.ListBudgets(ctx)
 	if err != nil {
@@ -90,12 +91,20 @@ func (t *Tracker) EvaluateAlerts(ctx context.Context) ([]Alert, error) {
 		if err != nil {
 			return nil, err
 		}
-		alerts = append(alerts, Alert{
+		a := Alert{
 			AgentName:  b.AgentName,
 			DailyLimit: b.DailyLimit,
 			Spend:      spend,
 			Breached:   spend >= b.DailyLimit,
-		})
+		}
+		alerts = append(alerts, a)
+		if a.Breached && t.bus != nil {
+			_ = t.bus(ctx, "cost.alert", "budget_tracker", map[string]any{
+				"agent":       a.AgentName,
+				"daily_limit": a.DailyLimit,
+				"spend":       a.Spend,
+			})
+		}
 	}
 	return alerts, nil
 }

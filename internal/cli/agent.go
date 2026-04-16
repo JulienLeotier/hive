@@ -400,6 +400,61 @@ var agentTrustSetCmd = &cobra.Command{
 	},
 }
 
+var agentStatsCmd = &cobra.Command{
+	Use:   "stats [agent-name]",
+	Short: "Show task stats + bid history + token balance for an agent",
+	Args:  cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		cfg, err := config.Load("hive.yaml")
+		if err != nil {
+			return err
+		}
+		store, err := storage.Open(cfg.DataDir)
+		if err != nil {
+			return err
+		}
+		defer store.Close()
+
+		ctx := context.Background()
+		mgr := agent.NewManager(store.DB)
+		a, err := mgr.GetByName(ctx, args[0])
+		if err != nil {
+			return err
+		}
+
+		// Trust stats
+		engine := trust.NewEngine(store.DB, trust.DefaultThresholds())
+		stats, err := engine.GetStats(ctx, a.ID)
+		if err != nil {
+			return err
+		}
+
+		fmt.Printf("Agent: %s (id=%s)\n", a.Name, a.ID)
+		fmt.Printf("  Health:       %s\n", a.HealthStatus)
+		fmt.Printf("  Trust level:  %s\n", a.TrustLevel)
+		fmt.Printf("  Total tasks:  %d (success=%d, failed=%d)\n", stats.TotalTasks, stats.Successes, stats.Failures)
+		fmt.Printf("  Error rate:   %.2f%%\n", stats.ErrorRate*100)
+
+		// Bid stats (if any)
+		var bidCount, winCount int
+		_ = store.DB.QueryRowContext(ctx,
+			`SELECT COUNT(*), COALESCE(SUM(won), 0) FROM bids WHERE agent_name = ?`,
+			args[0]).Scan(&bidCount, &winCount)
+		if bidCount > 0 {
+			fmt.Printf("  Bids:         %d (won=%d, rate=%.1f%%)\n", bidCount, winCount, float64(winCount)*100/float64(bidCount))
+		}
+
+		// Token balance (if any)
+		var balance float64
+		_ = store.DB.QueryRowContext(ctx,
+			`SELECT COALESCE(balance, 0) FROM agent_tokens WHERE agent_name = ?`, args[0]).Scan(&balance)
+		if balance > 0 {
+			fmt.Printf("  Token balance: %.2f\n", balance)
+		}
+		return nil
+	},
+}
+
 var agentTrustOverrideCmd = &cobra.Command{
 	Use:   "override [agent] [task-type] [level]",
 	Short: "Set a per-task-type trust override",
@@ -533,6 +588,7 @@ func init() {
 	statusCmd.Flags().Bool("costs", false, "include cost rollup and budget alerts")
 
 	agentCmd.AddCommand(agentSwapCmd)
+	agentCmd.AddCommand(agentStatsCmd)
 	agentCmd.AddCommand(agentTrustCmd)
 	agentTrustCmd.AddCommand(agentTrustGetCmd)
 	agentTrustCmd.AddCommand(agentTrustSetCmd)

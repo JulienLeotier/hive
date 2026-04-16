@@ -199,12 +199,19 @@ func formatPayload(whType string, evt event.Event) []byte {
 		data, _ := json.Marshal(msg)
 		return data
 	case "github":
+		clientPayload := map[string]any{
+			"source":  evt.Source,
+			"payload": evt.Payload,
+		}
+		// Story 11.4: surface PR/issue context when the event payload mentions it.
+		// GitHub's repository_dispatch forwards client_payload to any workflow
+		// listening on the matching event_type.
+		for k, v := range extractGitHubContext(evt.Payload) {
+			clientPayload[k] = v
+		}
 		msg := map[string]any{
-			"event_type": evt.Type,
-			"client_payload": map[string]any{
-				"source":  evt.Source,
-				"payload": evt.Payload,
-			},
+			"event_type":     evt.Type,
+			"client_payload": clientPayload,
 		}
 		data, _ := json.Marshal(msg)
 		return data

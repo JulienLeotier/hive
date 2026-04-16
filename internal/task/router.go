@@ -11,10 +11,22 @@ import (
 	"github.com/JulienLeotier/hive/internal/event"
 )
 
+// FederationResolver is consulted when no local agent can satisfy a task.
+// Returning a non-empty hiveName means the task is routable to a federated
+// peer; the router then emits task.federated for the caller to proxy.
+type FederationResolver func(ctx context.Context, taskType string) (hiveName, hiveURL string, ok bool)
+
 // Router matches tasks to capable agents based on declared capabilities.
 type Router struct {
-	db  *sql.DB
-	bus *event.Bus
+	db         *sql.DB
+	bus        *event.Bus
+	federation FederationResolver
+}
+
+// WithFederation installs a cross-hive fallback resolver (Story 19.3).
+func (r *Router) WithFederation(fr FederationResolver) *Router {
+	r.federation = fr
+	return r
 }
 
 // NewRouter creates a task router.
@@ -61,7 +73,28 @@ func (r *Router) FindCapableAgent(ctx context.Context, taskType string) (agentID
 		}
 	}
 
+	// Story 19.3: before giving up, ask the federation resolver for a peer.
+	if r.federation != nil {
+		if hiveName, hiveURL, ok := r.federation(ctx, taskType); ok {
+			if r.bus != nil {
+				_, _ = r.bus.Publish(ctx, event.TaskFederated, "router", map[string]string{
+					"task_type": taskType,
+					"hive_name": hiveName,
+					"hive_url":  hiveURL,
+				})
+			}
+			r.emitRouteDecision(ctx, taskType, "federation:"+hiveName, "federated", considered)
+			return "federation:" + hiveName, hiveName, nil
+		}
+	}
+
 	r.emitRouteDecision(ctx, taskType, "", "no_capable_agent", considered)
+	if r.bus != nil {
+		_, _ = r.bus.Publish(ctx, event.TaskUnroutable, "router", map[string]string{
+			"task_type": taskType,
+			"reason":    "no capable healthy agent",
+		})
+	}
 	return "", "", nil // no capable agent found
 }
 
@@ -141,6 +174,10 @@ func (r *Router) ClaimPendingForAgent(ctx context.Context, agentName string) (st
 	}
 
 	if r.bus != nil {
+		_, _ = r.bus.Publish(ctx, event.TaskSelfAssigned, agentName, map[string]string{
+			"task_id": taskID, "agent": agentName,
+		})
+		// Also emit task.assigned so generic subscribers don't need to track both.
 		_, _ = r.bus.Publish(ctx, event.TaskAssigned, agentName, map[string]string{
 			"task_id": taskID, "agent": agentName, "via": "self-claim",
 		})
