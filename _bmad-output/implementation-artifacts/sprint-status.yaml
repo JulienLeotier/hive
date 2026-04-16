@@ -117,7 +117,7 @@ development_status:
   8-4-event-timeline: done
   8-5-websocket-hub: done
   8-6-cost-tracking-page: done
-  epic-8-retrospective: optional
+  epic-8-retrospective: done
 
   # Epic 9: Graduated Autonomy Engine
   epic-9: done
@@ -125,7 +125,7 @@ development_status:
   9-2-auto-promotion-engine: done
   9-3-per-task-type-overrides: done
   9-4-manual-trust-management: done
-  epic-9-retrospective: optional
+  epic-9-retrospective: done
 
   # Epic 10: Shared Knowledge Layer
   epic-10: done
@@ -133,7 +133,7 @@ development_status:
   10-2-vector-similarity-search: done
   10-3-knowledge-decay-lifecycle: done
   10-4-knowledge-cli: done
-  epic-10-retrospective: optional
+  epic-10-retrospective: done
 
   # Epic 11: Agent Collaboration & Webhooks
   epic-11: done
@@ -141,11 +141,11 @@ development_status:
   11-2-dialog-thread-api-cli: done
   11-3-webhook-configuration: done
   11-4-github-generic-webhook-formats: done
-  epic-11-retrospective: optional
+  epic-11-retrospective: done
 
   # Epic 12: v0.2 Integration & Polish
   epic-12: done
   12-1-v02-migration-schema-update: done
   12-2-integration-test-full-v02-flow: done
   12-3-v02-documentation-update: done
-  epic-12-retrospective: optional
+  epic-12-retrospective: done
