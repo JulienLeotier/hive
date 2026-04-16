@@ -39,8 +39,10 @@ development_status:
   1-4-agent-health-listing: done
   1-5-claude-code-adapter: done
   1-6-mcp-server-adapter: done
-  1-7-api-key-authentication: backlog
+  1-7-api-key-authentication: done
   epic-1-retrospective: optional
+
+  # --- EPIC 1 COMPLETE ---
 
   # Epic 2: Event-Driven Task Orchestration
   epic-2: backlog
