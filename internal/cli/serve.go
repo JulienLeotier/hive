@@ -18,6 +18,7 @@ import (
 	"github.com/JulienLeotier/hive/internal/dashboard"
 	"github.com/JulienLeotier/hive/internal/event"
 	"github.com/JulienLeotier/hive/internal/federation"
+	"github.com/JulienLeotier/hive/internal/knowledge"
 	"github.com/JulienLeotier/hive/internal/resilience"
 	"github.com/JulienLeotier/hive/internal/storage"
 	"github.com/JulienLeotier/hive/internal/task"
@@ -78,6 +79,10 @@ var serveCmd = &cobra.Command{
 
 		// Cost tracker with bus so budget breaches emit cost.alert events.
 		_ = cost.NewTracker(store.DB).WithBus(bus.PublishErr)
+
+		// Story 10.1: auto-record knowledge on every task completion/failure.
+		kStore := knowledge.NewStore(store.DB).WithEmbedder(knowledge.NewHashingEmbedder(128))
+		knowledge.NewAutoRecorder(store.DB, kStore).Attach(bus)
 
 		keyMgr := api.NewKeyManager(store.DB)
 		users := auth.NewUserStore(store.DB)

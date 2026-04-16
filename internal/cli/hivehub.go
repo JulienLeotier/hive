@@ -88,7 +88,7 @@ var installCmd = &cobra.Command{
 
 var publishCmd = &cobra.Command{
 	Use:   "publish [path]",
-	Short: "Package a workflow template into a HiveHub submission manifest",
+	Short: "Package a workflow template into a HiveHub submission manifest (and optionally push it)",
 	Args:  cobra.MaximumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		dir := "."
@@ -106,6 +106,7 @@ var publishCmd = &cobra.Command{
 		author, _ := cmd.Flags().GetString("author")
 		category, _ := cmd.Flags().GetString("category")
 		outFile, _ := cmd.Flags().GetString("out")
+		pushRepo, _ := cmd.Flags().GetString("push")
 
 		if name == "" {
 			return fmt.Errorf("--name is required")
@@ -133,7 +134,20 @@ var publishCmd = &cobra.Command{
 			return err
 		}
 		fmt.Printf("Wrote publication manifest: %s\n", outFile)
-		fmt.Printf("  Open a PR against the HiveHub index with this file.\n")
+
+		// Story 14.1 AC: pushes the package to the HiveHub Git registry.
+		// --push <git-url> clones the registry, drops the manifest in, commits
+		// on a branch, and pushes. The caller opens the PR from there.
+		if pushRepo != "" {
+			if err := hivehub.PushToRegistry(pushRepo, outFile, name, version); err != nil {
+				return fmt.Errorf("push to HiveHub: %w", err)
+			}
+			fmt.Printf("Pushed %s to %s on branch publish/%s-%s\n", outFile, pushRepo, name, version)
+			fmt.Printf("  Open a PR there to land the template.\n")
+			return nil
+		}
+
+		fmt.Printf("  Open a PR against the HiveHub index with this file, or rerun with --push <git-url>.\n")
 		return nil
 	},
 }
@@ -150,6 +164,7 @@ func init() {
 	publishCmd.Flags().String("author", "", "author handle")
 	publishCmd.Flags().String("category", "", "category (e.g., review, pipeline, research)")
 	publishCmd.Flags().String("out", "", "output manifest file path")
+	publishCmd.Flags().String("push", "", "git URL of a HiveHub registry clone to push the manifest to")
 
 	rootCmd.AddCommand(searchCmd)
 	rootCmd.AddCommand(installCmd)

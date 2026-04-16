@@ -68,10 +68,16 @@ var knowledgeSearchCmd = &cobra.Command{
 		}
 		defer store.Close()
 
-		ks := knowledge.NewStore(store.DB)
-		results, err := ks.Search(context.Background(), args[0], limit)
+		// Story 10.4 AC: search returns semantically similar entries — use
+		// vector search when an embedder is available, fall back to keyword.
+		ks := knowledge.NewStore(store.DB).WithEmbedder(knowledge.NewHashingEmbedder(128))
+		results, err := ks.VectorSearch(context.Background(), args[0], limit)
 		if err != nil {
-			return err
+			// Fallback to keyword search if embedder unavailable.
+			results, err = ks.Search(context.Background(), args[0], limit)
+			if err != nil {
+				return err
+			}
 		}
 
 		if jsonOutput {

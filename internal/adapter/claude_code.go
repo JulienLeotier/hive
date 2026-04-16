@@ -4,8 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
+
+	"gopkg.in/yaml.v3"
 )
 
 // ClaudeCodeAdapter wraps a Claude Code skill/workflow as a Hive agent.
@@ -20,11 +24,51 @@ func NewClaudeCodeAdapter(skillPath, name string) *ClaudeCodeAdapter {
 	return &ClaudeCodeAdapter{SkillPath: skillPath, Name: name}
 }
 
+// Declare auto-detects capabilities from the skill definition. Story 1.5 AC:
+// "adapter auto-detects the Claude Code agent's capabilities from its skill
+// definition". Reads AGENT.yaml / .claude/AGENT.yaml / skill.yaml — any
+// YAML with a `capabilities:` list — and falls back to the generic tag.
 func (a *ClaudeCodeAdapter) Declare(ctx context.Context) (AgentCapabilities, error) {
-	return AgentCapabilities{
-		Name:      a.Name,
-		TaskTypes: []string{"claude-code-skill"},
-	}, nil
+	caps := AgentCapabilities{Name: a.Name, TaskTypes: []string{"claude-code-skill"}}
+	candidates := []string{
+		"AGENT.yaml",
+		".claude/AGENT.yaml",
+		"skill.yaml",
+		"skill.md", // Markdown frontmatter fallback
+	}
+	for _, rel := range candidates {
+		path := filepath.Join(a.SkillPath, rel)
+		data, err := os.ReadFile(path)
+		if err != nil {
+			continue
+		}
+		parsed := parseSkillCapabilities(data)
+		if len(parsed) > 0 {
+			caps.TaskTypes = parsed
+			break
+		}
+	}
+	return caps, nil
+}
+
+// parseSkillCapabilities tolerantly pulls a `capabilities:` list out of YAML
+// or the YAML frontmatter of a Markdown file.
+func parseSkillCapabilities(data []byte) []string {
+	// Strip Markdown frontmatter delimiters if present.
+	text := string(data)
+	if strings.HasPrefix(text, "---") {
+		parts := strings.SplitN(text[3:], "---", 2)
+		if len(parts) >= 1 {
+			text = parts[0]
+		}
+	}
+	var parsed struct {
+		Capabilities []string `yaml:"capabilities"`
+	}
+	if err := yaml.Unmarshal([]byte(text), &parsed); err != nil {
+		return nil
+	}
+	return parsed.Capabilities
 }
 
 func (a *ClaudeCodeAdapter) Invoke(ctx context.Context, task Task) (TaskResult, error) {

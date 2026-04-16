@@ -128,17 +128,21 @@ func (e *Engine) executeLevel(ctx context.Context, workflowID string, level []Ta
 	// Story 3.5 branch routing: first evaluate every task's condition so we can
 	// decide which `default: true` siblings should run as the "else" branch.
 	conditionPassed := map[string]bool{} // depsKey → any sibling passed
+	hasCondition := map[string]bool{}    // depsKey → any sibling has a non-empty condition
+	hasDefault := map[string]bool{}      // depsKey → any sibling is default
 	passed := map[string]bool{}          // taskName → included in run
 	for _, td := range level {
+		key := depsKey(td.DependsOn)
 		if td.Default {
+			hasDefault[key] = true
 			continue
 		}
-		key := depsKey(td.DependsOn)
 		if td.Condition == "" {
 			passed[td.Name] = true
 			conditionPassed[key] = true
 			continue
 		}
+		hasCondition[key] = true
 		evalCtx := buildEvalContext(result, td.DependsOn)
 		ok, err := EvaluateCondition(td.Condition, evalCtx)
 		if err != nil {
@@ -156,6 +160,18 @@ func (e *Engine) executeLevel(ctx context.Context, workflowID string, level []Ta
 		}
 		key := depsKey(td.DependsOn)
 		passed[td.Name] = !conditionPassed[key]
+	}
+	// Story 3.5 AC: "missing default branch with unmatched condition produces
+	// clear error". If every sibling had a condition and none passed and no
+	// default is declared, the caller's workflow can't make progress.
+	for key, hasCond := range hasCondition {
+		if !hasCond {
+			continue
+		}
+		if conditionPassed[key] || hasDefault[key] {
+			continue
+		}
+		return fmt.Errorf("workflow branch (deps=%q) has conditions but none matched and no task is marked `default: true`", key)
 	}
 
 	var prepared []preparedTask

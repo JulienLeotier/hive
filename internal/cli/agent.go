@@ -105,16 +105,18 @@ var addAgentCmd = &cobra.Command{
 
 		// Story 1.3 AC: `hive add-agent --name reviewer --config ./agent.yaml` reads
 		// capabilities (and other fields) from a YAML config file.
+		var fileCapabilities []string
 		if configFile != "" {
 			data, err := os.ReadFile(configFile)
 			if err != nil {
 				return fmt.Errorf("reading --config: %w", err)
 			}
 			var fileCfg struct {
-				Name  string `yaml:"name"`
-				Type  string `yaml:"type"`
-				URL   string `yaml:"url"`
-				Path  string `yaml:"path"`
+				Name         string   `yaml:"name"`
+				Type         string   `yaml:"type"`
+				URL          string   `yaml:"url"`
+				Path         string   `yaml:"path"`
+				Capabilities []string `yaml:"capabilities"`
 			}
 			if err := yaml.Unmarshal(data, &fileCfg); err != nil {
 				return fmt.Errorf("parsing --config: %w", err)
@@ -131,6 +133,7 @@ var addAgentCmd = &cobra.Command{
 			if path == "" {
 				path = fileCfg.Path
 			}
+			fileCapabilities = fileCfg.Capabilities
 		}
 
 		if name == "" {
@@ -219,7 +222,12 @@ var addAgentCmd = &cobra.Command{
 			a, err = mgr.RegisterLocal(ctx, name, "openai", assistantID, capsMap)
 
 		case path != "":
-			a, err = mgr.RegisterLocal(ctx, name, agentType, path, nil)
+			// Story 1.3: if --config declared capabilities, feed them into RegisterLocal.
+			var capsMap map[string]any
+			if len(fileCapabilities) > 0 {
+				capsMap = map[string]any{"name": name, "task_types": fileCapabilities}
+			}
+			a, err = mgr.RegisterLocal(ctx, name, agentType, path, capsMap)
 
 		default:
 			a, err = mgr.Register(ctx, name, agentType, url)

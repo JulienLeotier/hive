@@ -5,9 +5,19 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/JulienLeotier/hive/internal/event"
 	"github.com/gorilla/websocket"
+)
+
+// Story 8.5: ping every PingPeriod to detect dead TCP connections, and any
+// client that doesn't pong within PongTimeout is evicted. Tuned to be
+// responsive without hammering healthy clients.
+const (
+	PingPeriod  = 30 * time.Second
+	PongTimeout = 60 * time.Second
+	WriteTimeout = 10 * time.Second
 )
 
 // Hub manages WebSocket connections and broadcasts events to all clients.
@@ -52,6 +62,7 @@ var upgrader = websocket.Upgrader{
 }
 
 // HandleWS upgrades an HTTP connection to WebSocket and registers the client.
+// Story 8.5: runs a ping/pong keepalive; stale connections are evicted.
 func (h *Hub) HandleWS(w http.ResponseWriter, r *http.Request) {
 	conn, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
@@ -67,9 +78,39 @@ func (h *Hub) HandleWS(w http.ResponseWriter, r *http.Request) {
 
 	slog.Debug("websocket client connected", "remote", conn.RemoteAddr())
 
-	// Read loop — just for detecting disconnects
+	// Pong handler resets the read deadline so the next ping has breathing room.
+	_ = conn.SetReadDeadline(time.Now().Add(PongTimeout))
+	conn.SetPongHandler(func(string) error {
+		return conn.SetReadDeadline(time.Now().Add(PongTimeout))
+	})
+
+	done := make(chan struct{})
+
+	// Ping writer — every PingPeriod. If the write fails (TCP dead) we close
+	// the connection which unblocks the read loop and triggers eviction.
+	go func() {
+		ticker := time.NewTicker(PingPeriod)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				c.wmu.Lock()
+				err := c.conn.WriteControl(websocket.PingMessage, nil, time.Now().Add(WriteTimeout))
+				c.wmu.Unlock()
+				if err != nil {
+					c.conn.Close()
+					return
+				}
+			case <-done:
+				return
+			}
+		}
+	}()
+
+	// Read loop — returns when the connection is closed or misses a pong.
 	go func() {
 		defer func() {
+			close(done)
 			h.mu.Lock()
 			delete(h.clients, c)
 			h.mu.Unlock()

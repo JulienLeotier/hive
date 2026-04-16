@@ -73,12 +73,19 @@ var runCmd = &cobra.Command{
 			}
 		}
 
-		if !quiet {
+		// Story 3.3: streaming progress — JSON mode writes one object per event,
+		// text mode pretty-prints each transition in the terminal.
+		if jsonOutput {
+			enc := json.NewEncoder(cmd.OutOrStdout())
+			bus.Subscribe("task", func(e event.Event) {
+				_ = enc.Encode(map[string]any{"kind": "event", "type": e.Type, "source": e.Source, "payload": e.Payload})
+			})
+			bus.Subscribe("workflow", func(e event.Event) {
+				_ = enc.Encode(map[string]any{"kind": "event", "type": e.Type, "source": e.Source, "payload": e.Payload})
+			})
+		} else if !quiet {
 			fmt.Printf("Agents: %d registered\n", len(agents))
 			fmt.Println("---")
-
-			// Story 3.3: real-time progress via bus subscriptions — print each
-			// task state transition as it fires rather than waiting for the end.
 			bus.Subscribe("task", func(e event.Event) {
 				fmt.Printf("[%s] %-18s %s\n", e.CreatedAt.Format("15:04:05"), e.Type, e.Payload)
 			})
@@ -93,7 +100,8 @@ var runCmd = &cobra.Command{
 		elapsed := time.Since(started)
 
 		if jsonOutput {
-			json.NewEncoder(cmd.OutOrStdout()).Encode(map[string]any{
+			_ = json.NewEncoder(cmd.OutOrStdout()).Encode(map[string]any{
+				"kind":        "summary",
 				"result":      result,
 				"duration_ms": elapsed.Milliseconds(),
 			})

@@ -167,30 +167,48 @@ func (r *Router) ClaimPendingForAgent(ctx context.Context, agentName string) (st
 		args = append(args, tt)
 	}
 
+	// Story 4.4 AC: "if the task was already claimed by another agent, the
+	// agent tries the next one". Fetch up to 16 candidates so a lost race
+	// doesn't starve the wake-up cycle.
 	query := fmt.Sprintf(
 		`SELECT id FROM tasks WHERE status = 'pending' AND type IN (%s)
-		 ORDER BY created_at LIMIT 1`, string(placeholders))
+		 ORDER BY created_at LIMIT 16`, string(placeholders))
 
-	var taskID string
-	err = r.db.QueryRowContext(ctx, query, args...).Scan(&taskID)
-	if err == sql.ErrNoRows {
-		return "", nil
-	}
+	candidateRows, err := r.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return "", fmt.Errorf("finding claimable task: %w", err)
 	}
-
-	// Atomic claim — only succeeds if task is still pending
-	res, err := r.db.ExecContext(ctx,
-		`UPDATE tasks SET status = 'assigned', agent_id = ?
-		 WHERE id = ? AND status = 'pending'`, agentID, taskID,
-	)
-	if err != nil {
-		return "", fmt.Errorf("claiming task: %w", err)
+	var candidateIDs []string
+	for candidateRows.Next() {
+		var id string
+		if err := candidateRows.Scan(&id); err == nil {
+			candidateIDs = append(candidateIDs, id)
+		}
 	}
-	n, _ := res.RowsAffected()
-	if n == 0 {
-		return "", nil // lost the race
+	candidateRows.Close()
+
+	if len(candidateIDs) == 0 {
+		return "", nil
+	}
+
+	var taskID string
+	for _, id := range candidateIDs {
+		res, err := r.db.ExecContext(ctx,
+			`UPDATE tasks SET status = 'assigned', agent_id = ?
+			 WHERE id = ? AND status = 'pending'`, agentID, id,
+		)
+		if err != nil {
+			return "", fmt.Errorf("claiming task: %w", err)
+		}
+		n, _ := res.RowsAffected()
+		if n > 0 {
+			taskID = id
+			break
+		}
+		// Lost the race on this one — try the next.
+	}
+	if taskID == "" {
+		return "", nil
 	}
 
 	if r.bus != nil {

@@ -119,6 +119,7 @@ func (s *Store) Start(ctx context.Context, taskID string) error {
 }
 
 // Complete transitions a task to completed with output.
+// Story 2.4 AC: task.completed event includes duration and result summary.
 func (s *Store) Complete(ctx context.Context, taskID, output string) error {
 	result, err := s.db.ExecContext(ctx,
 		`UPDATE tasks SET status = ?, output = ?, completed_at = datetime('now') WHERE id = ? AND status = ?`,
@@ -131,7 +132,29 @@ func (s *Store) Complete(ctx context.Context, taskID, output string) error {
 		return fmt.Errorf("task %s not in running state", taskID)
 	}
 
-	s.bus.Publish(ctx, event.TaskCompleted, "system", map[string]string{"task_id": taskID})
+	// Fetch durations from the row so the event payload is self-contained.
+	var startedAt, completedAt sql.NullString
+	_ = s.db.QueryRowContext(ctx,
+		`SELECT started_at, completed_at FROM tasks WHERE id = ?`, taskID).
+		Scan(&startedAt, &completedAt)
+	durationMs := int64(0)
+	if startedAt.Valid && completedAt.Valid {
+		start, _ := time.Parse("2006-01-02 15:04:05", startedAt.String)
+		end, _ := time.Parse("2006-01-02 15:04:05", completedAt.String)
+		if !start.IsZero() && !end.IsZero() {
+			durationMs = end.Sub(start).Milliseconds()
+		}
+	}
+
+	summary := output
+	if len(summary) > 256 {
+		summary = summary[:256] + "…"
+	}
+	s.bus.Publish(ctx, event.TaskCompleted, "system", map[string]any{
+		"task_id":     taskID,
+		"duration_ms": durationMs,
+		"summary":     summary,
+	})
 	return nil
 }
 
