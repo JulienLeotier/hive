@@ -39,10 +39,11 @@ func (l *Logger) Log(ctx context.Context, action, actor, resource, detail string
 
 // Query returns audit entries matching filters.
 func (l *Logger) Query(ctx context.Context, since time.Time, limit int) ([]Entry, error) {
+	// datetime('now') in SQLite is UTC — normalise the filter to match.
 	rows, err := l.db.QueryContext(ctx,
 		`SELECT id, action, actor, resource, detail, created_at FROM audit_log
 		 WHERE created_at >= ? ORDER BY created_at DESC LIMIT ?`,
-		since.Format("2006-01-02 15:04:05"), limit,
+		since.UTC().Format("2006-01-02 15:04:05"), limit,
 	)
 	if err != nil {
 		return nil, err

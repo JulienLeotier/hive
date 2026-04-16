@@ -26,6 +26,103 @@ func NewAnalyzer(db *sql.DB) *Analyzer {
 	return &Analyzer{db: db}
 }
 
+// TrendSnapshot is the comparative-analysis payload Story 20.1 produces.
+type TrendSnapshot struct {
+	Window        string  `json:"window"`          // e.g., "7d"
+	TasksRun      int     `json:"tasks_run"`
+	TasksFailed   int     `json:"tasks_failed"`
+	FailureRate   float64 `json:"failure_rate"`
+	AvgDurationS  float64 `json:"avg_duration_s"`
+}
+
+// Trend runs a comparative analysis of the current window vs. the previous
+// same-length window, returning deltas so you can spot regressions.
+func (a *Analyzer) Trend(ctx context.Context, windowDays int) (current, previous TrendSnapshot, err error) {
+	if windowDays <= 0 {
+		windowDays = 7
+	}
+	label := fmt.Sprintf("%dd", windowDays)
+	now := time.Now().UTC()
+	startCur := now.AddDate(0, 0, -windowDays)
+	startPrev := startCur.AddDate(0, 0, -windowDays)
+
+	current, err = a.windowSnapshot(ctx, label, startCur, now)
+	if err != nil {
+		return
+	}
+	previous, err = a.windowSnapshot(ctx, label, startPrev, startCur)
+	return
+}
+
+func (a *Analyzer) windowSnapshot(ctx context.Context, label string, from, to time.Time) (TrendSnapshot, error) {
+	snap := TrendSnapshot{Window: label}
+
+	fmtTime := func(t time.Time) string { return t.Format("2006-01-02 15:04:05") }
+
+	err := a.db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM tasks WHERE created_at >= ? AND created_at <= ?
+		 AND status IN ('completed','failed')`,
+		fmtTime(from), fmtTime(to)).Scan(&snap.TasksRun)
+	if err != nil {
+		return snap, err
+	}
+
+	if err := a.db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM tasks WHERE created_at >= ? AND created_at <= ? AND status = 'failed'`,
+		fmtTime(from), fmtTime(to)).Scan(&snap.TasksFailed); err != nil {
+		return snap, err
+	}
+
+	if snap.TasksRun > 0 {
+		snap.FailureRate = float64(snap.TasksFailed) / float64(snap.TasksRun)
+	}
+
+	_ = a.db.QueryRowContext(ctx,
+		`SELECT COALESCE(AVG((JULIANDAY(completed_at) - JULIANDAY(started_at)) * 86400), 0)
+		 FROM tasks WHERE status = 'completed' AND started_at IS NOT NULL AND completed_at IS NOT NULL
+		 AND created_at >= ? AND created_at <= ?`,
+		fmtTime(from), fmtTime(to)).Scan(&snap.AvgDurationS)
+
+	return snap, nil
+}
+
+// Tuning is the outcome of an auto-tune pass. Story 20.3.
+type Tuning struct {
+	Setting   string  `json:"setting"`
+	OldValue  float64 `json:"old_value"`
+	NewValue  float64 `json:"new_value"`
+	Rationale string  `json:"rationale"`
+}
+
+// AutoTune derives tuning suggestions from the latest trend snapshot.
+// Suggestions only — callers decide whether to apply them.
+func (a *Analyzer) AutoTune(ctx context.Context) ([]Tuning, error) {
+	cur, prev, err := a.Trend(ctx, 7)
+	if err != nil {
+		return nil, err
+	}
+	var tunings []Tuning
+	// Failure rate regressions → propose lowering breaker threshold.
+	if cur.FailureRate > prev.FailureRate+0.05 {
+		tunings = append(tunings, Tuning{
+			Setting:   "resilience.breaker.threshold",
+			OldValue:  3,
+			NewValue:  2,
+			Rationale: fmt.Sprintf("failure rate rose from %.1f%% to %.1f%%", prev.FailureRate*100, cur.FailureRate*100),
+		})
+	}
+	// Latency regressions → propose longer retry backoff.
+	if prev.AvgDurationS > 0 && cur.AvgDurationS > prev.AvgDurationS*1.5 {
+		tunings = append(tunings, Tuning{
+			Setting:   "resilience.retry.max_wait_seconds",
+			OldValue:  2,
+			NewValue:  5,
+			Rationale: fmt.Sprintf("avg task duration rose from %.1fs to %.1fs", prev.AvgDurationS, cur.AvgDurationS),
+		})
+	}
+	return tunings, nil
+}
+
 // Analyze runs pattern detection and returns recommendations.
 func (a *Analyzer) Analyze(ctx context.Context) ([]Recommendation, error) {
 	var recs []Recommendation

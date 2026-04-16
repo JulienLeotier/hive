@@ -97,6 +97,69 @@ hive validate [workflow-file]
 
 Defaults to `hive.yaml`. Checks syntax, required fields, dependency references, and circular dependencies (Kahn's algorithm). Reports task count and parallel execution levels.
 
+## hive agent swap / trust
+
+```
+hive agent swap <old> <new>          # reassigns in-flight tasks and marks old unavailable
+hive agent trust get <name>          # show trust level + stats
+hive agent trust set <name> <level>  # supervised|guided|autonomous|trusted
+hive agent trust override <name> <task-type> <level>
+hive agent trust clear-override <name> <task-type>
+```
+
+## hive auction / wallet (v1.0)
+
+```
+hive auction open <task-id> [--strategy lowest-cost|fastest|best-reputation]
+hive auction close <auction-id>
+hive wallet balance <agent>
+hive wallet credit <agent> <amount>
+```
+
+## hive federation (v1.0)
+
+```
+hive federation add <name> <url> [--shared <caps>] [--ca <pem>] [--cert <pem>] [--key <pem>]
+hive federation list
+hive federation remove <name>
+```
+
+Use `--ca/--cert/--key` for mTLS authentication against a peer Hive.
+
+## hive optimize (v1.0)
+
+```
+hive optimize                 # show optimisation recommendations
+hive optimize --trend         # current vs previous window stats
+hive optimize --auto-tune     # suggested config tunings
+hive optimize --json          # emit machine-readable output
+```
+
+## hive audit / users (v1.0)
+
+```
+hive audit list [--since 24h] [--format table|json|csv]
+hive audit export <path> [--since 30d]
+hive users add <subject> <role> [--tenant default]
+hive users list
+```
+
+## hive search / install / publish (v0.3)
+
+```
+hive search [query]                      # search HiveHub for templates
+hive install <name> [--dest <path>]      # install a HiveHub template
+hive publish <path> --name <name> [--version x.y.z]
+```
+
+## hive budget
+
+```
+hive budget set <agent> <daily-limit-usd>
+hive budget list
+hive budget remove <agent>
+```
+
 ## hive version
 
 Print version, Go version, and OS/arch. Source: `internal/cli/version.go`
