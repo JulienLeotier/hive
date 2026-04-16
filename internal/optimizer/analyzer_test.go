@@ -43,6 +43,71 @@ func TestTrendReportsCounts(t *testing.T) {
 	assert.InDelta(t, 1.0/3.0, cur.FailureRate, 0.01)
 }
 
+func TestAnalyzeRunsWithoutError(t *testing.T) {
+	a := setupAnalyzer(t)
+	// Seed enough history that each heuristic has something to chew on.
+	now := time.Now().UTC().Format("2006-01-02 15:04:05")
+	for i := 0; i < 6; i++ {
+		_, _ = a.db.Exec(
+			`INSERT INTO tasks (id, workflow_id, type, status, agent_id, input, started_at, completed_at, created_at)
+			 VALUES (?, 'w', 'x', 'completed', 'a1', '{}', ?, ?, ?)`,
+			"slow-"+string(rune('a'+i)), now, now, now)
+	}
+	_, _ = a.db.Exec(
+		`INSERT INTO agents (id, name, type, config, capabilities, health_status)
+		 VALUES ('a1','slow','http','{}','{}','healthy')`)
+
+	recs, err := a.Analyze(context.Background())
+	require.NoError(t, err)
+	// Can't assert specific recommendations — heuristics depend on duration
+	// distribution — but the call must succeed.
+	_ = recs
+}
+
+func TestComparativeSlowdownDetectsFasterPeer(t *testing.T) {
+	a := setupAnalyzer(t)
+	now := time.Now().UTC()
+
+	// Two agents on the same task type; slow averages ~3× faster.
+	_, _ = a.db.Exec(`INSERT INTO agents (id, name, type, config, capabilities, health_status) VALUES ('a1','slow','http','{}','{}','healthy'), ('a2','fast','http','{}','{}','healthy')`)
+	fmt := func(t time.Time) string { return t.Format("2006-01-02 15:04:05") }
+
+	// 6 slow runs at ~30s
+	for i := 0; i < 6; i++ {
+		start := now.Add(-time.Duration(i) * time.Hour)
+		_, _ = a.db.Exec(
+			`INSERT INTO tasks (id, workflow_id, type, status, agent_id, input, started_at, completed_at, created_at)
+			 VALUES (?, 'w', 'code-review', 'completed', 'a1', '{}', ?, ?, ?)`,
+			"s-"+string(rune('a'+i)), fmt(start), fmt(start.Add(30*time.Second)), fmt(start))
+	}
+	// 6 fast runs at ~5s
+	for i := 0; i < 6; i++ {
+		start := now.Add(-time.Duration(i) * time.Hour)
+		_, _ = a.db.Exec(
+			`INSERT INTO tasks (id, workflow_id, type, status, agent_id, input, started_at, completed_at, created_at)
+			 VALUES (?, 'w', 'code-review', 'completed', 'a2', '{}', ?, ?, ?)`,
+			"f-"+string(rune('a'+i)), fmt(start), fmt(start.Add(5*time.Second)), fmt(start))
+	}
+
+	recs, err := a.findComparativeSlowdowns(context.Background())
+	require.NoError(t, err)
+	require.NotEmpty(t, recs, "slow agent must be flagged against fast peer")
+	assert.Equal(t, "comparative-slowdown", recs[0].Type)
+}
+
+func TestSnapshotAndCompareBaseline(t *testing.T) {
+	a := setupAnalyzer(t)
+	ctx := context.Background()
+
+	baseline, err := a.SnapshotBaseline(ctx, 7, "initial")
+	require.NoError(t, err)
+	assert.Equal(t, "initial", baseline.Description)
+
+	delta, err := a.CompareToBaseline(ctx, baseline, 7)
+	require.NoError(t, err)
+	assert.True(t, delta.Improved, "fresh snapshot vs itself should be a tie / improved")
+}
+
 func TestAutoTuneReturnsSuggestionWhenFailureSpikes(t *testing.T) {
 	a := setupAnalyzer(t)
 	now := time.Now().UTC().Format("2006-01-02 15:04:05")
