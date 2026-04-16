@@ -5,10 +5,18 @@
 
 	async function loadMetrics() {
 		try {
-			const res = await fetch('/api/v1/metrics');
-			const json = await res.json();
-			if (json.data) {
-				agentCount = json.data.agents?.total ?? 0;
+			const [metricsRes, eventsRes] = await Promise.all([
+				fetch('/api/v1/metrics'),
+				fetch('/api/v1/events?limit=0')
+			]);
+			const metrics = await metricsRes.json();
+			const events = await eventsRes.json();
+			if (metrics.data) {
+				agentCount = metrics.data.agents?.total ?? 0;
+			}
+			if (events.data) {
+				eventCount = events.data?.length ?? 0;
+				taskCount = events.data?.filter((e: any) => e.type?.startsWith('task.')).length ?? 0;
 			}
 		} catch {
 			// API not available yet
@@ -41,18 +49,10 @@
 		</div>
 	</div>
 
-	<nav>
-		<a href="/agents">Agents</a>
-		<a href="/tasks">Tasks</a>
-		<a href="/events">Events</a>
-	</nav>
 </main>
 
 <style>
 	main {
-		max-width: 800px;
-		margin: 0 auto;
-		padding: 2rem;
 		font-family: system-ui, -apple-system, sans-serif;
 	}
 	h1 { margin-bottom: 0.25rem; }

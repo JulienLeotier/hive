@@ -33,7 +33,6 @@
 
 <main>
 	<h1>Agents</h1>
-	<a href="/">&larr; Dashboard</a>
 
 	{#if agents.length === 0}
 		<p class="empty">No agents registered. Use <code>hive add-agent</code> to register one.</p>
@@ -68,7 +67,7 @@
 </main>
 
 <style>
-	main { max-width: 1000px; margin: 0 auto; padding: 2rem; font-family: system-ui, sans-serif; }
+	main { font-family: system-ui, sans-serif; }
 	table { width: 100%; border-collapse: collapse; margin-top: 1rem; }
 	th, td { padding: 0.75rem; text-align: left; border-bottom: 1px solid #eee; }
 	th { font-weight: 600; color: #666; }

@@ -34,8 +34,7 @@
 </script>
 
 <main>
-	<h1>Task Events</h1>
-	<a href="/">&larr; Dashboard</a>
+	<h1>Tasks</h1>
 
 	{#if tasks.length === 0}
 		<p class="empty">No task events yet.</p>
@@ -59,7 +58,7 @@
 </main>
 
 <style>
-	main { max-width: 1000px; margin: 0 auto; padding: 2rem; font-family: system-ui, sans-serif; }
+	main { font-family: system-ui, sans-serif; }
 	table { width: 100%; border-collapse: collapse; margin-top: 1rem; }
 	th, td { padding: 0.75rem; text-align: left; border-bottom: 1px solid #eee; }
 	th { font-weight: 600; color: #666; }
