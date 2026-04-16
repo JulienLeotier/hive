@@ -55,13 +55,13 @@ development_status:
   epic-2-retrospective: optional
 
   # Epic 3: Workflow Definition & Execution
-  epic-3: backlog
-  3-1-yaml-workflow-parser: backlog
-  3-2-dag-dependency-resolution: backlog
-  3-3-workflow-execution-engine: backlog
-  3-4-event-triggers: backlog
-  3-5-conditional-routing: backlog
-  3-6-workflow-validation: backlog
+  epic-3: done
+  3-1-yaml-workflow-parser: done
+  3-2-dag-dependency-resolution: done
+  3-3-workflow-execution-engine: done
+  3-4-event-triggers: done
+  3-5-conditional-routing: done
+  3-6-workflow-validation: done
   epic-3-retrospective: optional
 
   # Epic 4: Agent Autonomy & Self-Direction
