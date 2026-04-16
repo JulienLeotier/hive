@@ -120,11 +120,11 @@ development_status:
   epic-8-retrospective: optional
 
   # Epic 9: Graduated Autonomy Engine
-  epic-9: backlog
-  9-1-trust-level-tracking: backlog
-  9-2-auto-promotion-engine: backlog
-  9-3-per-task-type-overrides: backlog
-  9-4-manual-trust-management: backlog
+  epic-9: done
+  9-1-trust-level-tracking: done
+  9-2-auto-promotion-engine: done
+  9-3-per-task-type-overrides: done
+  9-4-manual-trust-management: done
   epic-9-retrospective: optional
 
   # Epic 10: Shared Knowledge Layer
