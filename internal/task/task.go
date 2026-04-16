@@ -154,13 +154,44 @@ func (s *Store) Fail(ctx context.Context, taskID, errMsg string) error {
 	return nil
 }
 
-// SaveCheckpoint stores a checkpoint for a running task.
+// SaveCheckpoint stores a checkpoint for a running task and stamps its timestamp.
 func (s *Store) SaveCheckpoint(ctx context.Context, taskID, checkpoint string) error {
 	_, err := s.db.ExecContext(ctx,
-		`UPDATE tasks SET checkpoint = ? WHERE id = ?`,
+		`UPDATE tasks SET checkpoint = ?, checkpoint_at = datetime('now') WHERE id = ?`,
 		checkpoint, taskID,
 	)
 	return err
+}
+
+// StaleRunningTasks returns running tasks whose checkpoint is older than maxAge
+// (or whose task was started but never checkpointed).
+func (s *Store) StaleRunningTasks(ctx context.Context, maxAge time.Duration) ([]Task, error) {
+	cutoff := time.Now().Add(-maxAge).UTC().Format("2006-01-02 15:04:05")
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT id, workflow_id, type, status, COALESCE(agent_id,''), input, COALESCE(checkpoint,''),
+		 COALESCE(started_at, created_at), COALESCE(checkpoint_at, started_at, created_at)
+		 FROM tasks
+		 WHERE status = 'running'
+		   AND COALESCE(checkpoint_at, started_at, created_at) < ?`, cutoff)
+	if err != nil {
+		return nil, fmt.Errorf("querying stale tasks: %w", err)
+	}
+	defer rows.Close()
+
+	var tasks []Task
+	for rows.Next() {
+		var t Task
+		var startedStr, cpStr string
+		if err := rows.Scan(&t.ID, &t.WorkflowID, &t.Type, &t.Status, &t.AgentID,
+			&t.Input, &t.Checkpoint, &startedStr, &cpStr); err != nil {
+			return nil, err
+		}
+		if ts, err := time.Parse("2006-01-02 15:04:05", startedStr); err == nil {
+			t.StartedAt = &ts
+		}
+		tasks = append(tasks, t)
+	}
+	return tasks, rows.Err()
 }
 
 // GetByID retrieves a task by ID.

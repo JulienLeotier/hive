@@ -17,6 +17,7 @@ import (
 	"github.com/JulienLeotier/hive/internal/event"
 	"github.com/JulienLeotier/hive/internal/resilience"
 	"github.com/JulienLeotier/hive/internal/storage"
+	"github.com/JulienLeotier/hive/internal/task"
 	"github.com/JulienLeotier/hive/internal/ws"
 	"github.com/spf13/cobra"
 )
@@ -39,6 +40,20 @@ var serveCmd = &cobra.Command{
 		mgr := agent.NewManager(store.DB)
 		bus := event.NewBus(store.DB)
 		breakers := resilience.NewBreakerRegistry(resilience.DefaultBreakerConfig())
+		router := task.NewRouter(store.DB).WithBus(bus)
+
+		// Auto-isolate agents and failover their tasks when the breaker opens.
+		watcher := agent.NewHealthWatcher(mgr, router, bus)
+		breakers.OnStateChange(watcher.Hook())
+
+		// Periodic checkpoint supervisor — reassigns tasks whose checkpoint has gone stale.
+		taskStore := task.NewStore(store.DB, bus)
+		supervisorCtx, supervisorCancel := context.WithCancel(context.Background())
+		defer supervisorCancel()
+		supervisor := task.NewCheckpointSupervisor(taskStore, router, 30*time.Second, 5*time.Minute)
+		supervisor.Start(supervisorCtx)
+		defer supervisor.Stop()
+
 		keyMgr := api.NewKeyManager(store.DB)
 
 		srv := api.NewServer(mgr, bus, breakers, keyMgr)

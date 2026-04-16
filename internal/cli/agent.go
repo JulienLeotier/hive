@@ -7,7 +7,9 @@ import (
 
 	"github.com/JulienLeotier/hive/internal/agent"
 	"github.com/JulienLeotier/hive/internal/config"
+	"github.com/JulienLeotier/hive/internal/event"
 	"github.com/JulienLeotier/hive/internal/storage"
+	"github.com/JulienLeotier/hive/internal/task"
 	"github.com/spf13/cobra"
 )
 
@@ -119,6 +121,63 @@ var statusCmd = &cobra.Command{
 	},
 }
 
+var agentCmd = &cobra.Command{
+	Use:   "agent",
+	Short: "Manage agents",
+}
+
+var agentSwapCmd = &cobra.Command{
+	Use:   "swap [old-name] [new-name]",
+	Short: "Swap a failing agent for a replacement — reassigns in-flight tasks",
+	Args:  cobra.ExactArgs(2),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		oldName, newName := args[0], args[1]
+
+		cfg, err := config.Load("hive.yaml")
+		if err != nil {
+			return err
+		}
+		store, err := storage.Open(cfg.DataDir)
+		if err != nil {
+			return err
+		}
+		defer store.Close()
+
+		mgr := agent.NewManager(store.DB)
+		ctx := context.Background()
+
+		if _, err := mgr.GetByName(ctx, oldName); err != nil {
+			return fmt.Errorf("old agent: %w", err)
+		}
+		replacement, err := mgr.GetByName(ctx, newName)
+		if err != nil {
+			return fmt.Errorf("replacement agent: %w", err)
+		}
+		if replacement.HealthStatus != "healthy" {
+			return fmt.Errorf("replacement agent %s is not healthy (%s)", newName, replacement.HealthStatus)
+		}
+
+		bus := event.NewBus(store.DB)
+		router := task.NewRouter(store.DB).WithBus(bus)
+
+		n, err := router.ReassignAgentTasks(ctx, oldName, "agent swap → "+newName)
+		if err != nil {
+			return fmt.Errorf("reassigning tasks: %w", err)
+		}
+
+		if err := mgr.UpdateHealth(ctx, oldName, "unavailable"); err != nil {
+			return fmt.Errorf("marking old agent unavailable: %w", err)
+		}
+
+		_, _ = bus.Publish(ctx, "agent.swapped", "cli", map[string]string{
+			"from": oldName, "to": newName,
+		})
+
+		fmt.Printf("Swapped %s → %s (%d tasks reassigned)\n", oldName, newName, n)
+		return nil
+	},
+}
+
 func init() {
 	addAgentCmd.Flags().String("name", "", "agent name (required)")
 	addAgentCmd.Flags().String("type", "http", "agent type (http, claude-code, mcp)")
@@ -126,7 +185,10 @@ func init() {
 
 	statusCmd.Flags().Bool("json", false, "output in JSON format")
 
+	agentCmd.AddCommand(agentSwapCmd)
+
 	rootCmd.AddCommand(addAgentCmd)
 	rootCmd.AddCommand(removeAgentCmd)
 	rootCmd.AddCommand(statusCmd)
+	rootCmd.AddCommand(agentCmd)
 }

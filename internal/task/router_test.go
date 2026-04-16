@@ -77,3 +77,71 @@ func TestFindCapableAgentNoneAvailable(t *testing.T) {
 	assert.Empty(t, id)
 	assert.Empty(t, name)
 }
+
+func TestClaimPendingForAgent(t *testing.T) {
+	router := setupRouter(t)
+	ctx := context.Background()
+
+	// Insert one pending task the reviewer can handle
+	_, err := router.db.ExecContext(ctx,
+		`INSERT INTO tasks (id, workflow_id, type, status, input) VALUES ('t1','w1','code-review','pending','{}')`)
+	require.NoError(t, err)
+
+	id, err := router.ClaimPendingForAgent(ctx, "reviewer")
+	require.NoError(t, err)
+	assert.Equal(t, "t1", id)
+
+	// Second claim should return empty — task already assigned
+	id2, err := router.ClaimPendingForAgent(ctx, "reviewer")
+	require.NoError(t, err)
+	assert.Empty(t, id2)
+}
+
+func TestClaimPendingSkipsIncapableTypes(t *testing.T) {
+	router := setupRouter(t)
+	ctx := context.Background()
+
+	_, err := router.db.ExecContext(ctx,
+		`INSERT INTO tasks (id, workflow_id, type, status, input) VALUES ('t1','w1','deploy','pending','{}')`)
+	require.NoError(t, err)
+
+	id, err := router.ClaimPendingForAgent(ctx, "reviewer")
+	require.NoError(t, err)
+	assert.Empty(t, id)
+}
+
+func TestReassign(t *testing.T) {
+	router := setupRouter(t)
+	ctx := context.Background()
+
+	_, err := router.db.ExecContext(ctx,
+		`INSERT INTO tasks (id, workflow_id, type, status, agent_id, input)
+		 VALUES ('t1','w1','code-review','running','a1','{}')`)
+	require.NoError(t, err)
+
+	require.NoError(t, router.Reassign(ctx, "t1", "agent isolated"))
+
+	var status, agentID string
+	router.db.QueryRowContext(ctx, `SELECT status, COALESCE(agent_id,'') FROM tasks WHERE id='t1'`).
+		Scan(&status, &agentID)
+	assert.Equal(t, "pending", status)
+	assert.Empty(t, agentID)
+}
+
+func TestReassignAgentTasks(t *testing.T) {
+	router := setupRouter(t)
+	ctx := context.Background()
+
+	router.db.ExecContext(ctx, `INSERT INTO tasks (id, workflow_id, type, status, agent_id, input) VALUES ('t1','w1','code-review','assigned','a1','{}')`)
+	router.db.ExecContext(ctx, `INSERT INTO tasks (id, workflow_id, type, status, agent_id, input) VALUES ('t2','w1','lint','running','a1','{}')`)
+	router.db.ExecContext(ctx, `INSERT INTO tasks (id, workflow_id, type, status, agent_id, input) VALUES ('t3','w1','summarize','assigned','a2','{}')`)
+
+	n, err := router.ReassignAgentTasks(ctx, "reviewer", "agent swap")
+	require.NoError(t, err)
+	assert.Equal(t, 2, n)
+
+	// Writer's task untouched
+	var status string
+	router.db.QueryRowContext(ctx, `SELECT status FROM tasks WHERE id='t3'`).Scan(&status)
+	assert.Equal(t, "assigned", status)
+}
