@@ -73,11 +73,16 @@ func (m *Manager) Register(ctx context.Context, name, agentType, baseURL string)
 	}, nil
 }
 
-// List returns all registered agents.
+// List returns registered agents with a default limit of 1000.
 func (m *Manager) List(ctx context.Context) ([]Agent, error) {
+	return m.ListWithLimit(ctx, 1000)
+}
+
+// ListWithLimit returns registered agents up to the given limit.
+func (m *Manager) ListWithLimit(ctx context.Context, limit int) ([]Agent, error) {
 	rows, err := m.db.QueryContext(ctx,
 		`SELECT id, name, type, config, capabilities, health_status, trust_level, created_at, updated_at
-		 FROM agents ORDER BY name`,
+		 FROM agents ORDER BY name LIMIT ?`, limit,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("listing agents: %w", err)

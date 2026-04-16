@@ -73,8 +73,10 @@ func (b *Bus) Query(ctx context.Context, opts QueryOpts) ([]Event, error) {
 	var args []any
 
 	if opts.Type != "" {
-		query += ` AND type LIKE ?`
-		args = append(args, opts.Type+"%")
+		// Escape LIKE wildcards in user input to prevent unintended broadening
+		escaped := strings.NewReplacer("%", "\\%", "_", "\\_").Replace(opts.Type)
+		query += ` AND type LIKE ? ESCAPE '\'`
+		args = append(args, escaped+"%")
 	}
 	if opts.Source != "" {
 		query += ` AND source = ?`

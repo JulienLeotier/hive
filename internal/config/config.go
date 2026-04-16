@@ -19,7 +19,10 @@ type Config struct {
 
 // Default returns a Config with sensible defaults.
 func Default() Config {
-	home, _ := os.UserHomeDir()
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		home = "/tmp"
+	}
 	return Config{
 		LogLevel: "info",
 		DataDir:  filepath.Join(home, ".hive", "data"),

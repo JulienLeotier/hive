@@ -108,10 +108,10 @@ func (s *Store) GetByID(ctx context.Context, id string) (*Workflow, error) {
 	return &w, nil
 }
 
-// List returns all workflows.
+// List returns workflows with a default limit of 1000.
 func (s *Store) List(ctx context.Context) ([]Workflow, error) {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT id, name, config, status, created_at FROM workflows ORDER BY created_at DESC`,
+		`SELECT id, name, config, status, created_at FROM workflows ORDER BY created_at DESC LIMIT 1000`,
 	)
 	if err != nil {
 		return nil, err

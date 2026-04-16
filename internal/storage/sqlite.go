@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/JulienLeotier/hive/internal/storage/migrations"
@@ -91,11 +92,15 @@ func (s *Store) migrate() error {
 	}
 	sort.Strings(files)
 
-	for i, f := range files {
-		version := i + 1
+	for _, f := range files {
+		// Parse version from filename (e.g., "001_initial.sql" → 1)
+		version, err := parseVersion(f)
+		if err != nil {
+			return fmt.Errorf("parsing migration filename %s: %w", f, err)
+		}
 
 		var exists int
-		err := s.DB.QueryRow("SELECT COUNT(*) FROM schema_versions WHERE version = ?", version).Scan(&exists)
+		err = s.DB.QueryRow("SELECT COUNT(*) FROM schema_versions WHERE version = ?", version).Scan(&exists)
 		if err != nil {
 			return fmt.Errorf("checking migration version %d: %w", version, err)
 		}
@@ -138,4 +143,17 @@ func (s *Store) migrate() error {
 	}
 
 	return nil
+}
+
+// parseVersion extracts the version number from a migration filename like "001_initial.sql".
+func parseVersion(filename string) (int, error) {
+	parts := strings.SplitN(filename, "_", 2)
+	if len(parts) == 0 {
+		return 0, fmt.Errorf("invalid migration filename: %s", filename)
+	}
+	v, err := strconv.Atoi(parts[0])
+	if err != nil {
+		return 0, fmt.Errorf("invalid version number in %s: %w", filename, err)
+	}
+	return v, nil
 }
