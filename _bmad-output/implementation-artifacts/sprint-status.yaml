@@ -128,24 +128,24 @@ development_status:
   epic-9-retrospective: optional
 
   # Epic 10: Shared Knowledge Layer
-  epic-10: backlog
-  10-1-knowledge-store-crud: backlog
-  10-2-vector-similarity-search: backlog
-  10-3-knowledge-decay-lifecycle: backlog
-  10-4-knowledge-cli: backlog
+  epic-10: done
+  10-1-knowledge-store-crud: done
+  10-2-vector-similarity-search: done
+  10-3-knowledge-decay-lifecycle: done
+  10-4-knowledge-cli: done
   epic-10-retrospective: optional
 
   # Epic 11: Agent Collaboration & Webhooks
-  epic-11: backlog
-  11-1-dialog-thread-management: backlog
-  11-2-dialog-thread-api-cli: backlog
-  11-3-webhook-configuration: backlog
-  11-4-github-generic-webhook-formats: backlog
+  epic-11: done
+  11-1-dialog-thread-management: done
+  11-2-dialog-thread-api-cli: done
+  11-3-webhook-configuration: done
+  11-4-github-generic-webhook-formats: done
   epic-11-retrospective: optional
 
   # Epic 12: v0.2 Integration & Polish
-  epic-12: backlog
-  12-1-v02-migration-schema-update: backlog
-  12-2-integration-test-full-v02-flow: backlog
-  12-3-v02-documentation-update: backlog
+  epic-12: done
+  12-1-v02-migration-schema-update: done
+  12-2-integration-test-full-v02-flow: done
+  12-3-v02-documentation-update: done
   epic-12-retrospective: optional
