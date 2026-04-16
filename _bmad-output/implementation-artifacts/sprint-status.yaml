@@ -1,0 +1,104 @@
+# generated: 2026-04-16
+# last_updated: 2026-04-16
+# project: hive
+# project_key: NOKEY
+# tracking_system: file-system
+# story_location: _bmad-output/implementation-artifacts
+
+# STATUS DEFINITIONS:
+# ==================
+# Epic Status:
+#   - backlog: Epic not yet started
+#   - in-progress: Epic actively being worked on
+#   - done: All stories in epic completed
+#
+# Story Status:
+#   - backlog: Story only exists in epic file
+#   - ready-for-dev: Story file created in stories folder
+#   - in-progress: Developer actively working on implementation
+#   - review: Ready for code review
+#   - done: Story completed
+#
+# Retrospective Status:
+#   - optional: Can be completed but not required
+#   - done: Retrospective has been completed
+
+generated: 2026-04-16
+last_updated: 2026-04-16
+project: hive
+project_key: NOKEY
+tracking_system: file-system
+story_location: _bmad-output/implementation-artifacts
+
+development_status:
+  # Epic 1: Agent Registration & Communication
+  epic-1: in-progress
+  1-1-project-bootstrap-storage-layer: done
+  1-2-agent-adapter-protocol-http-implementation: backlog
+  1-3-agent-registration-via-cli: backlog
+  1-4-agent-health-listing: backlog
+  1-5-claude-code-adapter: backlog
+  1-6-mcp-server-adapter: backlog
+  1-7-api-key-authentication: backlog
+  epic-1-retrospective: optional
+
+  # Epic 2: Event-Driven Task Orchestration
+  epic-2: backlog
+  2-1-event-bus-persistence: backlog
+  2-2-task-state-machine: backlog
+  2-3-capability-based-task-routing: backlog
+  2-4-task-execution-result-passing: backlog
+  2-5-parallel-task-execution: backlog
+  2-6-task-checkpoint-resume: backlog
+  epic-2-retrospective: optional
+
+  # Epic 3: Workflow Definition & Execution
+  epic-3: backlog
+  3-1-yaml-workflow-parser: backlog
+  3-2-dag-dependency-resolution: backlog
+  3-3-workflow-execution-engine: backlog
+  3-4-event-triggers: backlog
+  3-5-conditional-routing: backlog
+  3-6-workflow-validation: backlog
+  epic-3-retrospective: optional
+
+  # Epic 4: Agent Autonomy & Self-Direction
+  epic-4: backlog
+  4-1-agent-identity-behavioral-plan-parser: backlog
+  4-2-heartbeat-scheduler: backlog
+  4-3-state-observer: backlog
+  4-4-task-self-assignment: backlog
+  4-5-idle-detection-busywork-prevention: backlog
+  4-6-wake-up-decision-logging: backlog
+  epic-4-retrospective: optional
+
+  # Epic 5: Resilience & Self-Healing
+  epic-5: backlog
+  5-1-circuit-breaker: backlog
+  5-2-agent-auto-isolation: backlog
+  5-3-task-failover: backlog
+  5-4-agent-hot-swap: backlog
+  5-5-retry-policies-error-messages: backlog
+  epic-5-retrospective: optional
+
+  # Epic 6: Observability & Monitoring
+  epic-6: backlog
+  6-1-hive-status-command: backlog
+  6-2-log-querying: backlog
+  6-3-task-execution-timeline: backlog
+  6-4-metrics-endpoint: backlog
+  6-5-orchestration-decision-logging: backlog
+  epic-6-retrospective: optional
+
+  # Epic 7: CLI & Developer Experience
+  epic-7: backlog
+  7-1-hive-init-project-scaffolding: backlog
+  7-2-agent-auto-detection: backlog
+  7-3-hive-run-terminal-output: backlog
+  7-4-adapter-template-generator: backlog
+  7-5-example-template-code-review-hive: backlog
+  7-6-example-template-content-pipeline-hive: backlog
+  7-7-example-template-research-hive: backlog
+  7-8-shell-completion: backlog
+  7-9-cicd-pipeline-cross-platform-build: backlog
+  epic-7-retrospective: optional
