@@ -174,6 +174,20 @@ func (s *Server) routes() {
 	s.mux.Handle("POST /api/v1/events", auth.RBACMiddleware("events", "write")(http.HandlerFunc(s.handleEmitEvent)))
 	// Story 10.2 AC: "agent queries for approaches similar to its current task".
 	s.mux.Handle("GET /api/v1/knowledge/search", auth.RBACMiddleware("system", "read")(http.HandlerFunc(s.handleKnowledgeSearch)))
+
+	// Dashboard-backing read-only endpoints (all require at least viewer).
+	s.mux.Handle("GET /api/v1/workflows", auth.RBACMiddleware("workflows", "read")(http.HandlerFunc(s.handleListWorkflows)))
+	s.mux.Handle("GET /api/v1/knowledge", auth.RBACMiddleware("system", "read")(http.HandlerFunc(s.handleListKnowledge)))
+	s.mux.Handle("GET /api/v1/dialogs", auth.RBACMiddleware("system", "read")(http.HandlerFunc(s.handleListDialogs)))
+	s.mux.Handle("GET /api/v1/federation", auth.RBACMiddleware("system", "read")(http.HandlerFunc(s.handleListFederation)))
+	s.mux.Handle("GET /api/v1/auctions", auth.RBACMiddleware("system", "read")(http.HandlerFunc(s.handleListAuctions)))
+	s.mux.Handle("GET /api/v1/optimizations", auth.RBACMiddleware("system", "read")(http.HandlerFunc(s.handleListOptimizations)))
+	s.mux.Handle("GET /api/v1/recommendations", auth.RBACMiddleware("system", "read")(http.HandlerFunc(s.handleRecommendations)))
+	s.mux.Handle("GET /api/v1/audit", auth.RBACMiddleware("system", "read")(http.HandlerFunc(s.handleListAudit)))
+	s.mux.Handle("GET /api/v1/users", auth.RBACMiddleware("system", "read")(http.HandlerFunc(s.handleListUsers)))
+	s.mux.Handle("GET /api/v1/tenants", auth.RBACMiddleware("system", "read")(http.HandlerFunc(s.handleListTenants)))
+	s.mux.Handle("GET /api/v1/cluster", auth.RBACMiddleware("system", "read")(http.HandlerFunc(s.handleListCluster)))
+	s.mux.Handle("GET /api/v1/trust", auth.RBACMiddleware("system", "read")(http.HandlerFunc(s.handleListTrustHistory)))
 }
 
 // SetFederationShared configures which capability names are exposed to peers
