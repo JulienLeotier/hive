@@ -110,13 +110,13 @@ development_status:
   # ========================================
 
   # Epic 8: Dashboard UI
-  epic-8: in-progress
+  epic-8: done
   8-1-svelte-project-setup-embedding: done
-  8-2-agent-health-dashboard-page: backlog
-  8-3-task-flow-visualization: backlog
-  8-4-event-timeline: backlog
-  8-5-websocket-hub: backlog
-  8-6-cost-tracking-page: backlog
+  8-2-agent-health-dashboard-page: done
+  8-3-task-flow-visualization: done
+  8-4-event-timeline: done
+  8-5-websocket-hub: done
+  8-6-cost-tracking-page: done
   epic-8-retrospective: optional
 
   # Epic 9: Graduated Autonomy Engine
