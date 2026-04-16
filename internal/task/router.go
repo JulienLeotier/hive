@@ -39,11 +39,13 @@ func (r *Router) FindCapableAgent(ctx context.Context, taskType string) (agentID
 	}
 	defer rows.Close()
 
+	considered := 0
 	for rows.Next() {
 		var id, name, capsJSON string
 		if err := rows.Scan(&id, &name, &capsJSON); err != nil {
 			continue
 		}
+		considered++
 
 		var caps adapter.AgentCapabilities
 		if err := json.Unmarshal([]byte(capsJSON), &caps); err != nil {
@@ -53,12 +55,29 @@ func (r *Router) FindCapableAgent(ctx context.Context, taskType string) (agentID
 		for _, tt := range caps.TaskTypes {
 			if tt == taskType {
 				slog.Debug("routed task to agent", "task_type", taskType, "agent", name)
+				r.emitRouteDecision(ctx, taskType, name, "capability_match", considered)
 				return id, name, nil
 			}
 		}
 	}
 
+	r.emitRouteDecision(ctx, taskType, "", "no_capable_agent", considered)
 	return "", "", nil // no capable agent found
+}
+
+func (r *Router) emitRouteDecision(ctx context.Context, taskType, chosen, reason string, considered int) {
+	if r.bus == nil {
+		return
+	}
+	_, _ = r.bus.Publish(ctx, event.DecisionTaskRouted, "router", event.Decision{
+		Action:  "route_task",
+		Subject: taskType,
+		Reason:  reason,
+		Context: map[string]any{
+			"candidates_considered": considered,
+			"chosen":                chosen,
+		},
+	})
 }
 
 // ClaimPendingForAgent atomically assigns one pending task matching the agent's

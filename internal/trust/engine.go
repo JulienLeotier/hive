@@ -9,6 +9,7 @@ import (
 
 	"crypto/rand"
 
+	"github.com/JulienLeotier/hive/internal/event"
 	"github.com/oklog/ulid/v2"
 )
 
@@ -46,11 +47,18 @@ func DefaultThresholds() Thresholds {
 type Engine struct {
 	db         *sql.DB
 	thresholds Thresholds
+	bus        *event.Bus
 }
 
 // NewEngine creates a trust engine.
 func NewEngine(db *sql.DB, thresholds Thresholds) *Engine {
 	return &Engine{db: db, thresholds: thresholds}
+}
+
+// WithBus attaches an event bus so promotions emit decision.* events.
+func (e *Engine) WithBus(bus *event.Bus) *Engine {
+	e.bus = bus
+	return e
 }
 
 // AgentStats holds performance metrics for trust evaluation.
@@ -128,6 +136,18 @@ func (e *Engine) Evaluate(ctx context.Context, agentID string) (promoted bool, n
 		"tasks", stats.TotalTasks,
 		"error_rate", fmt.Sprintf("%.2f%%", stats.ErrorRate*100),
 	)
+
+	if e.bus != nil {
+		_, _ = e.bus.Publish(ctx, event.DecisionTrustPromoted, "trust_engine", event.Decision{
+			Action:  "promote",
+			Subject: agentID,
+			Reason:  fmt.Sprintf("%d tasks with %.2f%% error rate", stats.TotalTasks, stats.ErrorRate*100),
+			Context: map[string]any{
+				"from": stats.CurrentLevel,
+				"to":   targetLevel,
+			},
+		})
+	}
 
 	return true, targetLevel, nil
 }

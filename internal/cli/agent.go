@@ -2,10 +2,12 @@ package cli
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/JulienLeotier/hive/internal/agent"
 	"github.com/JulienLeotier/hive/internal/config"
@@ -16,6 +18,33 @@ import (
 	"github.com/JulienLeotier/hive/internal/trust"
 	"github.com/spf13/cobra"
 )
+
+func countTasksByStatus(ctx context.Context, db *sql.DB) (map[string]int, error) {
+	return countByStatus(ctx, db, "tasks")
+}
+
+func countWorkflowsByStatus(ctx context.Context, db *sql.DB) (map[string]int, error) {
+	return countByStatus(ctx, db, "workflows")
+}
+
+func countByStatus(ctx context.Context, db *sql.DB, table string) (map[string]int, error) {
+	// table is caller-controlled (constants above) — safe to interpolate.
+	rows, err := db.QueryContext(ctx, fmt.Sprintf(`SELECT status, COUNT(*) FROM %s GROUP BY status`, table))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make(map[string]int)
+	for rows.Next() {
+		var s string
+		var n int
+		if err := rows.Scan(&s, &n); err != nil {
+			return nil, err
+		}
+		out[s] = n
+	}
+	return out, rows.Err()
+}
 
 // detectAgentType inspects a local path for well-known files and infers an adapter type.
 func detectAgentType(path string) string {
@@ -161,8 +190,18 @@ var statusCmd = &cobra.Command{
 
 		showCosts, _ := cmd.Flags().GetBool("costs")
 
+		// Tasks and workflows rollup (Story 6.1)
+		taskCounts, _ := countTasksByStatus(ctx, store.DB)
+		workflowCounts, _ := countWorkflowsByStatus(ctx, store.DB)
+		recentEvents, _ := event.NewBus(store.DB).Query(ctx, event.QueryOpts{Limit: 5, Since: time.Now().Add(-15 * time.Minute)})
+
 		if jsonOutput {
-			out := map[string]any{"agents": agents}
+			out := map[string]any{
+				"agents":    agents,
+				"tasks":     taskCounts,
+				"workflows": workflowCounts,
+				"events":    recentEvents,
+			}
 			if showCosts {
 				tracker := cost.NewTracker(store.DB)
 				summaries, _ := tracker.ByAgent(ctx)
@@ -184,6 +223,29 @@ var statusCmd = &cobra.Command{
 			fmt.Printf("%-20s %-10s %-12s %-10s\n", a.Name, a.Type, a.HealthStatus, a.TrustLevel)
 		}
 		fmt.Printf("\nTotal: %d agents\n", len(agents))
+
+		if len(taskCounts) > 0 {
+			fmt.Println("\nTasks:")
+			for _, s := range []string{"pending", "assigned", "running", "completed", "failed"} {
+				if n := taskCounts[s]; n > 0 {
+					fmt.Printf("  %-12s %d\n", s, n)
+				}
+			}
+		}
+		if len(workflowCounts) > 0 {
+			fmt.Println("\nWorkflows:")
+			for _, s := range []string{"idle", "running", "completed", "failed"} {
+				if n := workflowCounts[s]; n > 0 {
+					fmt.Printf("  %-12s %d\n", s, n)
+				}
+			}
+		}
+		if len(recentEvents) > 0 {
+			fmt.Println("\nRecent events (last 15m):")
+			for _, e := range recentEvents {
+				fmt.Printf("  [%s] %-25s source=%s\n", e.CreatedAt.Format("15:04:05"), e.Type, e.Source)
+			}
+		}
 
 		if showCosts {
 			tracker := cost.NewTracker(store.DB)

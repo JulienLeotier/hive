@@ -27,6 +27,10 @@ func NewBus(db *sql.DB) *Bus {
 	}
 }
 
+// DB returns the underlying database handle so callers that already share this
+// bus don't need to plumb the *sql.DB separately.
+func (b *Bus) DB() *sql.DB { return b.db }
+
 // Publish persists an event to SQLite then delivers it to matching subscribers.
 func (b *Bus) Publish(ctx context.Context, eventType, source string, payload any) (Event, error) {
 	payloadJSON, err := json.Marshal(payload)

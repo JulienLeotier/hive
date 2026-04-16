@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -117,6 +118,13 @@ func (s *Server) handleMetrics(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	taskCounts := countRowsByStatus(ctx, s.db(), "tasks")
+	workflowCounts := countRowsByStatus(ctx, s.db(), "workflows")
+
+	// Event throughput: events in the last minute and last hour.
+	eventsLastMinute := s.countEventsSince(ctx, time.Now().Add(-time.Minute))
+	eventsLastHour := s.countEventsSince(ctx, time.Now().Add(-time.Hour))
+
 	metrics := map[string]any{
 		"agents": map[string]int{
 			"total":       len(agents),
@@ -128,10 +136,48 @@ func (s *Server) handleMetrics(w http.ResponseWriter, r *http.Request) {
 			"total": len(breakers),
 			"open":  openCircuits,
 		},
+		"tasks":     taskCounts,
+		"workflows": workflowCounts,
+		"events": map[string]int{
+			"last_minute": eventsLastMinute,
+			"last_hour":   eventsLastHour,
+		},
 		"timestamp": time.Now().UTC().Format(time.RFC3339),
 	}
 
 	writeJSON(w, metrics)
+}
+
+func (s *Server) db() *sql.DB {
+	return s.eventBus.DB()
+}
+
+func (s *Server) countEventsSince(ctx context.Context, t time.Time) int {
+	var n int
+	_ = s.db().QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM events WHERE created_at >= ?`,
+		t.UTC().Format("2006-01-02 15:04:05"),
+	).Scan(&n)
+	return n
+}
+
+func countRowsByStatus(ctx context.Context, db *sql.DB, table string) map[string]int {
+	rows, err := db.QueryContext(ctx,
+		fmt.Sprintf(`SELECT status, COUNT(*) FROM %s GROUP BY status`, table))
+	if err != nil {
+		return map[string]int{}
+	}
+	defer rows.Close()
+	out := map[string]int{}
+	for rows.Next() {
+		var s string
+		var n int
+		if err := rows.Scan(&s, &n); err != nil {
+			continue
+		}
+		out[s] = n
+	}
+	return out
 }
 
 func writeJSON(w http.ResponseWriter, data any) {
