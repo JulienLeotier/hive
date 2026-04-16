@@ -210,27 +210,74 @@ anti_patterns: []
 
 // adapterComplianceTestTmpl wires the generated adapter into the Hive compliance
 // test harness so new adapters have to keep the protocol contract green.
+// Story 7.4 AC: the generated adapter must compile AND pass the compliance
+// test suite. This template exercises the four required endpoints directly so
+// `go test` on the scaffold passes out of the box.
 const adapterComplianceTestTmpl = `package main
 
-// TODO: import Hive's compliance harness once this adapter is vendored into
-// your monorepo. The test below documents the expected shape; replace the
-// runPing / runCheckpoint stubs with calls against your real adapter.
-
 import (
+	"encoding/json"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
 func TestAdapterContract(t *testing.T) {
-	// The real test wires in:
-	//   github.com/JulienLeotier/hive/internal/adapter.RunCompliance(&MyAdapter{}, opts)
-	// and asserts result.OK(). Until your adapter is import-ready, at minimum
-	// make sure the four HTTP handlers respond:
-	//   /declare  → 200 with {name, task_types}
-	//   /task     → echoes task_id + status
-	//   /health   → {status: "healthy"}
-	//   /checkpoint → {data: {...}}
-	if testing.Short() {
-		t.Skip("compliance is a full-stack test — wire it in once the adapter is vendored")
+	mux := http.NewServeMux()
+	mux.HandleFunc("/declare", declareHandler)
+	mux.HandleFunc("/task", taskHandler)
+	mux.HandleFunc("/health", healthHandler)
+	mux.HandleFunc("/checkpoint", checkpointHandler)
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	// /declare returns name + task_types.
+	resp, err := http.Get(srv.URL + "/declare")
+	if err != nil { t.Fatalf("/declare: %v", err) }
+	var caps struct {
+		Name      string   ` + "`json:\"name\"`" + `
+		TaskTypes []string ` + "`json:\"task_types\"`" + `
+	}
+	_ = json.NewDecoder(resp.Body).Decode(&caps)
+	resp.Body.Close()
+	if caps.Name == "" || len(caps.TaskTypes) == 0 {
+		t.Fatalf("/declare returned invalid payload: %+v", caps)
+	}
+
+	// /health returns a status.
+	resp, err = http.Get(srv.URL + "/health")
+	if err != nil { t.Fatalf("/health: %v", err) }
+	var h map[string]string
+	_ = json.NewDecoder(resp.Body).Decode(&h)
+	resp.Body.Close()
+	if h["status"] == "" {
+		t.Fatalf("/health returned empty status: %+v", h)
+	}
+
+	// /task echoes task_id + status.
+	body := ` + "`" + `{"id":"t-1","type":"{{.TaskType}}","input":{"ping":true}}` + "`" + `
+	resp, err = http.Post(srv.URL+"/task", "application/json", strings.NewReader(body))
+	if err != nil { t.Fatalf("/task: %v", err) }
+	data, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	var r struct {
+		TaskID string ` + "`json:\"task_id\"`" + `
+		Status string ` + "`json:\"status\"`" + `
+	}
+	if err := json.Unmarshal(data, &r); err != nil || r.TaskID != "t-1" {
+		t.Fatalf("/task mismatch: body=%s r=%+v err=%v", data, r, err)
+	}
+
+	// /checkpoint returns a data field.
+	resp, err = http.Get(srv.URL + "/checkpoint")
+	if err != nil { t.Fatalf("/checkpoint: %v", err) }
+	var cp map[string]interface{}
+	_ = json.NewDecoder(resp.Body).Decode(&cp)
+	resp.Body.Close()
+	if _, ok := cp["data"]; !ok {
+		t.Fatalf("/checkpoint missing data field: %+v", cp)
 	}
 }
 `

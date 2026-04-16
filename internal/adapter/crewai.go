@@ -4,8 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
+
+	"gopkg.in/yaml.v3"
 )
 
 // CrewAIAdapter wraps a CrewAI crew as a Hive agent.
@@ -20,11 +24,62 @@ func NewCrewAIAdapter(projectPath, name string) *CrewAIAdapter {
 	return &CrewAIAdapter{ProjectPath: projectPath, Name: name}
 }
 
+// Declare reads the crew's config (agents.yaml / crewai.yaml) to populate
+// capability names. Story 13.1 AC: "detects CrewAI crew configuration and
+// maps crew capabilities to Hive protocol".
 func (a *CrewAIAdapter) Declare(ctx context.Context) (AgentCapabilities, error) {
-	return AgentCapabilities{
-		Name:      a.Name,
-		TaskTypes: []string{"crewai-crew"},
-	}, nil
+	caps := AgentCapabilities{Name: a.Name, TaskTypes: []string{"crewai-crew"}}
+
+	for _, name := range []string{"agents.yaml", "crewai.yaml", "config/agents.yaml"} {
+		data, err := os.ReadFile(filepath.Join(a.ProjectPath, name))
+		if err != nil {
+			continue
+		}
+		types := parseCrewAIRoles(data)
+		if len(types) > 0 {
+			caps.TaskTypes = types
+			break
+		}
+	}
+	return caps, nil
+}
+
+// parseCrewAIRoles pulls role names from either a map-of-agent-configs or a
+// top-level `agents:` list in CrewAI config YAML.
+func parseCrewAIRoles(data []byte) []string {
+	// Try as map: {agent_name: {role, goal, ...}}
+	var asMap map[string]struct {
+		Role string `yaml:"role"`
+	}
+	if err := yaml.Unmarshal(data, &asMap); err == nil && len(asMap) > 0 {
+		out := make([]string, 0, len(asMap))
+		for name := range asMap {
+			out = append(out, "crewai-"+name)
+		}
+		return out
+	}
+	// Try as list under `agents:` key.
+	var asList struct {
+		Agents []struct {
+			Name string `yaml:"name"`
+			Role string `yaml:"role"`
+		} `yaml:"agents"`
+	}
+	if err := yaml.Unmarshal(data, &asList); err == nil {
+		out := make([]string, 0, len(asList.Agents))
+		for _, a := range asList.Agents {
+			switch {
+			case a.Name != "":
+				out = append(out, "crewai-"+a.Name)
+			case a.Role != "":
+				out = append(out, "crewai-"+a.Role)
+			}
+		}
+		if len(out) > 0 {
+			return out
+		}
+	}
+	return nil
 }
 
 func (a *CrewAIAdapter) Invoke(ctx context.Context, task Task) (TaskResult, error) {

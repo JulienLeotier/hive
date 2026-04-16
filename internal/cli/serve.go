@@ -47,7 +47,31 @@ var serveCmd = &cobra.Command{
 		}
 		defer store.Close()
 
-		bus := event.NewBus(store.DB)
+		// Story 15.2/22.2: switch to NATS-bridged bus when configured. Local
+		// SQLite bus remains the source of truth for durable query while NATS
+		// carries the real-time fan-out for peer nodes.
+		var bus *event.Bus
+		if cfg.EventBus != nil && cfg.EventBus.Backend == "nats" && cfg.EventBus.NATSURL != "" {
+			nc, err := event.NewNATSConnFromURL(cfg.EventBus.NATSURL)
+			if err != nil {
+				return fmt.Errorf("connecting to nats: %w", err)
+			}
+			subject := cfg.EventBus.Subject
+			if subject == "" {
+				subject = "hive.events"
+			}
+			natsBus, err := event.NewNATSBus(nc, event.NATSConfig{Subject: subject, MaxHistory: 1000})
+			if err != nil {
+				return fmt.Errorf("initialising nats bus: %w", err)
+			}
+			bus = event.NewBus(store.DB)
+			bus.Subscribe("*", func(e event.Event) {
+				_, _ = natsBus.Publish(context.Background(), e.Type, e.Source, e.Payload)
+			})
+			slog.Info("event bus: nats bridged", "url", cfg.EventBus.NATSURL, "subject", subject)
+		} else {
+			bus = event.NewBus(store.DB)
+		}
 
 		// Story 22.2: wire agent manager to publish lifecycle events. When a
 		// NATS bus is configured this fan-out reaches peer nodes automatically.

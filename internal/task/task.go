@@ -49,6 +49,10 @@ func NewStore(db *sql.DB, bus *event.Bus) *Store {
 	return &Store{db: db, bus: bus}
 }
 
+// DB exposes the underlying *sql.DB so callers that already share this store
+// don't need to plumb the database handle separately.
+func (s *Store) DB() *sql.DB { return s.db }
+
 // Create creates a new task in pending state.
 func (s *Store) Create(ctx context.Context, workflowID, taskType, input string, dependsOn []string) (*Task, error) {
 	id := ulid.MustNew(ulid.Timestamp(time.Now()), rand.Reader)

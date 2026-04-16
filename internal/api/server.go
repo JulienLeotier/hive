@@ -8,13 +8,22 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/JulienLeotier/hive/internal/agent"
 	"github.com/JulienLeotier/hive/internal/auth"
 	"github.com/JulienLeotier/hive/internal/event"
+	"github.com/JulienLeotier/hive/internal/knowledge"
 	"github.com/JulienLeotier/hive/internal/resilience"
 )
+
+// knowledgeStoreFromDB builds a Store on demand with the default HashingEmbedder.
+// Kept inline so the server stays self-contained without threading yet another
+// dependency through NewServer.
+func knowledgeStoreFromDB(db *sql.DB) *knowledge.Store {
+	return knowledge.NewStore(db).WithEmbedder(knowledge.NewHashingEmbedder(128))
+}
 
 // cryptoRandRead is declared here so the server file doesn't reach into
 // crypto/rand at call sites cluttered with other names.
@@ -163,6 +172,8 @@ func (s *Server) routes() {
 	// Story 2.1 AC: "agents can emit custom events via the adapter protocol".
 	// POST /api/v1/events lets an adapter push a (type, payload) into the bus.
 	s.mux.Handle("POST /api/v1/events", auth.RBACMiddleware("events", "write")(http.HandlerFunc(s.handleEmitEvent)))
+	// Story 10.2 AC: "agent queries for approaches similar to its current task".
+	s.mux.Handle("GET /api/v1/knowledge/search", auth.RBACMiddleware("system", "read")(http.HandlerFunc(s.handleKnowledgeSearch)))
 }
 
 // SetFederationShared configures which capability names are exposed to peers
@@ -253,6 +264,32 @@ func (s *Server) handleEmitEvent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, map[string]any{"id": evt.ID, "accepted_at": evt.CreatedAt})
+}
+
+// handleKnowledgeSearch exposes the shared knowledge layer to adapters so they
+// can consult prior approaches before acting. Story 10.2.
+func (s *Server) handleKnowledgeSearch(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query().Get("q")
+	if q == "" {
+		writeError(w, http.StatusBadRequest, "MISSING_Q", "query parameter q is required")
+		return
+	}
+	limit := 5
+	if l := r.URL.Query().Get("limit"); l != "" {
+		fmt.Sscanf(l, "%d", &limit)
+	}
+
+	// Use VectorSearch when an embedder is attached; fall back to keyword.
+	store := knowledgeStoreFromDB(s.db())
+	results, err := store.VectorSearch(r.Context(), q, limit)
+	if err != nil {
+		results, err = store.Search(r.Context(), q, limit)
+	}
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "SEARCH_FAILED", err.Error())
+		return
+	}
+	writeJSON(w, results)
 }
 
 // handleListCapabilities returns only the capabilities the operator has opted
@@ -419,7 +456,57 @@ func (s *Server) handleCosts(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// handleMetricsProm renders the same signals in Prometheus text-exposition
+// format (Story 6.4 promised for v0.2). Content negotiation in handleMetrics
+// delegates here on `?format=prometheus` or Accept: text/plain.
+func (s *Server) handleMetricsProm(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	w.Header().Set("Content-Type", "text/plain; version=0.0.4")
+
+	agents, _ := s.agentMgr.List(ctx)
+	counts := map[string]int{}
+	for _, a := range agents {
+		counts[a.HealthStatus]++
+	}
+	fmt.Fprintf(w, "# HELP hive_agents_total Total agents by health status\n# TYPE hive_agents_total gauge\n")
+	for status, n := range counts {
+		fmt.Fprintf(w, "hive_agents_total{status=%q} %d\n", status, n)
+	}
+
+	taskCounts := countRowsByStatus(ctx, s.db(), "tasks")
+	fmt.Fprintf(w, "# HELP hive_tasks_total Total tasks by status\n# TYPE hive_tasks_total gauge\n")
+	for status, n := range taskCounts {
+		fmt.Fprintf(w, "hive_tasks_total{status=%q} %d\n", status, n)
+	}
+
+	fmt.Fprintf(w, "# HELP hive_events_last_minute Events published in the last 60s\n# TYPE hive_events_last_minute gauge\n")
+	fmt.Fprintf(w, "hive_events_last_minute %d\n", s.countEventsSince(ctx, time.Now().Add(-time.Minute)))
+
+	open := 0
+	for _, state := range s.breakers.AllStates() {
+		if state == resilience.StateOpen {
+			open++
+		}
+	}
+	fmt.Fprintf(w, "# HELP hive_circuit_breakers_open Number of open circuit breakers\n# TYPE hive_circuit_breakers_open gauge\n")
+	fmt.Fprintf(w, "hive_circuit_breakers_open %d\n", open)
+
+	var avgDur float64
+	_ = s.db().QueryRowContext(ctx,
+		`SELECT COALESCE(AVG((JULIANDAY(completed_at) - JULIANDAY(started_at)) * 86400), 0)
+		 FROM tasks WHERE status = 'completed' AND started_at IS NOT NULL AND completed_at IS NOT NULL
+		 AND created_at >= datetime('now', '-1 day')`).Scan(&avgDur)
+	fmt.Fprintf(w, "# HELP hive_avg_task_duration_seconds Average completed-task duration over last 24h\n# TYPE hive_avg_task_duration_seconds gauge\n")
+	fmt.Fprintf(w, "hive_avg_task_duration_seconds %f\n", avgDur)
+}
+
 func (s *Server) handleMetrics(w http.ResponseWriter, r *http.Request) {
+	// Content negotiation: `?format=prometheus` or Accept: text/plain → Prometheus.
+	if r.URL.Query().Get("format") == "prometheus" ||
+		strings.Contains(r.Header.Get("Accept"), "text/plain") {
+		s.handleMetricsProm(w, r)
+		return
+	}
 	ctx := r.Context()
 
 	agents, _ := s.agentMgr.List(ctx)

@@ -707,6 +707,23 @@ var agentSwapCmd = &cobra.Command{
 
 		bus := event.NewBus(store.DB)
 		router := task.NewRouter(store.DB).WithBus(bus)
+		taskStore := task.NewStore(store.DB, bus)
+		supervisor := task.NewCheckpointSupervisor(taskStore, router, 30*time.Second, 5*time.Minute)
+
+		// Story 5.4 AC: "in-progress tasks are checkpointed" before swap.
+		// Poll every running task owned by the old agent so we have a fresh
+		// checkpoint row, then reassign.
+		var agentCfg map[string]string
+		old, err := mgr.GetByName(ctx, oldName)
+		if err == nil {
+			_ = json.Unmarshal([]byte(old.Config), &agentCfg)
+		}
+		baseURL := agentCfg["base_url"]
+		if baseURL != "" {
+			a := adapter.NewHTTPAdapter(baseURL)
+			supervisor.WithAdapterResolver(func(agentID string) adapter.Adapter { return a })
+			_ = supervisor.Poll(ctx)
+		}
 
 		n, err := router.ReassignAgentTasks(ctx, oldName, "agent swap → "+newName)
 		if err != nil {
@@ -717,11 +734,11 @@ var agentSwapCmd = &cobra.Command{
 			return fmt.Errorf("marking old agent unavailable: %w", err)
 		}
 
-		_, _ = bus.Publish(ctx, "agent.swapped", "cli", map[string]string{
-			"from": oldName, "to": newName,
+		_, _ = bus.Publish(ctx, "agent.swapped", "cli", map[string]any{
+			"from": oldName, "to": newName, "reassigned": n,
 		})
 
-		fmt.Printf("Swapped %s → %s (%d tasks reassigned)\n", oldName, newName, n)
+		fmt.Printf("Swapped %s → %s (%d tasks checkpointed + reassigned)\n", oldName, newName, n)
 		return nil
 	},
 }

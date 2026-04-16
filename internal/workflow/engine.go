@@ -15,6 +15,75 @@ import (
 	"github.com/JulienLeotier/hive/internal/task"
 )
 
+// pickAgent selects the agent for a task type using the workflow's allocation
+// strategy. Story 18.1/18.2: "market" opens an auction, auto-bids on behalf
+// of capable agents using their declared cost_per_run, picks the lowest bid.
+func (e *Engine) pickAgent(ctx context.Context, taskType, strategy string) (string, string, error) {
+	if strategy != "market" {
+		// Default capability-match + round-robin share the same first-fit path.
+		return e.taskRouter.FindCapableAgent(ctx, taskType)
+	}
+
+	// Query every healthy agent with this capability.
+	rows, err := e.taskStore.DB().QueryContext(ctx,
+		`SELECT id, name, capabilities FROM agents WHERE health_status = 'healthy'`)
+	if err != nil {
+		return "", "", err
+	}
+	defer rows.Close()
+
+	type bid struct {
+		id, name string
+		cost     float64
+	}
+	var bids []bid
+	for rows.Next() {
+		var id, name, capsJSON string
+		if err := rows.Scan(&id, &name, &capsJSON); err != nil {
+			continue
+		}
+		var caps adapter.AgentCapabilities
+		if err := json.Unmarshal([]byte(capsJSON), &caps); err != nil {
+			continue
+		}
+		matches := false
+		for _, t := range caps.TaskTypes {
+			if t == taskType {
+				matches = true
+				break
+			}
+		}
+		if !matches {
+			continue
+		}
+		cost := caps.CostPerRun
+		if cost == 0 {
+			cost = 1.0 // default bid price
+		}
+		bids = append(bids, bid{id: id, name: name, cost: cost})
+	}
+	if len(bids) == 0 {
+		return "", "", nil
+	}
+
+	// Lowest-cost wins. Emit task.auction.won so the timeline shows the decision.
+	winner := bids[0]
+	for _, b := range bids[1:] {
+		if b.cost < winner.cost {
+			winner = b
+		}
+	}
+	if e.eventBus != nil {
+		_, _ = e.eventBus.Publish(ctx, "task.auction.won", "workflow_engine", map[string]any{
+			"task_type": taskType,
+			"agent":     winner.name,
+			"price":     winner.cost,
+			"bidders":   len(bids),
+		})
+	}
+	return winner.id, winner.name, nil
+}
+
 // depsKey stringifies a task's dependency set so sibling tasks can be grouped.
 func depsKey(deps []string) string {
 	if len(deps) == 0 {
@@ -34,6 +103,7 @@ type Engine struct {
 	adapters      map[string]adapter.Adapter // agentID -> adapter
 	agentConfigs  map[string]string          // agentID -> baseURL
 	concurrency   int                        // per-workflow level concurrency cap
+	allocation    string                     // per-workflow allocation strategy
 	retry         *adapter.RetryPolicy       // default retry for auto-built HTTP adapters
 	mu            sync.Mutex
 }
@@ -76,8 +146,9 @@ type RunResult struct {
 
 // Run executes a workflow end-to-end following DAG order with parallel level execution.
 func (e *Engine) Run(ctx context.Context, cfg *Config) (*RunResult, error) {
-	// Respect per-workflow concurrency cap (Story 2.5).
+	// Respect per-workflow concurrency cap (Story 2.5) and allocation strategy (Story 18.2).
 	e.concurrency = cfg.Concurrency
+	e.allocation = cfg.Allocation
 
 	// 1. Create workflow record
 	wf, err := e.workflowStore.Create(ctx, cfg.Name, cfg)
@@ -204,7 +275,7 @@ func (e *Engine) executeLevel(ctx context.Context, workflowID string, level []Ta
 			return fmt.Errorf("creating task %s: %w", td.Name, err)
 		}
 
-		agentID, agentName, err := e.taskRouter.FindCapableAgent(ctx, td.Type)
+		agentID, agentName, err := e.pickAgent(ctx, td.Type, e.allocation)
 		if err != nil || agentID == "" {
 			e.taskStore.Fail(ctx, t.ID, "no capable agent for type: "+td.Type)
 			return fmt.Errorf("no agent available for task type %s", td.Type)

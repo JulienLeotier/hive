@@ -23,6 +23,7 @@ type Config struct {
 	Breaker     *BreakerBlock    `yaml:"breaker,omitempty"`
 	Retry       *RetryBlock      `yaml:"retry,omitempty"`
 	Knowledge   *KnowledgeBlock  `yaml:"knowledge,omitempty"`
+	EventBus    *EventBusBlock   `yaml:"event_bus,omitempty"`
 }
 
 // CheckpointBlock tunes the background checkpoint supervisor. Story 2.6.
@@ -64,6 +65,13 @@ type OIDCBlock struct {
 // peers. Story 19.2.
 type FederationBlock struct {
 	Share []string `yaml:"share,omitempty"` // empty = expose every capability
+}
+
+// EventBusBlock tunes the distributed event bus. Story 15.2/22.2.
+type EventBusBlock struct {
+	Backend string `yaml:"backend,omitempty"` // "sqlite" (default) or "nats"
+	NATSURL string `yaml:"nats_url,omitempty"`
+	Subject string `yaml:"subject,omitempty"` // default "hive.events"
 }
 
 // Default returns a Config with sensible defaults.
