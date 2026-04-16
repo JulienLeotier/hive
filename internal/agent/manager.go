@@ -1,0 +1,143 @@
+package agent
+
+import (
+	"context"
+	"database/sql"
+	"encoding/json"
+	"fmt"
+	"log/slog"
+	"math/rand"
+	"time"
+
+	"github.com/JulienLeotier/hive/internal/adapter"
+	"github.com/oklog/ulid/v2"
+)
+
+// Manager handles agent registration, listing, and removal.
+type Manager struct {
+	db *sql.DB
+}
+
+// NewManager creates an agent manager backed by the given database.
+func NewManager(db *sql.DB) *Manager {
+	return &Manager{db: db}
+}
+
+// Register adds a new agent to the hive after validating connectivity.
+func (m *Manager) Register(ctx context.Context, name, agentType, baseURL string) (*Agent, error) {
+	a := adapter.NewHTTPAdapter(baseURL)
+
+	// Validate connectivity via health check
+	health, err := a.Health(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("health check failed for %s: %w", name, err)
+	}
+
+	// Get capabilities via declare
+	caps, err := a.Declare(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("declare failed for %s: %w", name, err)
+	}
+
+	capsJSON, err := json.Marshal(caps)
+	if err != nil {
+		return nil, fmt.Errorf("marshaling capabilities: %w", err)
+	}
+
+	configJSON, err := json.Marshal(map[string]string{"base_url": baseURL})
+	if err != nil {
+		return nil, fmt.Errorf("marshaling config: %w", err)
+	}
+
+	id := ulid.MustNew(ulid.Timestamp(time.Now()), rand.New(rand.NewSource(time.Now().UnixNano())))
+
+	_, err = m.db.ExecContext(ctx,
+		`INSERT INTO agents (id, name, type, config, capabilities, health_status, trust_level)
+		 VALUES (?, ?, ?, ?, ?, ?, 'scripted')`,
+		id.String(), name, agentType, string(configJSON), string(capsJSON), health.Status,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("inserting agent %s: %w", name, err)
+	}
+
+	slog.Info("agent registered", "name", name, "type", agentType, "health", health.Status)
+
+	return &Agent{
+		ID:           id.String(),
+		Name:         name,
+		Type:         agentType,
+		Config:       string(configJSON),
+		Capabilities: string(capsJSON),
+		HealthStatus: health.Status,
+		TrustLevel:   "scripted",
+	}, nil
+}
+
+// List returns all registered agents.
+func (m *Manager) List(ctx context.Context) ([]Agent, error) {
+	rows, err := m.db.QueryContext(ctx,
+		`SELECT id, name, type, config, capabilities, health_status, trust_level, created_at, updated_at
+		 FROM agents ORDER BY name`,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("listing agents: %w", err)
+	}
+	defer rows.Close()
+
+	var agents []Agent
+	for rows.Next() {
+		var a Agent
+		var createdAt, updatedAt string
+		if err := rows.Scan(&a.ID, &a.Name, &a.Type, &a.Config, &a.Capabilities,
+			&a.HealthStatus, &a.TrustLevel, &createdAt, &updatedAt); err != nil {
+			return nil, fmt.Errorf("scanning agent row: %w", err)
+		}
+		a.CreatedAt, _ = time.Parse("2006-01-02 15:04:05", createdAt)
+		a.UpdatedAt, _ = time.Parse("2006-01-02 15:04:05", updatedAt)
+		agents = append(agents, a)
+	}
+	return agents, rows.Err()
+}
+
+// Remove deletes an agent by name.
+func (m *Manager) Remove(ctx context.Context, name string) error {
+	result, err := m.db.ExecContext(ctx, `DELETE FROM agents WHERE name = ?`, name)
+	if err != nil {
+		return fmt.Errorf("removing agent %s: %w", name, err)
+	}
+	n, _ := result.RowsAffected()
+	if n == 0 {
+		return fmt.Errorf("agent %s not found", name)
+	}
+	slog.Info("agent removed", "name", name)
+	return nil
+}
+
+// GetByName retrieves an agent by name.
+func (m *Manager) GetByName(ctx context.Context, name string) (*Agent, error) {
+	var a Agent
+	var createdAt, updatedAt string
+	err := m.db.QueryRowContext(ctx,
+		`SELECT id, name, type, config, capabilities, health_status, trust_level, created_at, updated_at
+		 FROM agents WHERE name = ?`, name,
+	).Scan(&a.ID, &a.Name, &a.Type, &a.Config, &a.Capabilities,
+		&a.HealthStatus, &a.TrustLevel, &createdAt, &updatedAt)
+	if err == sql.ErrNoRows {
+		return nil, fmt.Errorf("agent %s not found", name)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("getting agent %s: %w", name, err)
+	}
+	a.CreatedAt, _ = time.Parse("2006-01-02 15:04:05", createdAt)
+	a.UpdatedAt, _ = time.Parse("2006-01-02 15:04:05", updatedAt)
+	return &a, nil
+}
+
+// UpdateHealth refreshes the health status of an agent.
+func (m *Manager) UpdateHealth(ctx context.Context, name string, status string) error {
+	_, err := m.db.ExecContext(ctx,
+		`UPDATE agents SET health_status = ?, updated_at = datetime('now') WHERE name = ?`,
+		status, name,
+	)
+	return err
+}
