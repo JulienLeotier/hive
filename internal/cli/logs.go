@@ -28,6 +28,10 @@ var logsCmd = &cobra.Command{
 		jsonOutput, _ := cmd.Flags().GetBool("json")
 		follow, _ := cmd.Flags().GetBool("follow")
 		timeline, _ := cmd.Flags().GetBool("timeline")
+		// Story 4.6 / 6.5: --decisions shortcut for decision.* events.
+		if dec, _ := cmd.Flags().GetBool("decisions"); dec && eventType == "" {
+			eventType = "decision"
+		}
 
 		cfg, err := config.Load("hive.yaml")
 		if err != nil {
@@ -160,6 +164,7 @@ func init() {
 	logsCmd.Flags().Bool("json", false, "output in JSON format")
 	logsCmd.Flags().BoolP("follow", "f", false, "follow new events in real time (Ctrl-C to stop)")
 	logsCmd.Flags().Bool("timeline", false, "render as vertical timeline")
+	logsCmd.Flags().Bool("decisions", false, "shortcut for --type decision (orchestration decision events)")
 
 	rootCmd.AddCommand(logsCmd)
 }

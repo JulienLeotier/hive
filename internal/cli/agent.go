@@ -500,9 +500,19 @@ var agentCmd = &cobra.Command{
 	Short: "Manage agents",
 }
 
+// Story 9.4 AC: `hive agent trust <agent> --level <level>`. Short-form that
+// delegates to the set subcommand when --level is supplied.
 var agentTrustCmd = &cobra.Command{
-	Use:   "trust",
+	Use:   "trust [agent-name]",
 	Short: "Inspect or set an agent's trust level",
+	Args:  cobra.MaximumNArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		level, _ := cmd.Flags().GetString("level")
+		if len(args) == 0 || level == "" {
+			return cmd.Help()
+		}
+		return agentTrustSetCmd.RunE(cmd, []string{args[0], level})
+	},
 }
 
 var agentTrustGetCmd = &cobra.Command{
@@ -702,12 +712,25 @@ var agentTrustClearOverrideCmd = &cobra.Command{
 	},
 }
 
+// Story 5.4 AC phrases it as `hive agent swap old-agent --to new-agent`. We
+// accept both the AC form (one positional + --to flag) and the two-positional
+// shorthand.
 var agentSwapCmd = &cobra.Command{
-	Use:   "swap [old-name] [new-name]",
+	Use:   "swap [old-name] [new-name | --to new-name]",
 	Short: "Swap a failing agent for a replacement — reassigns in-flight tasks",
-	Args:  cobra.ExactArgs(2),
+	Args:  cobra.RangeArgs(1, 2),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		oldName, newName := args[0], args[1]
+		oldName := args[0]
+		var newName string
+		if len(args) == 2 {
+			newName = args[1]
+		}
+		if flagVal, _ := cmd.Flags().GetString("to"); flagVal != "" {
+			newName = flagVal
+		}
+		if newName == "" {
+			return fmt.Errorf("replacement agent is required (second positional or --to)")
+		}
 
 		cfg, err := config.Load("hive.yaml")
 		if err != nil {
@@ -782,6 +805,12 @@ func init() {
 	addAgentCmd.Flags().Bool("yes", false, "accept auto-detected type without prompting")
 
 	agentTrustOverrideCmd.Flags().String("reason", "", "why this override is being set")
+
+	// Story 9.4 short-form: `hive agent trust <name> --level <level>`.
+	agentTrustCmd.Flags().String("level", "", "set trust level directly (supervised|guided|autonomous|trusted)")
+
+	// Story 5.4 phrasing: `hive agent swap old --to new`.
+	agentSwapCmd.Flags().String("to", "", "replacement agent name (alternative to second positional)")
 
 	statusCmd.Flags().Bool("json", false, "output in JSON format")
 	statusCmd.Flags().Bool("costs", false, "include cost rollup and budget alerts")

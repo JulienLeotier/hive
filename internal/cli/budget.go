@@ -18,13 +18,25 @@ var budgetCmd = &cobra.Command{
 
 var budgetSetCmd = &cobra.Command{
 	Use:   "set [agent-name] [daily-limit-usd]",
-	Short: "Set a daily USD budget for an agent",
-	Args:  cobra.ExactArgs(2),
+	Short: "Set a daily USD budget for an agent (also accepts --agent + --daily-limit flags)",
+	Args:  cobra.MaximumNArgs(2),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		name := args[0]
-		limit, err := strconv.ParseFloat(args[1], 64)
-		if err != nil {
-			return fmt.Errorf("parsing daily limit: %w", err)
+		// Story 16.4 AC uses the flag form: --agent NAME --daily-limit N.
+		// Accept both positional and flag forms.
+		name, _ := cmd.Flags().GetString("agent")
+		limit, _ := cmd.Flags().GetFloat64("daily-limit")
+		if name == "" && len(args) >= 1 {
+			name = args[0]
+		}
+		if limit == 0 && len(args) >= 2 {
+			var err error
+			limit, err = strconv.ParseFloat(args[1], 64)
+			if err != nil {
+				return fmt.Errorf("parsing daily limit: %w", err)
+			}
+		}
+		if name == "" {
+			return fmt.Errorf("agent name is required (--agent or positional)")
 		}
 
 		cfg, err := config.Load("hive.yaml")
@@ -107,6 +119,8 @@ var budgetRemoveCmd = &cobra.Command{
 }
 
 func init() {
+	budgetSetCmd.Flags().String("agent", "", "agent name (alternative to positional arg)")
+	budgetSetCmd.Flags().Float64("daily-limit", 0, "daily USD limit (alternative to positional arg)")
 	budgetCmd.AddCommand(budgetSetCmd)
 	budgetCmd.AddCommand(budgetListCmd)
 	budgetCmd.AddCommand(budgetRemoveCmd)
