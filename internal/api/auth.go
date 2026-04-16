@@ -42,6 +42,9 @@ func (km *KeyManager) Generate(ctx context.Context, name string) (rawKey string,
 	}
 	rawKey = "hive_" + hex.EncodeToString(raw)
 
+	// Store first 16 chars as prefix for O(1) lookup (avoids O(N) bcrypt scans)
+	keyPrefix := rawKey[:21] // "hive_" + 16 hex chars
+
 	hash, err := bcrypt.GenerateFromPassword([]byte(rawKey), bcrypt.DefaultCost)
 	if err != nil {
 		return "", fmt.Errorf("hashing key: %w", err)
@@ -51,8 +54,8 @@ func (km *KeyManager) Generate(ctx context.Context, name string) (rawKey string,
 	id := ulid.MustNew(ulid.Timestamp(time.Now()), ulid.Monotonic(entropy, 0))
 
 	_, err = km.db.ExecContext(ctx,
-		`INSERT INTO api_keys (id, name, key_hash) VALUES (?, ?, ?)`,
-		id.String(), name, string(hash),
+		`INSERT INTO api_keys (id, name, key_hash, key_prefix) VALUES (?, ?, ?, ?)`,
+		id.String(), name, string(hash), keyPrefix,
 	)
 	if err != nil {
 		return "", fmt.Errorf("storing key %s: %w", name, err)
@@ -62,25 +65,26 @@ func (km *KeyManager) Generate(ctx context.Context, name string) (rawKey string,
 	return rawKey, nil
 }
 
-// Validate checks if the provided raw key matches any stored key hash.
-// Returns the key name if valid, empty string if invalid.
+// Validate checks if the provided raw key matches a stored key hash.
+// Uses key prefix for O(1) lookup, then bcrypt for verification.
 func (km *KeyManager) Validate(ctx context.Context, rawKey string) (string, bool) {
-	rows, err := km.db.QueryContext(ctx, `SELECT name, key_hash FROM api_keys`)
+	if len(rawKey) < 21 {
+		return "", false
+	}
+	prefix := rawKey[:21]
+
+	var name, hash string
+	err := km.db.QueryRowContext(ctx,
+		`SELECT name, key_hash FROM api_keys WHERE key_prefix = ?`, prefix,
+	).Scan(&name, &hash)
 	if err != nil {
 		return "", false
 	}
-	defer rows.Close()
 
-	for rows.Next() {
-		var name, hash string
-		if err := rows.Scan(&name, &hash); err != nil {
-			continue
-		}
-		if err := bcrypt.CompareHashAndPassword([]byte(hash), []byte(rawKey)); err == nil {
-			return name, true
-		}
+	if err := bcrypt.CompareHashAndPassword([]byte(hash), []byte(rawKey)); err != nil {
+		return "", false
 	}
-	return "", false
+	return name, true
 }
 
 // List returns all API key metadata (without hashes).
@@ -118,9 +122,14 @@ func (km *KeyManager) Delete(ctx context.Context, name string) error {
 }
 
 // HasKeys returns true if any API keys exist in the database.
+// Returns true on DB error (fail-closed: require auth when uncertain).
 func (km *KeyManager) HasKeys(ctx context.Context) bool {
 	var count int
-	km.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM api_keys`).Scan(&count)
+	err := km.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM api_keys`).Scan(&count)
+	if err != nil {
+		slog.Error("failed to check api keys", "error", err)
+		return true // fail-closed: require auth when DB is broken
+	}
 	return count > 0
 }
 

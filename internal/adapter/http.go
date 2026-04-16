@@ -96,7 +96,8 @@ func (a *HTTPAdapter) do(req *http.Request, out any) error {
 	}
 	defer resp.Body.Close()
 
-	respBody, err := io.ReadAll(resp.Body)
+	// Limit response body to 10MB to prevent OOM from malicious agents
+	respBody, err := io.ReadAll(io.LimitReader(resp.Body, 10<<20))
 	if err != nil {
 		return fmt.Errorf("reading response: %w", err)
 	}

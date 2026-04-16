@@ -2,11 +2,11 @@ package agent
 
 import (
 	"context"
+	"crypto/rand"
 	"database/sql"
 	"encoding/json"
 	"fmt"
 	"log/slog"
-	"math/rand"
 	"time"
 
 	"github.com/JulienLeotier/hive/internal/adapter"
@@ -49,7 +49,7 @@ func (m *Manager) Register(ctx context.Context, name, agentType, baseURL string)
 		return nil, fmt.Errorf("marshaling config: %w", err)
 	}
 
-	id := ulid.MustNew(ulid.Timestamp(time.Now()), rand.New(rand.NewSource(time.Now().UnixNano())))
+	id := ulid.MustNew(ulid.Timestamp(time.Now()), rand.Reader)
 
 	_, err = m.db.ExecContext(ctx,
 		`INSERT INTO agents (id, name, type, config, capabilities, health_status, trust_level)

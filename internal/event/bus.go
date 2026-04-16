@@ -125,8 +125,17 @@ func (b *Bus) deliver(evt Event) {
 	for prefix, subs := range b.subscribers {
 		if strings.HasPrefix(evt.Type, prefix) || prefix == "*" {
 			for _, fn := range subs {
-				fn(evt) // synchronous delivery for ordering guarantee
+				b.safeCall(fn, evt)
 			}
 		}
 	}
+}
+
+func (b *Bus) safeCall(fn Subscriber, evt Event) {
+	defer func() {
+		if r := recover(); r != nil {
+			slog.Error("subscriber panic recovered", "event", evt.Type, "panic", r)
+		}
+	}()
+	fn(evt)
 }

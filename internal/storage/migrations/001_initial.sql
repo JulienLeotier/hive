@@ -56,5 +56,7 @@ CREATE TABLE IF NOT EXISTS api_keys (
     id TEXT PRIMARY KEY,
     name TEXT NOT NULL UNIQUE,
     key_hash TEXT NOT NULL,
+    key_prefix TEXT NOT NULL DEFAULT '',
     created_at TEXT DEFAULT (datetime('now'))
 );
+CREATE INDEX IF NOT EXISTS idx_api_keys_prefix ON api_keys(key_prefix);

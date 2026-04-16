@@ -103,12 +103,15 @@ func (s *Store) Assign(ctx context.Context, taskID, agentID string) error {
 
 // Start transitions a task from assigned to running.
 func (s *Store) Start(ctx context.Context, taskID string) error {
-	_, err := s.db.ExecContext(ctx,
+	result, err := s.db.ExecContext(ctx,
 		`UPDATE tasks SET status = ?, started_at = datetime('now') WHERE id = ? AND status = ?`,
 		StatusRunning, taskID, StatusAssigned,
 	)
 	if err != nil {
 		return fmt.Errorf("starting task %s: %w", taskID, err)
+	}
+	if n, _ := result.RowsAffected(); n == 0 {
+		return fmt.Errorf("task %s not in assigned state", taskID)
 	}
 
 	s.bus.Publish(ctx, event.TaskStarted, "system", map[string]string{"task_id": taskID})
@@ -117,26 +120,32 @@ func (s *Store) Start(ctx context.Context, taskID string) error {
 
 // Complete transitions a task to completed with output.
 func (s *Store) Complete(ctx context.Context, taskID, output string) error {
-	_, err := s.db.ExecContext(ctx,
+	result, err := s.db.ExecContext(ctx,
 		`UPDATE tasks SET status = ?, output = ?, completed_at = datetime('now') WHERE id = ? AND status = ?`,
 		StatusCompleted, output, taskID, StatusRunning,
 	)
 	if err != nil {
 		return fmt.Errorf("completing task %s: %w", taskID, err)
 	}
+	if n, _ := result.RowsAffected(); n == 0 {
+		return fmt.Errorf("task %s not in running state", taskID)
+	}
 
 	s.bus.Publish(ctx, event.TaskCompleted, "system", map[string]string{"task_id": taskID})
 	return nil
 }
 
-// Fail transitions a task to failed with an error message.
+// Fail transitions a running task to failed with an error message.
 func (s *Store) Fail(ctx context.Context, taskID, errMsg string) error {
-	_, err := s.db.ExecContext(ctx,
-		`UPDATE tasks SET status = ?, output = ?, completed_at = datetime('now') WHERE id = ?`,
-		StatusFailed, errMsg, taskID,
+	result, err := s.db.ExecContext(ctx,
+		`UPDATE tasks SET status = ?, output = ?, completed_at = datetime('now') WHERE id = ? AND status = ?`,
+		StatusFailed, errMsg, taskID, StatusRunning,
 	)
 	if err != nil {
 		return fmt.Errorf("failing task %s: %w", taskID, err)
+	}
+	if n, _ := result.RowsAffected(); n == 0 {
+		return fmt.Errorf("task %s not in running state", taskID)
 	}
 
 	s.bus.Publish(ctx, event.TaskFailed, "system", map[string]string{

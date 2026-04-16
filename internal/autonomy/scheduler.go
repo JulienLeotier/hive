@@ -32,8 +32,10 @@ func (s *Scheduler) Register(agentName string, interval time.Duration) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	// Stop existing if re-registering
+	// Stop existing if re-registering (delete from map first to prevent double-close)
 	if stop, ok := s.stopChs[agentName]; ok {
+		delete(s.stopChs, agentName)
+		delete(s.timers, agentName)
 		close(stop)
 	}
 

@@ -2,6 +2,7 @@ package adapter
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os/exec"
 	"strings"
@@ -27,7 +28,13 @@ func (a *ClaudeCodeAdapter) Declare(ctx context.Context) (AgentCapabilities, err
 }
 
 func (a *ClaudeCodeAdapter) Invoke(ctx context.Context, task Task) (TaskResult, error) {
-	cmd := exec.CommandContext(ctx, "claude", "--skill", a.SkillPath, "--input", fmt.Sprintf("%v", task.Input))
+	// Pass input via stdin to avoid command injection via arguments
+	inputJSON, err := json.Marshal(task.Input)
+	if err != nil {
+		return TaskResult{TaskID: task.ID, Status: "failed", Error: "failed to serialize input"}, nil
+	}
+	cmd := exec.CommandContext(ctx, "claude", "--skill", a.SkillPath)
+	cmd.Stdin = strings.NewReader(string(inputJSON))
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		return TaskResult{

@@ -66,11 +66,14 @@ func (s *Store) Create(ctx context.Context, name string, config *Config) (*Workf
 
 // UpdateStatus changes the workflow status and emits events.
 func (s *Store) UpdateStatus(ctx context.Context, id, status string) error {
-	_, err := s.db.ExecContext(ctx,
+	result, err := s.db.ExecContext(ctx,
 		`UPDATE workflows SET status = ? WHERE id = ?`, status, id,
 	)
 	if err != nil {
 		return err
+	}
+	if n, _ := result.RowsAffected(); n == 0 {
+		return fmt.Errorf("workflow %s not found", id)
 	}
 
 	var evtType string

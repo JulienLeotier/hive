@@ -32,12 +32,18 @@ var initCmd = &cobra.Command{
 
 		// Create agents directory
 		agentsDir := filepath.Join(projectName, "agents")
-		os.MkdirAll(agentsDir, 0755)
-		os.WriteFile(filepath.Join(agentsDir, ".gitkeep"), []byte(""), 0644)
+		if err := os.MkdirAll(agentsDir, 0755); err != nil {
+			return fmt.Errorf("creating agents directory: %w", err)
+		}
+		if err := os.WriteFile(filepath.Join(agentsDir, ".gitkeep"), []byte(""), 0644); err != nil {
+			return fmt.Errorf("creating .gitkeep: %w", err)
+		}
 
 		// Create README
 		readme := fmt.Sprintf("# %s\n\nA Hive project — AI agent orchestration.\n\n## Quick Start\n\n```bash\nhive add-agent --name my-agent --type http --url http://localhost:8080\nhive run\nhive status\n```\n", projectName)
-		os.WriteFile(filepath.Join(projectName, "README.md"), []byte(readme), 0644)
+		if err := os.WriteFile(filepath.Join(projectName, "README.md"), []byte(readme), 0644); err != nil {
+			return fmt.Errorf("creating README: %w", err)
+		}
 
 		fmt.Printf("Project '%s' created!\n", projectName)
 		fmt.Printf("  hive.yaml   — workflow configuration\n")
