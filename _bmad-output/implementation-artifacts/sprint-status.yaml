@@ -75,12 +75,12 @@ development_status:
   epic-4-retrospective: optional
 
   # Epic 5: Resilience & Self-Healing
-  epic-5: backlog
-  5-1-circuit-breaker: backlog
-  5-2-agent-auto-isolation: backlog
-  5-3-task-failover: backlog
-  5-4-agent-hot-swap: backlog
-  5-5-retry-policies-error-messages: backlog
+  epic-5: done
+  5-1-circuit-breaker: done
+  5-2-agent-auto-isolation: done
+  5-3-task-failover: done
+  5-4-agent-hot-swap: done
+  5-5-retry-policies-error-messages: done
   epic-5-retrospective: optional
 
   # Epic 6: Observability & Monitoring
