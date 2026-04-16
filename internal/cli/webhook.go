@@ -90,6 +90,26 @@ var webhookListCmd = &cobra.Command{
 	},
 }
 
+var webhookRemoveCmd = &cobra.Command{
+	Use:   "remove [name]",
+	Short: "Remove a webhook configuration",
+	Args:  cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		cfg, _ := config.Load("hive.yaml")
+		store, err := storage.Open(cfg.DataDir)
+		if err != nil {
+			return err
+		}
+		defer store.Close()
+		if _, err := store.DB.ExecContext(context.Background(),
+			`DELETE FROM webhooks WHERE name = ?`, args[0]); err != nil {
+			return err
+		}
+		fmt.Printf("Webhook removed: %s\n", args[0])
+		return nil
+	},
+}
+
 func init() {
 	webhookAddCmd.Flags().String("name", "", "webhook name (required)")
 	webhookAddCmd.Flags().String("url", "", "webhook URL (required)")
@@ -97,6 +117,6 @@ func init() {
 	webhookAddCmd.Flags().String("events", "", "event filter (comma-separated or JSON array)")
 	webhookListCmd.Flags().Bool("json", false, "output as JSON")
 
-	webhookCmd.AddCommand(webhookAddCmd, webhookListCmd)
+	webhookCmd.AddCommand(webhookAddCmd, webhookListCmd, webhookRemoveCmd)
 	rootCmd.AddCommand(webhookCmd)
 }
