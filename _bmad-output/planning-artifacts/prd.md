@@ -387,7 +387,7 @@ interface HiveAdapter {
 ### Agent Management
 
 - FR1: User can register an agent from any supported framework via CLI command
-- FR2: User can auto-detect agent type and capabilities from project structure
+- FR2: User can auto-detect agent type and capabilities from project structure (supports detection of: skill.md for Claude Code, mcp.json for MCP, pyproject.toml with crewai for CrewAI, HTTP health endpoint for generic HTTP agents)
 - FR3: User can manually configure agent capabilities via YAML
 - FR4: User can list all registered agents with their health status and capabilities
 - FR5: User can remove a registered agent from the hive
@@ -421,7 +421,7 @@ interface HiveAdapter {
 
 ### Agent Adapter Protocol
 
-- FR24: Adapter author can implement the protocol interface in under 20 lines for basic HTTP agents
+- FR24: Adapter author can implement the protocol interface in under 20 lines of configuration for an agent that exposes /health, /declare, and /invoke HTTP endpoints
 - FR25: Adapter author can generate boilerplate via CLI template command
 - FR26: Adapter author can run protocol compliance test suite against their adapter
 - FR27: System supports HTTP/JSON, WebSocket (streaming), and stdio transport
@@ -440,7 +440,15 @@ interface HiveAdapter {
 - FR34: User can scaffold a new hive project with example config via `hive init`
 - FR35: User can select from pre-built hive templates during initialization
 - FR36: System supports environment-based configuration overrides
-- FR37: System stores all state in embedded SQLite (zero external dependencies)
+- FR37: System stores all state in an embedded database requiring zero external dependencies
+
+### Data Lifecycle & Migration
+
+- FR38: User can export all hive data (agents, tasks, events, knowledge) in a standard format for backup
+- FR39: User can import previously exported data into a new hive deployment
+- FR40: System provides upgrade migration path between Hive versions automatically on startup
+- FR41: User can request deletion of specific knowledge entries or agent data (data retention compliance)
+- FR42: CLI output supports screen reader compatibility and respects NO_COLOR environment variable
 
 ### Agent Autonomy
 
@@ -452,14 +460,14 @@ interface HiveAdapter {
 - FR48: System logs each agent's wake-up decision (what it observed, what it decided, why)
 - FR49: User can define agent identity and constraints via AGENT.yaml (capabilities, anti-patterns, personality)
 - FR50: User can inspect and modify agent behavior by editing YAML context files
-- FR51: System monitors for busywork patterns and flags agents that generate unnecessary work
+- FR51: System flags agents that create tasks without upstream trigger or backlog demand as busywork generators (threshold: 3+ unprompted tasks per wake-up cycle)
 
 ### Error Handling & Resilience
 
 - FR52: System implements circuit breaker pattern for failing agents
 - FR53: System auto-isolates agents that exceed configurable failure thresholds
 - FR54: System reroutes queued tasks from isolated agents to healthy alternatives
-- FR55: System provides clear error messages with suggested remediation actions
+- FR55: System provides error messages that include: what failed, which agent/task was involved, and a specific remediation suggestion
 - FR56: User can configure retry policies per agent or per task type
 
 ### Dashboard (v0.2)
@@ -469,7 +477,7 @@ interface HiveAdapter {
 - FR59: User can view event timeline with filtering by type, source, and time range
 - FR60: User can view cost tracking per agent, per workflow, and per time period
 - FR61: Dashboard updates in real-time via WebSocket without page refresh
-- FR62: Dashboard is served embedded in the Go binary (no separate frontend deployment)
+- FR62: Dashboard is served embedded in the server binary (no separate frontend deployment)
 
 ### Graduated Autonomy (v0.2)
 
@@ -518,19 +526,19 @@ interface HiveAdapter {
 - FR90: User can search HiveHub for templates by keyword, category, or capability via `hive search`
 - FR91: User can install a HiveHub template into a local project via `hive install <template-name>`
 - FR92: Published templates include: hive.yaml, agent configs, README, metadata (author, version, description)
-- FR93: HiveHub stores templates in a Git-backed registry (GitHub repo)
+- FR93: HiveHub stores templates in a version-controlled registry
 
 ### Distributed Event Bus (v0.3)
 
-- FR94: System supports NATS as a pluggable event bus backend (alternative to in-process)
-- FR95: User can configure event bus backend via `hive.yaml` (`event_bus: nats` or `event_bus: embedded`)
-- FR96: NATS backend enables multi-node Hive deployments sharing the same event stream
+- FR94: System supports a distributed message broker as a pluggable event bus backend (alternative to in-process)
+- FR95: User can configure event bus backend via `hive.yaml` (`event_bus: distributed` or `event_bus: embedded`)
+- FR96: Distributed backend enables multi-node Hive deployments sharing the same event stream
 - FR97: All existing event bus features (pub/sub, query, replay) work identically on both backends
 
 ### Enhanced Knowledge (v0.3)
 
 - FR98: Knowledge search uses vector embeddings for semantic similarity (not just keyword matching)
-- FR99: System generates embeddings locally using lightweight model (no external API required for basic usage)
+- FR99: System generates embeddings locally without requiring external API calls for basic usage
 - FR100: User can optionally configure external embedding API (OpenAI, Anthropic) for higher quality
 
 ### Cost Management (v0.3)
@@ -578,8 +586,8 @@ interface HiveAdapter {
 - FR126: System supports horizontal scaling with multiple Hive nodes sharing NATS event bus
 - FR127: Agent registration is replicated across nodes via NATS
 - FR128: Task routing considers agent location (prefer local node, fallback to remote)
-- FR129: System supports PostgreSQL as storage backend for multi-node deployments
-- FR130: User can configure storage backend via `hive.yaml` (`storage: sqlite` or `storage: postgres`)
+- FR129: System supports a relational database as storage backend for multi-node deployments
+- FR130: User can configure storage backend via `hive.yaml` (`storage: embedded` or `storage: external`)
 
 ## Non-Functional Requirements
 
