@@ -45,13 +45,13 @@ development_status:
   # --- EPIC 1 COMPLETE ---
 
   # Epic 2: Event-Driven Task Orchestration
-  epic-2: backlog
-  2-1-event-bus-persistence: backlog
-  2-2-task-state-machine: backlog
-  2-3-capability-based-task-routing: backlog
-  2-4-task-execution-result-passing: backlog
-  2-5-parallel-task-execution: backlog
-  2-6-task-checkpoint-resume: backlog
+  epic-2: in-progress
+  2-1-event-bus-persistence: done
+  2-2-task-state-machine: done
+  2-3-capability-based-task-routing: done
+  2-4-task-execution-result-passing: done
+  2-5-parallel-task-execution: done
+  2-6-task-checkpoint-resume: done
   epic-2-retrospective: optional
 
   # Epic 3: Workflow Definition & Execution
