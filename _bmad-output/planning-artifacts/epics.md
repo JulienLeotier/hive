@@ -875,3 +875,311 @@ So that every merge produces a verified, cross-platform binary.
 **And** creates a GitHub Release with checksums and changelog
 **And** updates the Homebrew tap formula
 **And** builds and pushes the Docker image (~15MB scratch-based)
+
+---
+
+# v0.2 Epics — Trust & Visibility
+
+## Epic 8: Dashboard UI
+
+Users can monitor their hive in real-time through a web dashboard showing agent health, task flow, events, and costs.
+
+### Story 8.1: Svelte Project Setup & Embedding
+
+As a developer,
+I want the Svelte 5 dashboard scaffolded and embedded in the Go binary,
+So that the dashboard is served from the single hive binary with no separate deployment.
+
+**Acceptance Criteria:**
+
+**Given** the `web/` directory contains a Svelte 5 project with SvelteKit
+**When** `make build` runs
+**Then** Svelte builds to `internal/dashboard/dist/` and Go embeds it via `//go:embed`
+**And** `hive serve` starts the API server and serves the dashboard at `http://localhost:8233`
+**And** the dashboard loads in under 2 seconds (NFR24)
+
+### Story 8.2: Agent Health Dashboard Page
+
+As a user,
+I want a dashboard page showing all agents with real-time health status,
+So that I can monitor my hive at a glance.
+
+**Acceptance Criteria:**
+
+**Given** the dashboard is loaded in a browser
+**When** the agents page is displayed
+**Then** it shows a table of all agents with: name, type, health status, trust level, capabilities, last check time
+**And** health status updates in real-time via WebSocket without page refresh (FR57, FR61)
+
+### Story 8.3: Task Flow Visualization
+
+As a user,
+I want to see active and completed tasks with their status and timing,
+So that I can understand workflow execution and spot bottlenecks.
+
+**Acceptance Criteria:**
+
+**Given** workflows have been executed
+**When** the tasks page is displayed
+**Then** it shows tasks grouped by workflow with: status, agent, duration, result summary
+**And** active tasks update in real-time (FR58)
+
+### Story 8.4: Event Timeline
+
+As a user,
+I want a real-time event timeline with filtering,
+So that I can debug issues and understand system behavior.
+
+**Acceptance Criteria:**
+
+**Given** events are being published
+**When** the events page is displayed
+**Then** it shows events in reverse chronological order with: type, source, payload preview, timestamp
+**And** user can filter by event type prefix and source
+**And** new events appear in real-time via WebSocket (FR59, FR61)
+
+### Story 8.5: WebSocket Hub
+
+As a developer,
+I want a WebSocket hub that broadcasts events to connected dashboard clients,
+So that the dashboard updates in real-time.
+
+**Acceptance Criteria:**
+
+**Given** the API server is running with WebSocket support
+**When** a dashboard client connects to `/ws`
+**Then** it receives all events as they're published
+**And** event delivery to WebSocket is under 100ms from publication (NFR25)
+**And** stale connections are detected via ping/pong and cleaned up
+
+### Story 8.6: Cost Tracking Page
+
+As a user,
+I want to see cost tracking per agent and per workflow,
+So that I can manage my AI spend.
+
+**Acceptance Criteria:**
+
+**Given** agents declare cost_per_run in capabilities
+**When** the cost page is displayed
+**Then** it shows: cost per agent (total and recent), cost per workflow, cost trend over time (FR60)
+
+---
+
+## Epic 9: Graduated Autonomy Engine
+
+Agents earn increasing trust through demonstrated competence, with configurable thresholds and per-task-type overrides.
+
+### Story 9.1: Trust Level Tracking
+
+As a user,
+I want each agent to have a tracked trust level that reflects its performance,
+So that I can progressively grant more autonomy to reliable agents.
+
+**Acceptance Criteria:**
+
+**Given** an agent is registered
+**When** it completes tasks
+**Then** the system tracks: total tasks completed, success rate, error rate, consecutive successes
+**And** the trust level is stored in the agents table (FR63)
+
+### Story 9.2: Auto-Promotion Engine
+
+As a user,
+I want agents automatically promoted when they meet configured thresholds,
+So that trust evolves without manual intervention.
+
+**Acceptance Criteria:**
+
+**Given** an agent has trust thresholds configured (e.g., "Guided after 50 tasks, <5% error")
+**When** the agent meets the threshold criteria
+**Then** the system promotes the agent to the next trust level
+**And** logs the promotion with criteria details in trust_history (FR64, FR66, FR69)
+
+### Story 9.3: Per-Task-Type Overrides
+
+As a user,
+I want certain task types to always require specific trust levels,
+So that high-risk operations maintain human oversight regardless of agent track record.
+
+**Acceptance Criteria:**
+
+**Given** a trust override is configured (e.g., "financial-transactions: always Supervised")
+**When** a task of that type is routed
+**Then** the system enforces the override level regardless of the agent's earned trust
+**And** the override is logged (FR65, FR68)
+
+### Story 9.4: Manual Trust Management
+
+As a user,
+I want to manually promote or demote agents via CLI,
+So that I can override the automatic system when needed.
+
+**Acceptance Criteria:**
+
+**Given** a registered agent
+**When** the user runs `hive agent trust code-reviewer --level autonomous`
+**Then** the agent's trust level is updated immediately
+**And** a `manual_override` entry is logged in trust_history (FR67)
+
+---
+
+## Epic 10: Shared Knowledge Layer
+
+The hive accumulates operational wisdom — successful approaches and known failures — that new agents inherit.
+
+### Story 10.1: Knowledge Store & CRUD
+
+As a developer,
+I want a knowledge store backed by SQLite,
+So that learned patterns persist across restarts.
+
+**Acceptance Criteria:**
+
+**Given** the v0.2 migration has run (002_v02.sql)
+**When** a task completes (success or failure)
+**Then** the approach and outcome are stored in the knowledge table
+**And** entries include: task_type, approach description, outcome, context JSON (FR70, FR71)
+
+### Story 10.2: Vector Similarity Search
+
+As an agent,
+I want to search for similar prior approaches before starting a task,
+So that I can learn from the colony's experience.
+
+**Acceptance Criteria:**
+
+**Given** knowledge entries exist with embeddings
+**When** an agent queries for approaches similar to its current task
+**Then** the system returns the top-5 most similar entries ranked by cosine similarity
+**And** results include both successful and failed approaches (FR73)
+
+### Story 10.3: Knowledge Decay & Lifecycle
+
+As the system,
+I want knowledge entries to decay over time,
+So that stale patterns don't override recent learnings.
+
+**Acceptance Criteria:**
+
+**Given** knowledge entries with varying ages
+**When** similarity search runs
+**Then** results are weighted by recency (newer entries rank higher at equal similarity)
+**And** entries older than configurable threshold (default 90 days) are excluded (FR74)
+
+### Story 10.4: Knowledge CLI
+
+As a user,
+I want to view and manage knowledge entries via CLI,
+So that I can audit what my hive has learned.
+
+**Acceptance Criteria:**
+
+**Given** knowledge entries exist
+**When** the user runs `hive knowledge list --type code-review`
+**Then** entries are displayed with: task type, approach summary, outcome, age
+**And** `hive knowledge search "how to handle timeouts"` returns semantically similar entries (FR75)
+
+---
+
+## Epic 11: Agent Collaboration & Webhooks
+
+Agents can collaborate through dialog threads, and the system sends notifications via webhooks.
+
+### Story 11.1: Dialog Thread Management
+
+As an agent,
+I want to start a conversation with another agent,
+So that we can collaboratively solve complex problems.
+
+**Acceptance Criteria:**
+
+**Given** two registered agents
+**When** agent A initiates a dialog with agent B on a topic
+**Then** a dialog thread is created with: initiator, participant, topic, status
+**And** messages are stored in dialog_messages table (FR76, FR77)
+
+### Story 11.2: Dialog Thread API & CLI
+
+As a user,
+I want to view dialog threads and their messages,
+So that I can understand how agents collaborate.
+
+**Acceptance Criteria:**
+
+**Given** dialog threads exist
+**When** the user runs `hive dialogs list`
+**Then** active and recent threads are displayed
+**And** `hive dialogs show <thread-id>` displays the full conversation (FR78, FR79)
+
+### Story 11.3: Webhook Configuration
+
+As a user,
+I want to configure webhooks for event notifications,
+So that I'm notified when important things happen in my hive.
+
+**Acceptance Criteria:**
+
+**Given** the user runs `hive webhook add --name slack-alerts --url https://hooks.slack.com/... --type slack --events task.failed,agent.isolated`
+**When** a matching event occurs
+**Then** the system sends a formatted notification to the webhook URL
+**And** webhook delivery retries 3 times with exponential backoff on failure (FR80, FR81, FR83)
+
+### Story 11.4: GitHub & Generic Webhook Formats
+
+As a user,
+I want webhook notifications in GitHub and generic formats,
+So that I can integrate with my existing tools.
+
+**Acceptance Criteria:**
+
+**Given** a webhook configured with `--type github` or `--type generic`
+**When** a matching event occurs
+**Then** the notification is formatted for the specified platform
+**And** GitHub format includes PR/issue context when relevant (FR82)
+
+---
+
+## Epic 12: v0.2 Integration & Polish
+
+End-to-end integration of all v0.2 features with comprehensive testing.
+
+### Story 12.1: v0.2 Migration & Schema Update
+
+As a developer,
+I want the v0.2 database schema migration,
+So that all new tables are created on upgrade.
+
+**Acceptance Criteria:**
+
+**Given** an existing v0.1 database
+**When** the v0.2 binary starts
+**Then** migration 002 runs automatically creating: knowledge, trust_history, dialog_threads, dialog_messages, webhooks tables
+**And** existing data is preserved
+**And** migration is idempotent
+
+### Story 12.2: Integration Test — Full v0.2 Flow
+
+As a developer,
+I want an end-to-end test exercising all v0.2 features,
+So that I'm confident the system works as a whole.
+
+**Acceptance Criteria:**
+
+**Given** the full v0.2 system is running
+**When** the integration test runs
+**Then** it exercises: register agent → run workflow → trust promotes → knowledge stored → dashboard shows updates → webhook fires
+**And** all assertions pass
+
+### Story 12.3: v0.2 Documentation Update
+
+As a user,
+I want updated documentation for all v0.2 features,
+So that I can use the new capabilities.
+
+**Acceptance Criteria:**
+
+**Given** all v0.2 features are implemented
+**When** the documentation is updated
+**Then** quickstart.md covers dashboard access, trust configuration, and knowledge CLI
+**And** new docs: dashboard-guide.md, trust-configuration.md, knowledge-layer.md, webhooks.md

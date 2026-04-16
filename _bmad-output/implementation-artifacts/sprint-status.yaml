@@ -104,3 +104,48 @@ development_status:
   7-8-shell-completion: done
   7-9-cicd-pipeline-cross-platform-build: done
   epic-7-retrospective: done
+
+  # ========================================
+  # v0.2 — Trust & Visibility
+  # ========================================
+
+  # Epic 8: Dashboard UI
+  epic-8: backlog
+  8-1-svelte-project-setup-embedding: backlog
+  8-2-agent-health-dashboard-page: backlog
+  8-3-task-flow-visualization: backlog
+  8-4-event-timeline: backlog
+  8-5-websocket-hub: backlog
+  8-6-cost-tracking-page: backlog
+  epic-8-retrospective: optional
+
+  # Epic 9: Graduated Autonomy Engine
+  epic-9: backlog
+  9-1-trust-level-tracking: backlog
+  9-2-auto-promotion-engine: backlog
+  9-3-per-task-type-overrides: backlog
+  9-4-manual-trust-management: backlog
+  epic-9-retrospective: optional
+
+  # Epic 10: Shared Knowledge Layer
+  epic-10: backlog
+  10-1-knowledge-store-crud: backlog
+  10-2-vector-similarity-search: backlog
+  10-3-knowledge-decay-lifecycle: backlog
+  10-4-knowledge-cli: backlog
+  epic-10-retrospective: optional
+
+  # Epic 11: Agent Collaboration & Webhooks
+  epic-11: backlog
+  11-1-dialog-thread-management: backlog
+  11-2-dialog-thread-api-cli: backlog
+  11-3-webhook-configuration: backlog
+  11-4-github-generic-webhook-formats: backlog
+  epic-11-retrospective: optional
+
+  # Epic 12: v0.2 Integration & Polish
+  epic-12: backlog
+  12-1-v02-migration-schema-update: backlog
+  12-2-integration-test-full-v02-flow: backlog
+  12-3-v02-documentation-update: backlog
+  epic-12-retrospective: optional
