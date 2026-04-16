@@ -5,11 +5,37 @@ import (
 	"testing"
 	"time"
 
+	"github.com/JulienLeotier/hive/internal/adapter"
 	"github.com/JulienLeotier/hive/internal/event"
 	"github.com/JulienLeotier/hive/internal/storage"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+type fakeAdapter struct {
+	checkpointCalls int
+	resumeCalls     int
+	resumedWith     adapter.Checkpoint
+}
+
+func (f *fakeAdapter) Declare(context.Context) (adapter.AgentCapabilities, error) {
+	return adapter.AgentCapabilities{}, nil
+}
+func (f *fakeAdapter) Invoke(context.Context, adapter.Task) (adapter.TaskResult, error) {
+	return adapter.TaskResult{}, nil
+}
+func (f *fakeAdapter) Health(context.Context) (adapter.HealthStatus, error) {
+	return adapter.HealthStatus{Status: "healthy"}, nil
+}
+func (f *fakeAdapter) Checkpoint(context.Context) (adapter.Checkpoint, error) {
+	f.checkpointCalls++
+	return adapter.Checkpoint{Data: map[string]any{"step": 3}}, nil
+}
+func (f *fakeAdapter) Resume(_ context.Context, cp adapter.Checkpoint) error {
+	f.resumeCalls++
+	f.resumedWith = cp
+	return nil
+}
 
 func setupSupervisor(t *testing.T) (*Store, *Router, *CheckpointSupervisor) {
 	st, err := storage.Open(t.TempDir())
@@ -65,6 +91,40 @@ func TestSupervisorStartStop(t *testing.T) {
 	sup.Start(ctx)
 	time.Sleep(30 * time.Millisecond)
 	sup.Stop()
+}
+
+func TestSupervisorPollPersistsCheckpoint(t *testing.T) {
+	store, _, sup := setupSupervisor(t)
+	ctx := context.Background()
+
+	_, err := store.db.ExecContext(ctx,
+		`INSERT INTO tasks (id, workflow_id, type, status, agent_id, input)
+		 VALUES ('t1','w','x','running','a1','{}')`)
+	require.NoError(t, err)
+
+	fa := &fakeAdapter{}
+	sup.WithAdapterResolver(func(agentID string) adapter.Adapter { return fa })
+
+	require.NoError(t, sup.Poll(ctx))
+	assert.Equal(t, 1, fa.checkpointCalls)
+
+	var cp string
+	store.db.QueryRow(`SELECT checkpoint FROM tasks WHERE id='t1'`).Scan(&cp)
+	assert.Contains(t, cp, `"step":3`)
+}
+
+func TestSupervisorResumeOnAgentPassesCheckpoint(t *testing.T) {
+	store, _, sup := setupSupervisor(t)
+	ctx := context.Background()
+
+	_, err := store.db.ExecContext(ctx,
+		`INSERT INTO tasks (id, workflow_id, type, status, agent_id, input, checkpoint)
+		 VALUES ('t1','w','x','pending','', '{}', '{"step":3}')`)
+	require.NoError(t, err)
+
+	fa := &fakeAdapter{}
+	require.NoError(t, sup.ResumeOnAgent(ctx, "t1", fa))
+	assert.Equal(t, 1, fa.resumeCalls)
 }
 
 func TestSaveCheckpointStampsTimestamp(t *testing.T) {

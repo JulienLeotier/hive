@@ -15,6 +15,12 @@ data_dir: ~/.hive/data
 # HTTP server port for API and dashboard
 # Default: 8233
 port: 8233
+
+# Storage backend: "sqlite" (default, single-node) or "postgres" (v1.0, multi-node)
+# storage: sqlite
+
+# Connection string when storage: postgres
+# postgres_url: postgres://user:pass@host:5432/hive?sslmode=disable
 ```
 
 ## Workflow Configuration
@@ -76,6 +82,8 @@ All config values can be overridden with `HIVE_`-prefixed environment variables.
 | `HIVE_LOG_LEVEL` | `log_level` | `HIVE_LOG_LEVEL=debug` |
 | `HIVE_DATA_DIR` | `data_dir` | `HIVE_DATA_DIR=/var/lib/hive` |
 | `HIVE_PORT` | `port` | `HIVE_PORT=9000` |
+| `HIVE_STORAGE` | `storage` | `HIVE_STORAGE=postgres` |
+| `HIVE_POSTGRES_URL` | `postgres_url` | `HIVE_POSTGRES_URL=postgres://…` |
 
 ## Defaults
 

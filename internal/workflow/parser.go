@@ -16,11 +16,14 @@ type Config struct {
 
 // TaskDef defines a single task within a workflow.
 type TaskDef struct {
-	Name       string   `yaml:"name"`
-	Type       string   `yaml:"type"`       // capability required (e.g., "code-review")
-	Input      any      `yaml:"input,omitempty"`
-	DependsOn  []string `yaml:"depends_on,omitempty"`
-	Condition  string   `yaml:"condition,omitempty"` // e.g., "result.score > 0.8"
+	Name      string   `yaml:"name"`
+	Type      string   `yaml:"type"` // capability required (e.g., "code-review")
+	Input     any      `yaml:"input,omitempty"`
+	DependsOn []string `yaml:"depends_on,omitempty"`
+	Condition string   `yaml:"condition,omitempty"` // e.g., "upstream.review.score > 0.8"
+	// Default marks this task as the "else" branch. Runs iff no sibling at the
+	// same DAG level (same DependsOn set) had a condition that evaluated to true.
+	Default bool `yaml:"default,omitempty"`
 }
 
 // TriggerDef defines how a workflow is triggered.

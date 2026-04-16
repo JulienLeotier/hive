@@ -5,12 +5,24 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"sort"
+	"strings"
 	"sync"
 
 	"github.com/JulienLeotier/hive/internal/adapter"
 	"github.com/JulienLeotier/hive/internal/event"
 	"github.com/JulienLeotier/hive/internal/task"
 )
+
+// depsKey stringifies a task's dependency set so sibling tasks can be grouped.
+func depsKey(deps []string) string {
+	if len(deps) == 0 {
+		return ""
+	}
+	sorted := append([]string{}, deps...)
+	sort.Strings(sorted)
+	return strings.Join(sorted, ",")
+}
 
 // Engine orchestrates workflow execution: creates tasks, routes to agents, executes in DAG order.
 type Engine struct {
@@ -109,26 +121,51 @@ func (e *Engine) executeLevel(ctx context.Context, workflowID string, level []Ta
 		adapter adapter.Adapter
 	}
 
+	// Story 3.5 branch routing: first evaluate every task's condition so we can
+	// decide which `default: true` siblings should run as the "else" branch.
+	conditionPassed := map[string]bool{} // depsKey → any sibling passed
+	passed := map[string]bool{}          // taskName → included in run
+	for _, td := range level {
+		if td.Default {
+			continue
+		}
+		key := depsKey(td.DependsOn)
+		if td.Condition == "" {
+			passed[td.Name] = true
+			conditionPassed[key] = true
+			continue
+		}
+		evalCtx := buildEvalContext(result, td.DependsOn)
+		ok, err := EvaluateCondition(td.Condition, evalCtx)
+		if err != nil {
+			return fmt.Errorf("evaluating condition for task %s: %w", td.Name, err)
+		}
+		passed[td.Name] = ok
+		if ok {
+			conditionPassed[key] = true
+		}
+	}
+	// Defaults run iff no sibling at the same deps-key passed its condition.
+	for _, td := range level {
+		if !td.Default {
+			continue
+		}
+		key := depsKey(td.DependsOn)
+		passed[td.Name] = !conditionPassed[key]
+	}
+
 	var prepared []preparedTask
 	for _, td := range level {
-		// Story 3.5: skip tasks whose condition evaluates to false.
-		if td.Condition != "" {
-			evalCtx := buildEvalContext(result, td.DependsOn)
-			ok, err := EvaluateCondition(td.Condition, evalCtx)
-			if err != nil {
-				return fmt.Errorf("evaluating condition for task %s: %w", td.Name, err)
+		if !passed[td.Name] {
+			slog.Info("task skipped by condition", "task", td.Name, "condition", td.Condition, "default", td.Default)
+			if e.eventBus != nil {
+				_, _ = e.eventBus.Publish(ctx, "task.skipped", "workflow_engine", map[string]string{
+					"workflow_id": workflowID,
+					"task":        td.Name,
+					"condition":   td.Condition,
+				})
 			}
-			if !ok {
-				slog.Info("task skipped by condition", "task", td.Name, "condition", td.Condition)
-				if e.eventBus != nil {
-					_, _ = e.eventBus.Publish(ctx, "task.skipped", "workflow_engine", map[string]string{
-						"workflow_id": workflowID,
-						"task":        td.Name,
-						"condition":   td.Condition,
-					})
-				}
-				continue
-			}
+			continue
 		}
 
 		inputJSON := e.buildInput(td, result)

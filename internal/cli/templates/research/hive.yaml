@@ -1,0 +1,20 @@
+name: research
+tasks:
+  - name: search-academic
+    type: research
+    input:
+      query: "{{query}}"
+      source: academic
+  - name: search-web
+    type: research
+    input:
+      query: "{{query}}"
+      source: web
+  - name: aggregate
+    type: summarize
+    depends_on: [search-academic, search-web]
+  - name: report
+    type: report-generate
+    depends_on: [aggregate]
+    input:
+      format: pdf

@@ -81,3 +81,14 @@ func TestEvaluateBadCondition(t *testing.T) {
 	_, err := EvaluateCondition("this is not a condition", ctxWith(nil))
 	assert.Error(t, err)
 }
+
+func TestEvaluateNegation(t *testing.T) {
+	ctx := ctxWith(map[string]map[string]any{"review": {"score": 0.5}})
+	ok, err := EvaluateCondition("!(upstream.review.score > 0.8)", ctx)
+	require.NoError(t, err)
+	assert.True(t, ok, "negation should fire when inner condition is false")
+
+	ok, err = EvaluateCondition("!(upstream.review.score > 0.4)", ctx)
+	require.NoError(t, err)
+	assert.False(t, ok, "negation of a true condition is false")
+}

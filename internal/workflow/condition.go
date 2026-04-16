@@ -39,11 +39,13 @@ func buildEvalContext(result *RunResult, deps []string) evalContext {
 }
 
 // EvaluateCondition reports whether a task's condition is satisfied.
-// An empty condition is always true.
+// An empty condition is always true. A leading "!" negates the whole thing
+// so `!(upstream.x > 5)` is the natural "else" syntax.
 //
 // Supported syntax:
 //
-//	<path> <op> <literal>
+//	[!] <path> <op> <literal>
+//	[!] ( <path> <op> <literal> )
 //
 // where <path> is dotted (e.g. upstream.review.score), <op> is one of
 // == != > >= < <= contains, and <literal> is either a number, a bool, or a
@@ -53,6 +55,16 @@ func EvaluateCondition(cond string, ctx evalContext) (bool, error) {
 	cond = strings.TrimSpace(cond)
 	if cond == "" {
 		return true, nil
+	}
+
+	negate := false
+	if strings.HasPrefix(cond, "!") {
+		negate = true
+		cond = strings.TrimSpace(cond[1:])
+		// Strip surrounding parens
+		if strings.HasPrefix(cond, "(") && strings.HasSuffix(cond, ")") {
+			cond = strings.TrimSpace(cond[1 : len(cond)-1])
+		}
 	}
 
 	// Match <path> <op> <literal>
@@ -65,12 +77,21 @@ func EvaluateCondition(cond string, ctx evalContext) (bool, error) {
 	path, op, litStr := m[1], m[2], strings.TrimSpace(m[3])
 
 	lhs, found := lookup(ctx, path)
+	var result bool
 	if !found {
 		// Missing value: only equality checks against null/empty succeed.
-		return op == "==" && (litStr == "null" || litStr == `""`), nil
+		result = op == "==" && (litStr == "null" || litStr == `""`)
+	} else {
+		r, err := compare(lhs, op, litStr)
+		if err != nil {
+			return false, err
+		}
+		result = r
 	}
-
-	return compare(lhs, op, litStr)
+	if negate {
+		result = !result
+	}
+	return result, nil
 }
 
 func lookup(ctx evalContext, path string) (any, bool) {

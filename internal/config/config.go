@@ -12,9 +12,11 @@ import (
 
 // Config holds the application configuration.
 type Config struct {
-	LogLevel string `yaml:"log_level"`
-	DataDir  string `yaml:"data_dir"`
-	Port     int    `yaml:"port"`
+	LogLevel    string `yaml:"log_level"`
+	DataDir     string `yaml:"data_dir"`
+	Port        int    `yaml:"port"`
+	Storage     string `yaml:"storage"`      // "sqlite" (default) or "postgres"
+	PostgresURL string `yaml:"postgres_url"` // used when storage=postgres
 }
 
 // Default returns a Config with sensible defaults.
@@ -67,5 +69,11 @@ func applyEnvOverrides(cfg *Config) {
 		if p, err := strconv.Atoi(v); err == nil {
 			cfg.Port = p
 		}
+	}
+	if v := os.Getenv("HIVE_STORAGE"); v != "" {
+		cfg.Storage = v
+	}
+	if v := os.Getenv("HIVE_POSTGRES_URL"); v != "" {
+		cfg.PostgresURL = v
 	}
 }

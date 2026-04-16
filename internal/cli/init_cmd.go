@@ -2,8 +2,10 @@ package cli
 
 import (
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/spf13/cobra"
 )
@@ -20,104 +22,71 @@ var initCmd = &cobra.Command{
 			projectName = args[0]
 		}
 
-		if err := os.MkdirAll(projectName, 0755); err != nil {
+		if err := os.MkdirAll(projectName, 0o755); err != nil {
 			return fmt.Errorf("creating project directory: %w", err)
 		}
 
-		// Create hive.yaml
-		workflowYAML := getTemplate(template, projectName)
-		if err := os.WriteFile(filepath.Join(projectName, "hive.yaml"), []byte(workflowYAML), 0644); err != nil {
+		// Story 7.5/7.6/7.7: templates copy the full tree (workflow + agent configs + README).
+		if template != "" {
+			if err := copyTemplate(template, projectName); err != nil {
+				return err
+			}
+			fmt.Printf("Project '%s' created from template '%s'\n", projectName, template)
+			fmt.Printf("  hive.yaml      — workflow configuration\n")
+			fmt.Printf("  agents/*.yaml  — agent personas (one per task)\n")
+			fmt.Printf("  README.md      — template-specific setup instructions\n")
+			return nil
+		}
+
+		// No template: emit a minimal starter.
+		if err := os.WriteFile(filepath.Join(projectName, "hive.yaml"),
+			[]byte(fmt.Sprintf("name: %s\ntasks:\n  - name: example-task\n    type: example\n    input:\n      message: \"Hello from Hive!\"\n", projectName)),
+			0o644); err != nil {
 			return err
 		}
-
-		// Create agents directory
 		agentsDir := filepath.Join(projectName, "agents")
-		if err := os.MkdirAll(agentsDir, 0755); err != nil {
+		if err := os.MkdirAll(agentsDir, 0o755); err != nil {
 			return fmt.Errorf("creating agents directory: %w", err)
 		}
-		if err := os.WriteFile(filepath.Join(agentsDir, ".gitkeep"), []byte(""), 0644); err != nil {
-			return fmt.Errorf("creating .gitkeep: %w", err)
-		}
-
-		// Create README
-		readme := fmt.Sprintf("# %s\n\nA Hive project — AI agent orchestration.\n\n## Quick Start\n\n```bash\nhive add-agent --name my-agent --type http --url http://localhost:8080\nhive run\nhive status\n```\n", projectName)
-		if err := os.WriteFile(filepath.Join(projectName, "README.md"), []byte(readme), 0644); err != nil {
-			return fmt.Errorf("creating README: %w", err)
-		}
+		_ = os.WriteFile(filepath.Join(agentsDir, ".gitkeep"), []byte(""), 0o644)
+		_ = os.WriteFile(filepath.Join(projectName, "README.md"),
+			[]byte(fmt.Sprintf("# %s\n\nA Hive project — AI agent orchestration.\n\n## Quick Start\n\n```bash\nhive add-agent --name my-agent --type http --url http://localhost:8080\nhive run\nhive status\n```\n", projectName)),
+			0o644)
 
 		fmt.Printf("Project '%s' created!\n", projectName)
-		fmt.Printf("  hive.yaml   — workflow configuration\n")
-		fmt.Printf("  agents/     — agent configurations\n")
-		fmt.Printf("  README.md   — getting started\n")
-		if template != "" {
-			fmt.Printf("  template:   %s\n", template)
-		}
-		fmt.Printf("\nNext: cd %s && hive add-agent --name my-agent --type http --url http://localhost:8080\n", projectName)
+		fmt.Printf("Next: cd %s && hive add-agent --name my-agent --type http --url http://localhost:8080\n", projectName)
 		return nil
 	},
 }
 
-func getTemplate(template, projectName string) string {
-	switch template {
-	case "code-review":
-		return fmt.Sprintf(`name: %s
-tasks:
-  - name: review
-    type: code-review
-    input:
-      source: pr
-  - name: summarize
-    type: summarize
-    depends_on: [review]
-    input:
-      format: markdown
-`, projectName)
-	case "content-pipeline":
-		return fmt.Sprintf(`name: %s
-tasks:
-  - name: write
-    type: content-write
-    input:
-      topic: "{{topic}}"
-  - name: edit
-    type: content-edit
-    depends_on: [write]
-  - name: optimize
-    type: seo-optimize
-    depends_on: [edit]
-  - name: publish
-    type: publish
-    depends_on: [optimize]
-`, projectName)
-	case "research":
-		return fmt.Sprintf(`name: %s
-tasks:
-  - name: search-a
-    type: research
-    input:
-      query: "{{query}}"
-      source: academic
-  - name: search-b
-    type: research
-    input:
-      query: "{{query}}"
-      source: web
-  - name: aggregate
-    type: summarize
-    depends_on: [search-a, search-b]
-  - name: report
-    type: report-generate
-    depends_on: [aggregate]
-`, projectName)
-	default:
-		return fmt.Sprintf(`name: %s
-tasks:
-  - name: example-task
-    type: example
-    input:
-      message: "Hello from Hive!"
-`, projectName)
+// copyTemplate walks the embedded template tree and materialises it on disk.
+func copyTemplate(template, dest string) error {
+	root := "templates/" + template
+	if _, err := fs.Stat(templatesFS, root); err != nil {
+		return fmt.Errorf("unknown template %q (available: code-review, content-pipeline, research)", template)
 	}
+	return fs.WalkDir(templatesFS, root, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		rel := strings.TrimPrefix(path, root)
+		rel = strings.TrimPrefix(rel, "/")
+		outPath := dest
+		if rel != "" {
+			outPath = filepath.Join(dest, rel)
+		}
+		if d.IsDir() {
+			return os.MkdirAll(outPath, 0o755)
+		}
+		data, err := fs.ReadFile(templatesFS, path)
+		if err != nil {
+			return err
+		}
+		if err := os.MkdirAll(filepath.Dir(outPath), 0o755); err != nil {
+			return err
+		}
+		return os.WriteFile(outPath, data, 0o644)
+	})
 }
 
 func init() {
