@@ -53,7 +53,17 @@ var serveCmd = &cobra.Command{
 		// NATS bus is configured this fan-out reaches peer nodes automatically.
 		mgr := agent.NewManager(store.DB).WithPublisher(bus.PublishErr)
 
-		breakers := resilience.NewBreakerRegistry(resilience.DefaultBreakerConfig())
+		// Story 5.1 AC: breaker threshold + reset are configurable.
+		breakerCfg := resilience.DefaultBreakerConfig()
+		if cfg.Breaker != nil {
+			if cfg.Breaker.Threshold > 0 {
+				breakerCfg.Threshold = cfg.Breaker.Threshold
+			}
+			if cfg.Breaker.ResetTimeoutSeconds > 0 {
+				breakerCfg.ResetTimeout = time.Duration(cfg.Breaker.ResetTimeoutSeconds) * time.Second
+			}
+		}
+		breakers := resilience.NewBreakerRegistry(breakerCfg)
 
 		// Story 19.3: federation resolver + proxy. When no local agent is
 		// capable, Router.WithFederation hands control to the resolver.
@@ -71,18 +81,32 @@ var serveCmd = &cobra.Command{
 		breakers.OnStateChange(watcher.Hook())
 
 		// Periodic checkpoint supervisor — reassigns tasks whose checkpoint has gone stale.
+		// Story 2.6 AC: interval is configurable.
 		taskStore := task.NewStore(store.DB, bus)
 		supervisorCtx, supervisorCancel := context.WithCancel(context.Background())
 		defer supervisorCancel()
-		supervisor := task.NewCheckpointSupervisor(taskStore, router, 30*time.Second, 5*time.Minute)
+		interval := 30 * time.Second
+		maxAge := 5 * time.Minute
+		if cfg.Checkpoint != nil {
+			if cfg.Checkpoint.IntervalSeconds > 0 {
+				interval = time.Duration(cfg.Checkpoint.IntervalSeconds) * time.Second
+			}
+			if cfg.Checkpoint.MaxAgeSeconds > 0 {
+				maxAge = time.Duration(cfg.Checkpoint.MaxAgeSeconds) * time.Second
+			}
+		}
+		supervisor := task.NewCheckpointSupervisor(taskStore, router, interval, maxAge)
 		supervisor.Start(supervisorCtx)
 		defer supervisor.Stop()
 
 		// Cost tracker with bus so budget breaches emit cost.alert events.
 		_ = cost.NewTracker(store.DB).WithBus(bus.PublishErr)
 
-		// Story 10.1: auto-record knowledge on every task completion/failure.
+		// Story 10.1 + 10.3: auto-record knowledge, configurable max-age.
 		kStore := knowledge.NewStore(store.DB).WithEmbedder(knowledge.NewHashingEmbedder(128))
+		if cfg.Knowledge != nil && cfg.Knowledge.MaxAgeDays > 0 {
+			kStore.WithMaxAge(time.Duration(cfg.Knowledge.MaxAgeDays) * 24 * time.Hour)
+		}
 		knowledge.NewAutoRecorder(store.DB, kStore).Attach(bus)
 
 		// Story 18.3: auto-credit tokens to agents on task.completed.

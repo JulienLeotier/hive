@@ -176,7 +176,11 @@ func (s *Server) SetFederationShared(caps []string) {
 // RBACMiddleware can enforce per-resource rules. If no user store is attached,
 // every authenticated request is treated as an admin (dev mode compatibility).
 func (s *Server) Handler() http.Handler {
-	return AuthMiddleware(s.keyMgr)(s.roleResolver(s.mux))
+	var jwtValidator JWTValidator
+	if s.oidc != nil {
+		jwtValidator = s.oidc.ValidateJWT
+	}
+	return AuthMiddlewareWithJWT(s.keyMgr, jwtValidator)(s.roleResolver(s.mux))
 }
 
 // roleResolver pulls the API key name set by AuthMiddleware and resolves it to
@@ -446,6 +450,14 @@ func (s *Server) handleMetrics(w http.ResponseWriter, r *http.Request) {
 	eventsLastMinute := s.countEventsSince(ctx, time.Now().Add(-time.Minute))
 	eventsLastHour := s.countEventsSince(ctx, time.Now().Add(-time.Hour))
 
+	// Story 6.4 AC: "average task duration". Computed across every completed
+	// task in the last 24h.
+	var avgDurationS float64
+	_ = s.db().QueryRowContext(ctx,
+		`SELECT COALESCE(AVG((JULIANDAY(completed_at) - JULIANDAY(started_at)) * 86400), 0)
+		 FROM tasks WHERE status = 'completed' AND started_at IS NOT NULL AND completed_at IS NOT NULL
+		 AND created_at >= datetime('now', '-1 day')`).Scan(&avgDurationS)
+
 	metrics := map[string]any{
 		"agents": map[string]int{
 			"total":       len(agents),
@@ -463,7 +475,8 @@ func (s *Server) handleMetrics(w http.ResponseWriter, r *http.Request) {
 			"last_minute": eventsLastMinute,
 			"last_hour":   eventsLastHour,
 		},
-		"timestamp": time.Now().UTC().Format(time.RFC3339),
+		"avg_task_duration_seconds": avgDurationS,
+		"timestamp":                 time.Now().UTC().Format(time.RFC3339),
 	}
 
 	writeJSON(w, metrics)

@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/JulienLeotier/hive/internal/adapter"
 	"github.com/JulienLeotier/hive/internal/event"
@@ -33,7 +34,15 @@ type Engine struct {
 	adapters      map[string]adapter.Adapter // agentID -> adapter
 	agentConfigs  map[string]string          // agentID -> baseURL
 	concurrency   int                        // per-workflow level concurrency cap
+	retry         *adapter.RetryPolicy       // default retry for auto-built HTTP adapters
 	mu            sync.Mutex
+}
+
+// WithRetry installs a default retry policy applied to auto-built HTTP adapters.
+// Story 5.5.
+func (e *Engine) WithRetry(p *adapter.RetryPolicy) *Engine {
+	e.retry = p
+	return e
 }
 
 // NewEngine creates a workflow execution engine.
@@ -207,7 +216,24 @@ func (e *Engine) executeLevel(ctx context.Context, workflowID string, level []Ta
 		e.mu.Lock()
 		a, ok := e.adapters[agentID]
 		if !ok {
-			a = adapter.NewHTTPAdapter(e.agentConfigs[agentID])
+			httpA := adapter.NewHTTPAdapter(e.agentConfigs[agentID])
+			if e.retry != nil {
+				// Clone retry with a per-task OnAttempt that emits task.retry events.
+				policy := *e.retry
+				tid := t.ID
+				policy.OnAttempt = func(attempt int, wait time.Duration, lastErr error) {
+					if e.eventBus != nil {
+						_, _ = e.eventBus.Publish(ctx, "task.retry", "workflow_engine", map[string]any{
+							"task_id": tid,
+							"attempt": attempt,
+							"wait_ms": wait.Milliseconds(),
+							"error":   lastErr.Error(),
+						})
+					}
+				}
+				httpA.WithRetry(&policy)
+			}
+			a = httpA
 		}
 		e.mu.Unlock()
 

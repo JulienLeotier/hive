@@ -19,6 +19,36 @@ type Config struct {
 	PostgresURL string           `yaml:"postgres_url"` // used when storage=postgres
 	OIDC        *OIDCBlock       `yaml:"oidc,omitempty"`
 	Federation  *FederationBlock `yaml:"federation,omitempty"`
+	Checkpoint  *CheckpointBlock `yaml:"checkpoint,omitempty"`
+	Breaker     *BreakerBlock    `yaml:"breaker,omitempty"`
+	Retry       *RetryBlock      `yaml:"retry,omitempty"`
+	Knowledge   *KnowledgeBlock  `yaml:"knowledge,omitempty"`
+}
+
+// CheckpointBlock tunes the background checkpoint supervisor. Story 2.6.
+type CheckpointBlock struct {
+	IntervalSeconds int `yaml:"interval_seconds,omitempty"` // default 30
+	MaxAgeSeconds   int `yaml:"max_age_seconds,omitempty"`  // default 300 (5m)
+}
+
+// BreakerBlock tunes circuit breaker thresholds. Story 5.1.
+type BreakerBlock struct {
+	Threshold           int `yaml:"threshold,omitempty"`             // default 3
+	ResetTimeoutSeconds int `yaml:"reset_timeout_seconds,omitempty"` // default 30
+}
+
+// RetryBlock tunes the default retry policy. Story 5.5.
+type RetryBlock struct {
+	MaxAttempts   int     `yaml:"max_attempts,omitempty"`    // default 3
+	InitialWaitMs int     `yaml:"initial_wait_ms,omitempty"` // default 200
+	MaxWaitMs     int     `yaml:"max_wait_ms,omitempty"`     // default 2000
+	Multiplier    float64 `yaml:"multiplier,omitempty"`      // default 2.0
+	Jitter        float64 `yaml:"jitter,omitempty"`          // default 0.2
+}
+
+// KnowledgeBlock tunes knowledge-layer lifecycle. Story 10.3.
+type KnowledgeBlock struct {
+	MaxAgeDays int `yaml:"max_age_days,omitempty"` // default 90
 }
 
 // OIDCBlock holds OIDC SSO settings. Story 21.1.

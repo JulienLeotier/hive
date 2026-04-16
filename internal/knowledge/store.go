@@ -39,6 +39,15 @@ func (s *Store) WithEmbedder(e Embedder) *Store {
 	return s
 }
 
+// WithMaxAge configures the decay cutoff for Search/VectorSearch. Story 10.3
+// AC: "entries older than configurable threshold (default 90 days) are excluded".
+func (s *Store) WithMaxAge(maxAge time.Duration) *Store {
+	if maxAge > 0 {
+		s.maxAge = maxAge
+	}
+	return s
+}
+
 // Record stores a knowledge entry (success or failure).
 func (s *Store) Record(ctx context.Context, taskType, approach, outcome, ctxJSON string) error {
 	var embedding []byte

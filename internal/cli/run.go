@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/JulienLeotier/hive/internal/adapter"
 	"github.com/JulienLeotier/hive/internal/agent"
 	"github.com/JulienLeotier/hive/internal/config"
 	"github.com/JulienLeotier/hive/internal/event"
@@ -14,6 +15,20 @@ import (
 	"github.com/JulienLeotier/hive/internal/workflow"
 	"github.com/spf13/cobra"
 )
+
+func firstNonZeroInt(v, fallback int) int {
+	if v != 0 {
+		return v
+	}
+	return fallback
+}
+
+func firstNonZeroFloat(v, fallback float64) float64 {
+	if v != 0 {
+		return v
+	}
+	return fallback
+}
 
 var runCmd = &cobra.Command{
 	Use:   "run [workflow-file]",
@@ -58,6 +73,18 @@ var runCmd = &cobra.Command{
 		wfStore := workflow.NewStore(store.DB, bus)
 
 		engine := workflow.NewEngine(wfStore, taskStore, taskRouter, bus)
+
+		// Story 5.5 AC: retry policy configurable from hive.yaml.
+		if cfg.Retry != nil {
+			policy := &adapter.RetryPolicy{
+				MaxAttempts: firstNonZeroInt(cfg.Retry.MaxAttempts, 3),
+				InitialWait: time.Duration(firstNonZeroInt(cfg.Retry.InitialWaitMs, 200)) * time.Millisecond,
+				MaxWait:     time.Duration(firstNonZeroInt(cfg.Retry.MaxWaitMs, 2000)) * time.Millisecond,
+				Multiplier:  firstNonZeroFloat(cfg.Retry.Multiplier, 2.0),
+				Jitter:      firstNonZeroFloat(cfg.Retry.Jitter, 0.2),
+			}
+			engine.WithRetry(policy)
+		}
 
 		// Load registered agents and create adapters
 		agentMgr := agent.NewManager(store.DB)

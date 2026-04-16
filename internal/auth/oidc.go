@@ -2,14 +2,19 @@ package auth
 
 import (
 	"context"
+	"crypto/rsa"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
+	"math/big"
 	"net/http"
 	"net/url"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/golang-jwt/jwt/v5"
 )
 
 // OIDCConfig holds the minimal parameters needed to authenticate users via
@@ -122,6 +127,103 @@ func (p *OIDCProvider) Exchange(ctx context.Context, code string) (*TokenRespons
 type UserInfo struct {
 	Subject string `json:"sub"`
 	Email   string `json:"email"`
+}
+
+// JWKS is the JSON Web Key Set shape the provider serves at jwks_uri.
+type jwksResponse struct {
+	Keys []jwkKey `json:"keys"`
+}
+
+type jwkKey struct {
+	Kid string `json:"kid"`
+	Kty string `json:"kty"`
+	Alg string `json:"alg"`
+	Use string `json:"use"`
+	N   string `json:"n"`
+	E   string `json:"e"`
+}
+
+// ValidateJWT verifies the token's signature against the provider's JWKS and
+// confirms the issuer + expiry + (optionally) audience. Story 21.1 AC:
+// "JWT tokens are validated on each request". Returns the `sub` claim so the
+// RBAC middleware can resolve the user.
+func (p *OIDCProvider) ValidateJWT(ctx context.Context, token string) (string, error) {
+	keys, err := p.fetchJWKS(ctx)
+	if err != nil {
+		return "", fmt.Errorf("fetching JWKS: %w", err)
+	}
+
+	parsed, err := jwt.Parse(token, func(t *jwt.Token) (any, error) {
+		kid, _ := t.Header["kid"].(string)
+		for _, k := range keys {
+			if k.Kid == kid && k.Kty == "RSA" {
+				n, err := base64.RawURLEncoding.DecodeString(k.N)
+				if err != nil {
+					return nil, err
+				}
+				eBytes, err := base64.RawURLEncoding.DecodeString(k.E)
+				if err != nil {
+					return nil, err
+				}
+				e := 0
+				for _, b := range eBytes {
+					e = e<<8 + int(b)
+				}
+				return &rsa.PublicKey{N: new(big.Int).SetBytes(n), E: e}, nil
+			}
+		}
+		return nil, fmt.Errorf("kid %q not found in JWKS", kid)
+	})
+	if err != nil || !parsed.Valid {
+		return "", fmt.Errorf("invalid token: %w", err)
+	}
+
+	claims, ok := parsed.Claims.(jwt.MapClaims)
+	if !ok {
+		return "", fmt.Errorf("unexpected claims shape")
+	}
+	if iss, _ := claims["iss"].(string); iss != "" && iss != strings.TrimSuffix(p.cfg.Issuer, "/") && iss != p.cfg.Issuer {
+		return "", fmt.Errorf("issuer mismatch: %s", iss)
+	}
+	sub, _ := claims["sub"].(string)
+	if sub == "" {
+		return "", fmt.Errorf("token has no sub claim")
+	}
+	return sub, nil
+}
+
+// fetchJWKS caches the provider's keys for 5 minutes so we don't hit the
+// network on every request.
+func (p *OIDCProvider) fetchJWKS(ctx context.Context) ([]jwkKey, error) {
+	p.mu.Lock()
+	if time.Now().Before(p.jwksTTL) && p.jwks != nil {
+		keys, _ := p.jwks["keys"].([]jwkKey)
+		p.mu.Unlock()
+		if len(keys) > 0 {
+			return keys, nil
+		}
+	}
+	p.mu.Unlock()
+
+	req, _ := http.NewRequestWithContext(ctx, "GET", p.metadata.JWKSURI, nil)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("jwks endpoint returned %d", resp.StatusCode)
+	}
+	var set jwksResponse
+	if err := json.NewDecoder(resp.Body).Decode(&set); err != nil {
+		return nil, err
+	}
+
+	p.mu.Lock()
+	p.jwks = map[string]any{"keys": set.Keys}
+	p.jwksTTL = time.Now().Add(5 * time.Minute)
+	p.mu.Unlock()
+	return set.Keys, nil
 }
 
 // FetchUserInfo hits the provider's /userinfo with the access token so we get

@@ -133,29 +133,57 @@ func (km *KeyManager) HasKeys(ctx context.Context) bool {
 	return count > 0
 }
 
+// JWTValidator is the minimal OIDC surface AuthMiddleware needs to verify a
+// bearer JWT. Satisfied by *auth.OIDCProvider.ValidateJWT (passed as a closure).
+type JWTValidator func(ctx context.Context, token string) (subject string, err error)
+
 // AuthMiddleware returns an HTTP middleware that validates Bearer tokens.
 // If no API keys exist, all requests are allowed (dev mode).
+// Accepts either:
+//   - an API key (hive_<hex>) validated against the KeyManager
+//   - a JWT (three dot-separated base64 segments) validated via jwtValidator
+//     when one is installed (Story 21.1 AC: "JWT tokens are validated on
+//     each request")
 func AuthMiddleware(km *KeyManager) func(http.Handler) http.Handler {
+	return AuthMiddlewareWithJWT(km, nil)
+}
+
+// AuthMiddlewareWithJWT is the JWT-aware variant. Pass nil for dev /
+// API-key-only deployments.
+func AuthMiddlewareWithJWT(km *KeyManager, jwtValidator JWTValidator) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			ctx := r.Context()
 
-			// Skip auth if no keys configured (dev mode)
-			if !km.HasKeys(ctx) {
+			// Skip auth if no keys configured AND no JWT validator (dev mode).
+			if !km.HasKeys(ctx) && jwtValidator == nil {
 				next.ServeHTTP(w, r)
 				return
 			}
 
 			auth := r.Header.Get("Authorization")
 			if auth == "" || !strings.HasPrefix(auth, "Bearer ") {
-				http.Error(w, `{"data":null,"error":{"code":"UNAUTHORIZED","message":"Missing or invalid Authorization header. Use: Bearer <api-key>"}}`, http.StatusUnauthorized)
+				http.Error(w, `{"data":null,"error":{"code":"UNAUTHORIZED","message":"Missing or invalid Authorization header. Use: Bearer <api-key|jwt>"}}`, http.StatusUnauthorized)
 				return
 			}
 
 			token := strings.TrimPrefix(auth, "Bearer ")
+
+			// JWT first when the token looks like one (three dot-separated segments).
+			if jwtValidator != nil && strings.Count(token, ".") == 2 {
+				subject, err := jwtValidator(ctx, token)
+				if err == nil {
+					slog.Debug("authenticated via JWT", "subject", subject, "path", r.URL.Path)
+					ctx = context.WithValue(ctx, ctxKeyName, subject)
+					next.ServeHTTP(w, r.WithContext(ctx))
+					return
+				}
+				slog.Debug("JWT validation failed, falling back to API key", "error", err)
+			}
+
 			keyName, valid := km.Validate(ctx, token)
 			if !valid {
-				http.Error(w, `{"data":null,"error":{"code":"UNAUTHORIZED","message":"Invalid API key"}}`, http.StatusUnauthorized)
+				http.Error(w, `{"data":null,"error":{"code":"UNAUTHORIZED","message":"Invalid API key or JWT"}}`, http.StatusUnauthorized)
 				return
 			}
 

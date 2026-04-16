@@ -6,14 +6,36 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math/rand"
 	"net/http"
 	"time"
 )
+
+// rand2 returns a pseudo-random float in [0,1). A package-private helper keeps
+// the retry-jitter code self-contained.
+func rand2() float64 { return rand.Float64() }
 
 // HTTPAdapter communicates with agents over HTTP/JSON.
 type HTTPAdapter struct {
 	BaseURL    string
 	HTTPClient *http.Client
+
+	// Retry wraps Invoke so transient 5xx / network errors get exponential
+	// backoff + jitter. Story 5.5. nil = no retries.
+	Retry *RetryPolicy
+}
+
+// RetryPolicy is the adapter-facing view of resilience.RetryPolicy. Kept
+// inline so the adapter package doesn't import resilience (avoids a cycle
+// if resilience ever needs an adapter).
+type RetryPolicy struct {
+	MaxAttempts int
+	InitialWait time.Duration
+	MaxWait     time.Duration
+	Multiplier  float64
+	Jitter      float64
+	// OnAttempt is called before each retry so the engine can emit task.retry.
+	OnAttempt func(attempt int, wait time.Duration, lastErr error)
 }
 
 // NewHTTPAdapter creates an adapter for an HTTP-based agent.
@@ -26,6 +48,12 @@ func NewHTTPAdapter(baseURL string) *HTTPAdapter {
 	}
 }
 
+// WithRetry installs a retry policy on Invoke.
+func (a *HTTPAdapter) WithRetry(p *RetryPolicy) *HTTPAdapter {
+	a.Retry = p
+	return a
+}
+
 func (a *HTTPAdapter) Declare(ctx context.Context) (AgentCapabilities, error) {
 	var caps AgentCapabilities
 	if err := a.get(ctx, "/declare", &caps); err != nil {
@@ -36,10 +64,61 @@ func (a *HTTPAdapter) Declare(ctx context.Context) (AgentCapabilities, error) {
 
 func (a *HTTPAdapter) Invoke(ctx context.Context, task Task) (TaskResult, error) {
 	var result TaskResult
-	if err := a.post(ctx, "/invoke", task, &result); err != nil {
-		return result, fmt.Errorf("invoke task %s: %w", task.ID, err)
+	call := func() error {
+		result = TaskResult{}
+		return a.post(ctx, "/invoke", task, &result)
 	}
-	return result, nil
+
+	if a.Retry == nil || a.Retry.MaxAttempts <= 1 {
+		if err := call(); err != nil {
+			return result, fmt.Errorf("invoke task %s: %w", task.ID, err)
+		}
+		return result, nil
+	}
+
+	// Story 5.5: retry with exponential backoff + jitter.
+	wait := a.Retry.InitialWait
+	var lastErr error
+	for attempt := 1; attempt <= a.Retry.MaxAttempts; attempt++ {
+		lastErr = call()
+		if lastErr == nil {
+			return result, nil
+		}
+		if attempt == a.Retry.MaxAttempts {
+			break
+		}
+		if a.Retry.OnAttempt != nil {
+			a.Retry.OnAttempt(attempt, wait, lastErr)
+		}
+		select {
+		case <-time.After(a.Retry.jitterWait(wait)):
+		case <-ctx.Done():
+			return result, fmt.Errorf("invoke task %s aborted: %w", task.ID, ctx.Err())
+		}
+		next := time.Duration(float64(wait) * a.Retry.Multiplier)
+		if a.Retry.MaxWait > 0 && next > a.Retry.MaxWait {
+			next = a.Retry.MaxWait
+		}
+		wait = next
+	}
+	return result, fmt.Errorf("invoke task %s: after %d attempts: %w", task.ID, a.Retry.MaxAttempts, lastErr)
+}
+
+func (p *RetryPolicy) jitterWait(d time.Duration) time.Duration {
+	if p.Jitter <= 0 {
+		return d
+	}
+	j := p.Jitter
+	if j > 1 {
+		j = 1
+	}
+	// Use math/rand which is fine for jitter (not crypto).
+	delta := (rand2() - 0.5) * 2 * j
+	scaled := float64(d) * (1 + delta)
+	if scaled < 0 {
+		scaled = 0
+	}
+	return time.Duration(scaled)
 }
 
 func (a *HTTPAdapter) Health(ctx context.Context) (HealthStatus, error) {
