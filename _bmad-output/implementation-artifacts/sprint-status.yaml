@@ -149,3 +149,43 @@ development_status:
   12-2-integration-test-full-v02-flow: done
   12-3-v02-documentation-update: done
   epic-12-retrospective: done
+
+  # ========================================
+  # v0.3 — Ecosystem & Scale
+  # ========================================
+
+  # Epic 13: Framework Adapters
+  epic-13: backlog
+  13-1-crewai-adapter: backlog
+  13-2-langchain-langraph-adapter: backlog
+  13-3-autogen-adapter: backlog
+  13-4-openai-assistants-adapter: backlog
+  epic-13-retrospective: optional
+
+  # Epic 14: HiveHub Template Registry
+  epic-14: backlog
+  14-1-template-packaging-publishing: backlog
+  14-2-template-search: backlog
+  14-3-template-installation: backlog
+  epic-14-retrospective: optional
+
+  # Epic 15: NATS Distributed Event Bus
+  epic-15: backlog
+  15-1-eventbus-interface-extraction: backlog
+  15-2-nats-backend-implementation: backlog
+  15-3-nats-connection-management: backlog
+  epic-15-retrospective: optional
+
+  # Epic 16: Enhanced Knowledge & Cost Management
+  epic-16: backlog
+  16-1-vector-embedding-knowledge-search: backlog
+  16-2-external-embedding-api-support: backlog
+  16-3-cost-tracker: backlog
+  16-4-budget-alerts: backlog
+  epic-16-retrospective: optional
+
+  # Epic 17: v0.3 Integration & Polish
+  epic-17: backlog
+  17-1-v03-migration: backlog
+  17-2-v03-documentation: backlog
+  epic-17-retrospective: optional

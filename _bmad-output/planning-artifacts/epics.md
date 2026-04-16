@@ -1183,3 +1183,241 @@ So that I can use the new capabilities.
 **When** the documentation is updated
 **Then** quickstart.md covers dashboard access, trust configuration, and knowledge CLI
 **And** new docs: dashboard-guide.md, trust-configuration.md, knowledge-layer.md, webhooks.md
+
+---
+
+# v0.3 Epics — Ecosystem & Scale
+
+## Epic 13: Framework Adapters
+
+Users can orchestrate agents from CrewAI, LangChain, AutoGen, and OpenAI Assistants alongside existing agents.
+
+### Story 13.1: CrewAI Adapter
+
+As a user,
+I want to register CrewAI agents with Hive,
+So that I can orchestrate my CrewAI crews alongside other frameworks.
+
+**Acceptance Criteria:**
+
+**Given** a CrewAI project
+**When** the user runs `hive add-agent --type crewai --path ./my-crew`
+**Then** the adapter detects CrewAI crew configuration and maps crew capabilities to Hive protocol
+**And** tasks are invoked by running the CrewAI crew via subprocess (FR84, FR88)
+
+### Story 13.2: LangChain/LangGraph Adapter
+
+As a user,
+I want to register LangChain and LangGraph agents with Hive,
+So that I can orchestrate my LangChain chains and graphs.
+
+**Acceptance Criteria:**
+
+**Given** a LangChain agent exposed via HTTP (LangServe)
+**When** the user runs `hive add-agent --type langchain --url http://localhost:8000`
+**Then** the adapter connects to the LangServe endpoint and maps available chains to Hive capabilities
+**And** tasks invoke specific chains via the LangServe API (FR85, FR88)
+
+### Story 13.3: AutoGen Adapter
+
+As a user,
+I want to register Microsoft AutoGen agents with Hive,
+So that I can include AutoGen conversations in multi-framework workflows.
+
+**Acceptance Criteria:**
+
+**Given** an AutoGen agent exposed via HTTP
+**When** the user runs `hive add-agent --type autogen --url http://localhost:8001`
+**Then** the adapter connects and maps AutoGen agent capabilities
+**And** tasks invoke AutoGen conversations via HTTP (FR86, FR88)
+
+### Story 13.4: OpenAI Assistants Adapter
+
+As a user,
+I want to register OpenAI Assistants with Hive,
+So that I can orchestrate GPT-based assistants alongside local agents.
+
+**Acceptance Criteria:**
+
+**Given** an OpenAI API key and Assistant ID
+**When** the user runs `hive add-agent --type openai --assistant-id asst_xxx --api-key $OPENAI_API_KEY`
+**Then** the adapter creates threads and runs via the OpenAI Assistants API
+**And** tasks create a run, poll for completion, and return the result (FR87, FR88)
+
+---
+
+## Epic 14: HiveHub Template Registry
+
+Users can publish, discover, and install pre-built hive configurations from a community registry.
+
+### Story 14.1: Template Packaging & Publishing
+
+As a user,
+I want to publish my hive configuration as a reusable template,
+So that other users can benefit from my orchestration patterns.
+
+**Acceptance Criteria:**
+
+**Given** a working hive project with `hive.yaml` and agent configs
+**When** the user runs `hive publish --name my-template --description "..."`
+**Then** the system packages: hive.yaml, agents/ directory, README.md, metadata.json
+**And** pushes the package to the HiveHub Git registry (FR89, FR92, FR93)
+
+### Story 14.2: Template Search
+
+As a user,
+I want to search for templates by keyword or category,
+So that I can find relevant orchestration patterns quickly.
+
+**Acceptance Criteria:**
+
+**Given** the HiveHub registry contains templates
+**When** the user runs `hive search code-review`
+**Then** matching templates are displayed with: name, description, author, download count
+**And** results are fetched from the HiveHub Git registry index (FR90)
+
+### Story 14.3: Template Installation
+
+As a user,
+I want to install a HiveHub template into my project,
+So that I can start with a proven orchestration pattern.
+
+**Acceptance Criteria:**
+
+**Given** a template exists in HiveHub
+**When** the user runs `hive install content-pipeline`
+**Then** the template files are downloaded and merged into the current project
+**And** existing files are not overwritten without confirmation (FR91)
+
+---
+
+## Epic 15: NATS Distributed Event Bus
+
+The system supports NATS as a pluggable event bus backend for multi-node deployments.
+
+### Story 15.1: EventBus Interface Extraction
+
+As a developer,
+I want the event bus behind a pluggable interface,
+So that I can swap between embedded and NATS backends.
+
+**Acceptance Criteria:**
+
+**Given** the existing in-process event bus
+**When** the EventBus interface is extracted
+**Then** both embedded and NATS backends implement the same interface
+**And** all existing tests pass with no changes (FR94, FR97)
+
+### Story 15.2: NATS Backend Implementation
+
+As a user,
+I want to configure NATS as my event bus backend,
+So that multiple Hive nodes can share the same event stream.
+
+**Acceptance Criteria:**
+
+**Given** a NATS server is running
+**When** the user sets `event_bus: nats` and `nats_url: nats://localhost:4222` in `hive.yaml`
+**Then** events are published to and subscribed from NATS subjects
+**And** event ordering is maintained per-subject (FR95, FR96)
+
+### Story 15.3: NATS Connection Management
+
+As the system,
+I want robust NATS connection handling,
+So that the event bus recovers from network issues.
+
+**Acceptance Criteria:**
+
+**Given** a NATS connection is established
+**When** the connection drops
+**Then** the system automatically reconnects with exponential backoff
+**And** queued events are delivered after reconnection
+**And** connection state is reported in `hive status`
+
+---
+
+## Epic 16: Enhanced Knowledge & Cost Management
+
+The knowledge layer gets semantic search, and the system tracks costs with budget alerts.
+
+### Story 16.1: Vector Embedding for Knowledge Search
+
+As a user,
+I want knowledge search to understand meaning, not just keywords,
+So that I find relevant approaches even when using different terminology.
+
+**Acceptance Criteria:**
+
+**Given** knowledge entries exist
+**When** the user searches "how to handle API timeouts"
+**Then** entries about "retry on connection failure" or "backoff strategy" are returned
+**And** embeddings are generated locally with a lightweight model (FR98, FR99)
+
+### Story 16.2: External Embedding API Support
+
+As a user,
+I want to optionally use OpenAI or Anthropic embeddings for higher quality search,
+So that knowledge retrieval is more accurate for complex domains.
+
+**Acceptance Criteria:**
+
+**Given** the user configures `embedding_api: openai` in `hive.yaml`
+**When** knowledge entries are created or searched
+**Then** embeddings are generated via the configured API
+**And** the system falls back to local embeddings if the API is unavailable (FR100)
+
+### Story 16.3: Cost Tracker
+
+As a user,
+I want to see how much each agent and workflow costs,
+So that I can manage my AI spend effectively.
+
+**Acceptance Criteria:**
+
+**Given** agents declare `cost_per_run` in their capabilities
+**When** tasks complete
+**Then** the system accumulates cost per agent and per workflow in the costs table
+**And** `hive status --costs` shows a cost breakdown (FR101, FR102)
+
+### Story 16.4: Budget Alerts
+
+As a user,
+I want to set budget alerts so I'm notified when spending exceeds thresholds,
+So that I avoid runaway AI costs.
+
+**Acceptance Criteria:**
+
+**Given** a budget alert configured via `hive budget set --agent code-reviewer --daily-limit 10`
+**When** the agent's daily cost exceeds $10
+**Then** a `cost.alert` event is emitted and webhook notifications fire
+**And** the alert is shown in `hive status` (FR103, FR104)
+
+---
+
+## Epic 17: v0.3 Integration & Polish
+
+### Story 17.1: v0.3 Migration
+
+As a developer,
+I want the v0.3 database migration adding costs and budget tables,
+So that cost tracking persists.
+
+**Acceptance Criteria:**
+
+**Given** an existing v0.2 database
+**When** the v0.3 binary starts
+**Then** migration 003 runs creating: costs, budget_alerts tables
+**And** existing data preserved, migration idempotent
+
+### Story 17.2: v0.3 Documentation
+
+As a user,
+I want documentation for all v0.3 features,
+So that I can use adapters, HiveHub, NATS, and cost management.
+
+**Acceptance Criteria:**
+
+**Given** all v0.3 features implemented
+**When** docs are updated
+**Then** new docs: adapters-guide.md (CrewAI, LangChain, AutoGen, OpenAI), hivehub-guide.md, nats-setup.md, cost-management.md

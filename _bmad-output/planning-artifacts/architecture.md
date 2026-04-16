@@ -191,10 +191,16 @@ _This document defines all architectural decisions, implementation patterns, and
 13. Knowledge layer with sqlite-vec for vector search ✅
 14. Gorilla/websocket for WS transport ✅
 
-**Deferred Decisions (Post-v0.2):**
-- Distributed event bus (NATS) — when multi-node needed
+**v0.3 Decisions (Now Active):**
+15. NATS as pluggable event bus backend via EventBus interface ✅
+16. HiveHub as Git-backed template registry (GitHub repo) ✅
+17. Framework adapters: CrewAI (Python subprocess), LangChain (HTTP), AutoGen (HTTP), OpenAI (API) ✅
+18. Lightweight local embeddings for knowledge search (bag-of-words TF-IDF → upgrade later) ✅
+19. Cost tracking via agent capabilities `cost_per_run` field ✅
+
+**Deferred Decisions (Post-v0.3):**
 - PostgreSQL migration — when SQLite limits hit
-- Market-based allocation engine — v0.3
+- Market-based allocation engine — v1.0
 
 ### Data Architecture
 
@@ -644,6 +650,11 @@ hive/
 | Knowledge Layer (FR70-75) | `internal/knowledge/` | store.go, embedding.go |
 | Agent Dialog (FR76-79) | `internal/dialog/` | thread.go |
 | Webhooks (FR80-83) | `internal/webhook/` | dispatcher.go, slack.go, github.go |
+| Framework Adapters (FR84-88) | `internal/adapter/` | crewai.go, langchain.go, autogen.go, openai.go |
+| HiveHub (FR89-93) | `internal/hivehub/` | registry.go, publish.go, install.go |
+| NATS Event Bus (FR94-97) | `internal/event/` | nats.go (implements EventBus interface) |
+| Enhanced Knowledge (FR98-100) | `internal/knowledge/` | embedding.go (upgraded) |
+| Cost Management (FR101-104) | `internal/cost/` | tracker.go, alerts.go |
 
 ### Data Flow
 

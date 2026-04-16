@@ -108,11 +108,20 @@ Proves one thing: **agents from different frameworks can be orchestrated togethe
 - Webhook integrations: Slack, GitHub, email notifications for key events
 - WebSocket support for real-time dashboard updates
 
-### Vision (Future)
+### v0.3 Scope — Ecosystem & Scale
 
-- HiveHub marketplace for pre-built hive templates
+**Goal:** Expand the adapter ecosystem, add template marketplace, and prepare for multi-node.
+
+- Additional adapters: CrewAI, LangChain/LangGraph, AutoGen, OpenAI Assistants
+- HiveHub: template registry where users publish and discover pre-built hive configurations
+- NATS event bus: pluggable replacement for in-process bus, enabling multi-node deployment
+- Vector embeddings for knowledge search (replace keyword matching with semantic search)
+- Agent cost tracking: per-agent and per-workflow cost aggregation with budget alerts
+- `hive publish` and `hive search` CLI commands for HiveHub
+
+### Vision (Future — v1.0+)
+
 - Market-based task allocation with internal economy
-- Multi-node distributed deployment
 - Cross-hive networking (inter-organizational agent collaboration)
 - Hive Cloud (managed orchestration-as-a-service)
 - Self-optimizing orchestration (AI-driven pattern optimization)
@@ -490,6 +499,42 @@ interface HiveAdapter {
 - FR81: System supports Slack webhook format for channel notifications
 - FR82: System supports GitHub webhook format for PR/issue integration
 - FR83: User can configure notification rules with filters (e.g., "only notify on failed tasks")
+
+### Additional Adapters (v0.3)
+
+- FR84: User can register CrewAI agents via `hive add-agent --type crewai`
+- FR85: User can register LangChain/LangGraph agents via `hive add-agent --type langchain`
+- FR86: User can register AutoGen agents via `hive add-agent --type autogen`
+- FR87: User can register OpenAI Assistants via `hive add-agent --type openai`
+- FR88: Each adapter auto-detects framework capabilities and maps to Hive protocol
+
+### HiveHub Template Registry (v0.3)
+
+- FR89: User can publish a hive configuration as a template to HiveHub via `hive publish`
+- FR90: User can search HiveHub for templates by keyword, category, or capability via `hive search`
+- FR91: User can install a HiveHub template into a local project via `hive install <template-name>`
+- FR92: Published templates include: hive.yaml, agent configs, README, metadata (author, version, description)
+- FR93: HiveHub stores templates in a Git-backed registry (GitHub repo)
+
+### Distributed Event Bus (v0.3)
+
+- FR94: System supports NATS as a pluggable event bus backend (alternative to in-process)
+- FR95: User can configure event bus backend via `hive.yaml` (`event_bus: nats` or `event_bus: embedded`)
+- FR96: NATS backend enables multi-node Hive deployments sharing the same event stream
+- FR97: All existing event bus features (pub/sub, query, replay) work identically on both backends
+
+### Enhanced Knowledge (v0.3)
+
+- FR98: Knowledge search uses vector embeddings for semantic similarity (not just keyword matching)
+- FR99: System generates embeddings locally using lightweight model (no external API required for basic usage)
+- FR100: User can optionally configure external embedding API (OpenAI, Anthropic) for higher quality
+
+### Cost Management (v0.3)
+
+- FR101: System tracks cumulative cost per agent based on declared cost_per_run
+- FR102: System tracks cumulative cost per workflow execution
+- FR103: User can set budget alerts per agent or per workflow (e.g., "alert when agent exceeds $10/day")
+- FR104: Budget alerts trigger webhook notifications when thresholds are exceeded
 
 ## Non-Functional Requirements
 
