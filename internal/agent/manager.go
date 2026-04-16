@@ -13,14 +13,26 @@ import (
 	"github.com/oklog/ulid/v2"
 )
 
+// Publisher is the minimal surface the manager needs to broadcast lifecycle
+// events. Usually backed by event.Bus (SQLite) or event.NATSBus (clustered).
+type Publisher func(ctx context.Context, eventType, source string, payload any) error
+
 // Manager handles agent registration, listing, and removal.
 type Manager struct {
-	db *sql.DB
+	db  *sql.DB
+	bus Publisher
 }
 
 // NewManager creates an agent manager backed by the given database.
 func NewManager(db *sql.DB) *Manager {
 	return &Manager{db: db}
+}
+
+// WithPublisher installs a publisher so Register/Remove emit events; Story 22.2
+// uses this to replicate registrations across a NATS cluster.
+func (m *Manager) WithPublisher(p Publisher) *Manager {
+	m.bus = p
+	return m
 }
 
 // Register adds a new agent to the hive after validating connectivity.
@@ -61,6 +73,12 @@ func (m *Manager) Register(ctx context.Context, name, agentType, baseURL string)
 	}
 
 	slog.Info("agent registered", "name", name, "type", agentType, "health", health.Status)
+
+	if m.bus != nil {
+		_ = m.bus(ctx, "agent.registered", name, map[string]string{
+			"id": id.String(), "type": agentType, "url": baseURL,
+		})
+	}
 
 	return &Agent{
 		ID:           id.String(),
@@ -152,6 +170,9 @@ func (m *Manager) Remove(ctx context.Context, name string) error {
 		return fmt.Errorf("agent %s not found", name)
 	}
 	slog.Info("agent removed", "name", name)
+	if m.bus != nil {
+		_ = m.bus(ctx, "agent.removed", name, map[string]string{"name": name})
+	}
 	return nil
 }
 

@@ -12,6 +12,15 @@ func ensureDir(path string) error {
 	return os.MkdirAll(path, 0o755)
 }
 
+func joinPath(root, rel string) string {
+	return filepath.Join(root, rel)
+}
+
+func fileExists(p string) bool {
+	_, err := os.Stat(p)
+	return err == nil
+}
+
 func writeTemplateFile(root, relPath, content string) error {
 	abs := filepath.Join(root, relPath)
 	if err := os.MkdirAll(filepath.Dir(abs), 0o755); err != nil {

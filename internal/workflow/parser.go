@@ -13,6 +13,9 @@ type Config struct {
 	Tasks      []TaskDef   `yaml:"tasks"`
 	Trigger    *TriggerDef `yaml:"trigger,omitempty"`
 	Allocation string      `yaml:"allocation,omitempty"` // "capability-match" (default), "market", "round-robin"
+	// Concurrency caps the number of tasks run in parallel at any given DAG
+	// level (Story 2.5). 0 means unlimited.
+	Concurrency int `yaml:"concurrency,omitempty"`
 }
 
 // TaskDef defines a single task within a workflow.
@@ -64,6 +67,51 @@ var validAllocations = map[string]bool{
 	"capability-match":  true,
 	"market":            true,
 	"round-robin":       true,
+}
+
+// ValidateAll runs every check and returns all issues (Story 3.6 AC:
+// "reports all issues — not just the first one"). validate() is kept as a
+// thin wrapper that returns the first joined error for backward compat.
+func ValidateAll(cfg *Config) []error {
+	var issues []error
+	if cfg.Name == "" {
+		issues = append(issues, fmt.Errorf("workflow name is required"))
+	}
+	if len(cfg.Tasks) == 0 {
+		issues = append(issues, fmt.Errorf("workflow must have at least one task"))
+	}
+	if !validAllocations[cfg.Allocation] {
+		issues = append(issues, fmt.Errorf("workflow allocation %q not supported (use capability-match, market, or round-robin)", cfg.Allocation))
+	}
+
+	taskNames := make(map[string]bool)
+	for _, t := range cfg.Tasks {
+		if t.Name == "" {
+			issues = append(issues, fmt.Errorf("task name is required"))
+			continue
+		}
+		if t.Type == "" {
+			issues = append(issues, fmt.Errorf("task %s: type is required", t.Name))
+		}
+		if taskNames[t.Name] {
+			issues = append(issues, fmt.Errorf("duplicate task name: %s", t.Name))
+		}
+		taskNames[t.Name] = true
+	}
+	for _, t := range cfg.Tasks {
+		for _, dep := range t.DependsOn {
+			if !taskNames[dep] {
+				issues = append(issues, fmt.Errorf("task %s depends on unknown task %s", t.Name, dep))
+			}
+			if dep == t.Name {
+				issues = append(issues, fmt.Errorf("task %s cannot depend on itself", t.Name))
+			}
+		}
+	}
+	if err := detectCycles(cfg.Tasks); err != nil {
+		issues = append(issues, err)
+	}
+	return issues
 }
 
 func validate(cfg *Config) error {
@@ -153,6 +201,46 @@ func detectCycles(tasks []TaskDef) error {
 		return fmt.Errorf("circular dependency detected in workflow tasks")
 	}
 	return nil
+}
+
+// CriticalPath computes the longest chain of dependent tasks — an upper bound
+// on sequential execution time when each task costs the same. Story 3.2.
+// Returns the task names in order.
+func CriticalPath(tasks []TaskDef) []string {
+	adj := map[string][]string{}
+	byName := map[string]TaskDef{}
+	for _, t := range tasks {
+		byName[t.Name] = t
+		adj[t.Name] = append(adj[t.Name], t.DependsOn...)
+	}
+
+	memo := map[string][]string{}
+	var longest func(name string) []string
+	longest = func(name string) []string {
+		if cached, ok := memo[name]; ok {
+			return cached
+		}
+		var best []string
+		for _, dep := range adj[name] {
+			path := longest(dep)
+			if len(path) > len(best) {
+				best = path
+			}
+		}
+		result := append([]string{}, best...)
+		result = append(result, name)
+		memo[name] = result
+		return result
+	}
+
+	var longestOverall []string
+	for _, t := range tasks {
+		p := longest(t.Name)
+		if len(p) > len(longestOverall) {
+			longestOverall = p
+		}
+	}
+	return longestOverall
 }
 
 // TopologicalSort returns tasks in dependency order.

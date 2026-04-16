@@ -94,6 +94,57 @@ type Tuning struct {
 	Rationale string  `json:"rationale"`
 }
 
+// Baseline captures the system's state before an optimization is applied so
+// CompareToBaseline can measure the effect afterwards. Story 20.3.
+type Baseline struct {
+	TakenAt     time.Time     `json:"taken_at"`
+	Snapshot    TrendSnapshot `json:"snapshot"`
+	Description string        `json:"description,omitempty"`
+}
+
+// BaselineDelta is the result of CompareToBaseline.
+type BaselineDelta struct {
+	Baseline        Baseline      `json:"baseline"`
+	Current         TrendSnapshot `json:"current"`
+	TasksRunDelta   int           `json:"tasks_run_delta"`
+	FailureDelta    float64       `json:"failure_rate_delta"` // negative = improved
+	DurationDelta   float64       `json:"avg_duration_delta"` // negative = improved
+	Improved        bool          `json:"improved"`
+}
+
+// SnapshotBaseline takes a snapshot of the current window and stores it in
+// memory — the caller holds the returned Baseline. Persist it next to the
+// approved Tuning so you can CompareToBaseline later.
+func (a *Analyzer) SnapshotBaseline(ctx context.Context, windowDays int, description string) (Baseline, error) {
+	cur, _, err := a.Trend(ctx, windowDays)
+	if err != nil {
+		return Baseline{}, err
+	}
+	return Baseline{
+		TakenAt:     time.Now(),
+		Snapshot:    cur,
+		Description: description,
+	}, nil
+}
+
+// CompareToBaseline measures how far the current window has moved from a
+// previously taken baseline. Negative failure/duration deltas = improvement.
+func (a *Analyzer) CompareToBaseline(ctx context.Context, b Baseline, windowDays int) (BaselineDelta, error) {
+	cur, _, err := a.Trend(ctx, windowDays)
+	if err != nil {
+		return BaselineDelta{}, err
+	}
+	d := BaselineDelta{
+		Baseline:      b,
+		Current:       cur,
+		TasksRunDelta: cur.TasksRun - b.Snapshot.TasksRun,
+		FailureDelta:  cur.FailureRate - b.Snapshot.FailureRate,
+		DurationDelta: cur.AvgDurationS - b.Snapshot.AvgDurationS,
+	}
+	d.Improved = d.FailureDelta <= 0 && d.DurationDelta <= 0
+	return d, nil
+}
+
 // AutoTune derives tuning suggestions from the latest trend snapshot.
 // Suggestions only — callers decide whether to apply them.
 func (a *Analyzer) AutoTune(ctx context.Context) ([]Tuning, error) {

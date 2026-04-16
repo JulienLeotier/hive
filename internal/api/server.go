@@ -29,12 +29,13 @@ type Error struct {
 
 // Server holds all dependencies for the HTTP API.
 type Server struct {
-	agentMgr *agent.Manager
-	eventBus *event.Bus
-	breakers *resilience.BreakerRegistry
-	keyMgr   *KeyManager
-	users    *auth.UserStore
-	mux      *http.ServeMux
+	agentMgr         *agent.Manager
+	eventBus         *event.Bus
+	breakers         *resilience.BreakerRegistry
+	keyMgr           *KeyManager
+	users            *auth.UserStore
+	federationShared []string // capabilities exposed to federated peers (empty = all)
+	mux              *http.ServeMux
 }
 
 // NewServer creates an API server with all dependencies.
@@ -64,8 +65,18 @@ func (s *Server) routes() {
 	s.mux.Handle("GET /api/v1/metrics", auth.RBACMiddleware("system", "read")(http.HandlerFunc(s.handleMetrics)))
 	s.mux.Handle("GET /api/v1/tasks", auth.RBACMiddleware("tasks", "read")(http.HandlerFunc(s.handleListTasks)))
 	s.mux.Handle("GET /api/v1/costs", auth.RBACMiddleware("system", "read")(http.HandlerFunc(s.handleCosts)))
+	// Story 19.2: capabilities endpoint so federated peers can discover what
+	// we're willing to handle. Filtered by FederationShared — no filter means
+	// every registered capability is visible.
+	s.mux.HandleFunc("GET /api/v1/capabilities", s.handleListCapabilities)
 	// Write endpoint: viewers get 403.
 	s.mux.Handle("POST /api/v1/agents", auth.RBACMiddleware("agents", "write")(http.HandlerFunc(s.handleCreateAgent)))
+}
+
+// SetFederationShared configures which capability names are exposed to peers
+// via /api/v1/capabilities. Empty = everything.
+func (s *Server) SetFederationShared(caps []string) {
+	s.federationShared = caps
 }
 
 // Handler returns the HTTP handler with auth + role-resolver middleware chained.
@@ -114,6 +125,42 @@ func (s *Server) roleResolver(next http.Handler) http.Handler {
 // is testable end-to-end.
 func (s *Server) handleCreateAgent(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, map[string]string{"status": "accepted"})
+}
+
+// handleListCapabilities returns only the capabilities the operator has opted
+// to share with federated peers. Story 19.2.
+func (s *Server) handleListCapabilities(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	agents, err := s.agentMgr.List(ctx)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "LIST_FAILED", err.Error())
+		return
+	}
+
+	shareFilter := map[string]bool{}
+	for _, c := range s.federationShared {
+		shareFilter[c] = true
+	}
+
+	seen := map[string]bool{}
+	var caps []string
+	for _, a := range agents {
+		var decl struct {
+			TaskTypes []string `json:"task_types"`
+		}
+		_ = json.Unmarshal([]byte(a.Capabilities), &decl)
+		for _, t := range decl.TaskTypes {
+			if len(shareFilter) > 0 && !shareFilter[t] {
+				continue
+			}
+			if seen[t] {
+				continue
+			}
+			seen[t] = true
+			caps = append(caps, t)
+		}
+	}
+	writeJSON(w, caps)
 }
 
 // Start runs the HTTP server.

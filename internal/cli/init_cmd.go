@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"bufio"
 	"fmt"
 	"io/fs"
 	"os"
@@ -9,6 +10,42 @@ import (
 
 	"github.com/spf13/cobra"
 )
+
+// availableTemplates is kept in sync with the embedded tree.
+var availableTemplates = []string{"code-review", "content-pipeline", "research"}
+
+// promptTemplate offers an interactive selection when stdin is a TTY.
+// Falls back to empty (minimal starter) on any error so `hive init` stays
+// scriptable in CI.
+func promptTemplate(in *os.File, out *os.File) string {
+	info, err := in.Stat()
+	if err != nil || (info.Mode()&os.ModeCharDevice) == 0 {
+		return "" // not a TTY — keep non-interactive
+	}
+
+	fmt.Fprintln(out, "Choose a starter template:")
+	fmt.Fprintln(out, "  0) (none — minimal starter)")
+	for i, name := range availableTemplates {
+		fmt.Fprintf(out, "  %d) %s\n", i+1, name)
+	}
+	fmt.Fprint(out, "Selection [0]: ")
+
+	reader := bufio.NewReader(in)
+	line, err := reader.ReadString('\n')
+	if err != nil {
+		return ""
+	}
+	choice := strings.TrimSpace(line)
+	if choice == "" || choice == "0" {
+		return ""
+	}
+	for i, name := range availableTemplates {
+		if choice == fmt.Sprint(i+1) || choice == name {
+			return name
+		}
+	}
+	return ""
+}
 
 var initCmd = &cobra.Command{
 	Use:   "init [project-name]",
@@ -20,6 +57,11 @@ var initCmd = &cobra.Command{
 		projectName := "my-hive"
 		if len(args) > 0 {
 			projectName = args[0]
+		}
+
+		// Story 7.1 AC: interactive selection when no --template is given.
+		if template == "" {
+			template = promptTemplate(os.Stdin, os.Stdout)
 		}
 
 		if err := os.MkdirAll(projectName, 0o755); err != nil {

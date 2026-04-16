@@ -18,6 +18,7 @@ import (
 	"github.com/JulienLeotier/hive/internal/task"
 	"github.com/JulienLeotier/hive/internal/trust"
 	"github.com/spf13/cobra"
+	"gopkg.in/yaml.v3"
 )
 
 func countTasksByStatus(ctx context.Context, db *sql.DB) (map[string]int, error) {
@@ -79,6 +80,37 @@ var addAgentCmd = &cobra.Command{
 		agentType, _ := cmd.Flags().GetString("type")
 		url, _ := cmd.Flags().GetString("url")
 		path, _ := cmd.Flags().GetString("path")
+		configFile, _ := cmd.Flags().GetString("config")
+
+		// Story 1.3 AC: `hive add-agent --name reviewer --config ./agent.yaml` reads
+		// capabilities (and other fields) from a YAML config file.
+		if configFile != "" {
+			data, err := os.ReadFile(configFile)
+			if err != nil {
+				return fmt.Errorf("reading --config: %w", err)
+			}
+			var fileCfg struct {
+				Name  string `yaml:"name"`
+				Type  string `yaml:"type"`
+				URL   string `yaml:"url"`
+				Path  string `yaml:"path"`
+			}
+			if err := yaml.Unmarshal(data, &fileCfg); err != nil {
+				return fmt.Errorf("parsing --config: %w", err)
+			}
+			if name == "" {
+				name = fileCfg.Name
+			}
+			if agentType == "" {
+				agentType = fileCfg.Type
+			}
+			if url == "" {
+				url = fileCfg.URL
+			}
+			if path == "" {
+				path = fileCfg.Path
+			}
+		}
 
 		if name == "" {
 			return fmt.Errorf("--name is required")
@@ -581,6 +613,7 @@ func init() {
 	addAgentCmd.Flags().String("path", "", "local filesystem path to an agent project (auto-detects type)")
 	addAgentCmd.Flags().String("assistant-id", "", "OpenAI assistant ID (required for --type openai)")
 	addAgentCmd.Flags().String("api-key", "", "OpenAI API key (falls back to $OPENAI_API_KEY)")
+	addAgentCmd.Flags().String("config", "", "YAML file providing name/type/url/path (CLI flags override file)")
 
 	agentTrustOverrideCmd.Flags().String("reason", "", "why this override is being set")
 

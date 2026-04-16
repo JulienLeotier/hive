@@ -73,9 +73,24 @@ func (r *Registry) Get(name string) (*Template, error) {
 	return nil, fmt.Errorf("template %q not found in HiveHub", name)
 }
 
+// InstallOptions customises an Install call.
+type InstallOptions struct {
+	// Force overwrites existing files; otherwise they're skipped and reported.
+	Force bool
+	// Confirm is called when a file already exists and Force is false.
+	// Returning true overwrites, false skips. Nil Confirm treats existing
+	// files as "skip" (safe default; wire it to a prompt in the CLI).
+	Confirm func(path string) bool
+}
+
 // Install downloads a template tarball into dest/. dest is created if missing.
 // Returns the list of files written. Only http(s) template URLs are accepted.
 func (r *Registry) Install(name, dest string) (*Template, []string, error) {
+	return r.InstallWith(name, dest, InstallOptions{})
+}
+
+// InstallWith is the configurable variant of Install.
+func (r *Registry) InstallWith(name, dest string, opts InstallOptions) (*Template, []string, error) {
 	tmpl, err := r.Get(name)
 	if err != nil {
 		return nil, nil, err
@@ -115,6 +130,12 @@ func (r *Registry) Install(name, dest string) (*Template, []string, error) {
 	for _, f := range manifest {
 		if strings.Contains(f.Path, "..") {
 			return nil, nil, fmt.Errorf("unsafe path in manifest: %s", f.Path)
+		}
+		// Story 14.3: don't silently overwrite existing files.
+		if existing := joinPath(dest, f.Path); fileExists(existing) && !opts.Force {
+			if opts.Confirm == nil || !opts.Confirm(f.Path) {
+				continue
+			}
 		}
 		if err := writeTemplateFile(dest, f.Path, f.Content); err != nil {
 			return nil, nil, err

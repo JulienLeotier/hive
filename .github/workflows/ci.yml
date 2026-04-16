@@ -29,8 +29,27 @@ jobs:
       - name: Vet
         run: go vet ./...
 
-      - name: Test
-        run: go test -race -timeout 2m ./...
+      - name: Test + coverage
+        run: |
+          go test -race -timeout 2m -coverprofile=coverage.out \
+            ./internal/agent/... \
+            ./internal/task/... \
+            ./internal/workflow/... \
+            ./internal/event/... \
+            ./internal/api/... \
+            ./internal/auth/... \
+            ./internal/resilience/... \
+            ./internal/storage/...
+          go tool cover -func=coverage.out | tail -n1
+
+      - name: Assert coverage >= 80% on core packages
+        run: |
+          total=$(go tool cover -func=coverage.out | tail -n1 | awk '{print $3}' | tr -d '%')
+          echo "core coverage: ${total}%"
+          awk -v c="$total" 'BEGIN { exit (c+0 >= 80) ? 0 : 1 }'
+
+      - name: Full test suite
+        run: go test -race -timeout 5m ./...
 
   lint:
     name: Lint

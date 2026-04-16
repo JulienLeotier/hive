@@ -11,20 +11,40 @@ import (
 type WakeUpHandler func(ctx context.Context, agentName string) error
 
 // Scheduler manages heartbeat wake-up cycles for agents.
+// Story 4.2: respects system load via a global semaphore (backpressure).
+// If MaxConcurrent wakeups are already in flight, a tick is dropped with a
+// backpressure log rather than queuing unbounded work.
 type Scheduler struct {
-	mu       sync.Mutex
-	timers   map[string]*time.Ticker
-	handler  WakeUpHandler
-	stopChs  map[string]chan struct{}
+	mu            sync.Mutex
+	timers        map[string]*time.Ticker
+	handler       WakeUpHandler
+	stopChs       map[string]chan struct{}
+	concurrency   chan struct{}
+	maxConcurrent int
 }
 
-// NewScheduler creates a heartbeat scheduler.
+// NewScheduler creates a heartbeat scheduler with a default backpressure limit.
+// MaxConcurrent defaults to 16 wake-up cycles in flight; call SetMaxConcurrent
+// to tune.
 func NewScheduler(handler WakeUpHandler) *Scheduler {
-	return &Scheduler{
+	s := &Scheduler{
 		timers:  make(map[string]*time.Ticker),
 		handler: handler,
 		stopChs: make(map[string]chan struct{}),
 	}
+	s.SetMaxConcurrent(16)
+	return s
+}
+
+// SetMaxConcurrent reconfigures the backpressure cap.
+func (s *Scheduler) SetMaxConcurrent(n int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if n <= 0 {
+		n = 1
+	}
+	s.maxConcurrent = n
+	s.concurrency = make(chan struct{}, n)
 }
 
 // Register starts heartbeat scheduling for an agent.
@@ -49,8 +69,17 @@ func (s *Scheduler) Register(agentName string, interval time.Duration) {
 		for {
 			select {
 			case <-ticker.C:
-				if err := s.handler(context.Background(), agentName); err != nil {
-					slog.Error("wake-up cycle failed", "agent", agentName, "error", err)
+				// Story 4.2: drop ticks when we're at capacity instead of queuing.
+				select {
+				case s.concurrency <- struct{}{}:
+					go func() {
+						defer func() { <-s.concurrency }()
+						if err := s.handler(context.Background(), agentName); err != nil {
+							slog.Error("wake-up cycle failed", "agent", agentName, "error", err)
+						}
+					}()
+				default:
+					slog.Warn("backpressure: wake-up skipped", "agent", agentName, "cap", s.maxConcurrent)
 				}
 			case <-stop:
 				ticker.Stop()

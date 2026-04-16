@@ -45,10 +45,11 @@ required endpoints: /declare, /task, /health, and /checkpoint.`,
 		}
 
 		files := map[string]string{
-			"main.go":    adapterMainTmpl,
-			"README.md":  adapterReadmeTmpl,
-			"go.mod":     adapterGoModTmpl,
-			"AGENT.yaml": adapterAgentYamlTmpl,
+			"main.go":             adapterMainTmpl,
+			"README.md":           adapterReadmeTmpl,
+			"go.mod":              adapterGoModTmpl,
+			"AGENT.yaml":           adapterAgentYamlTmpl,
+			"compliance_test.go":  adapterComplianceTestTmpl,
 		}
 
 		for path, tmpl := range files {
@@ -205,4 +206,31 @@ capabilities:
   - "{{.TaskType}}"
 constraints: []
 anti_patterns: []
+`
+
+// adapterComplianceTestTmpl wires the generated adapter into the Hive compliance
+// test harness so new adapters have to keep the protocol contract green.
+const adapterComplianceTestTmpl = `package main
+
+// TODO: import Hive's compliance harness once this adapter is vendored into
+// your monorepo. The test below documents the expected shape; replace the
+// runPing / runCheckpoint stubs with calls against your real adapter.
+
+import (
+	"testing"
+)
+
+func TestAdapterContract(t *testing.T) {
+	// The real test wires in:
+	//   github.com/JulienLeotier/hive/internal/adapter.RunCompliance(&MyAdapter{}, opts)
+	// and asserts result.OK(). Until your adapter is import-ready, at minimum
+	// make sure the four HTTP handlers respond:
+	//   /declare  → 200 with {name, task_types}
+	//   /task     → echoes task_id + status
+	//   /health   → {status: "healthy"}
+	//   /checkpoint → {data: {...}}
+	if testing.Short() {
+		t.Skip("compliance is a full-stack test — wire it in once the adapter is vendored")
+	}
+}
 `

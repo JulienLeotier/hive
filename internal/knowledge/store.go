@@ -93,6 +93,7 @@ func (s *Store) VectorSearch(ctx context.Context, query string, limit int) ([]En
 		score float32
 	}
 	var ranked []scored
+	now := time.Now()
 	for rows.Next() {
 		var e Entry
 		var created string
@@ -101,14 +102,25 @@ func (s *Store) VectorSearch(ctx context.Context, query string, limit int) ([]En
 			continue
 		}
 		e.CreatedAt, _ = time.Parse("2006-01-02 15:04:05", created)
-		score := Cosine(qVec, Decode(blob))
-		if score <= 0 {
+		simScore := Cosine(qVec, Decode(blob))
+		if simScore <= 0 {
 			continue
 		}
-		ranked = append(ranked, scored{entry: e, score: score})
+		// Story 10.3: weight by recency so two entries with identical cosine
+		// similarity prefer the newer one. Weight decays linearly from 1.0
+		// (just recorded) to 0.5 (at maxAge). At equal simScore, newer wins.
+		ageRatio := float32(now.Sub(e.CreatedAt).Seconds() / s.maxAge.Seconds())
+		if ageRatio < 0 {
+			ageRatio = 0
+		}
+		if ageRatio > 1 {
+			ageRatio = 1
+		}
+		recencyBoost := 1.0 - ageRatio*0.5
+		ranked = append(ranked, scored{entry: e, score: simScore * recencyBoost})
 	}
 
-	// Sort descending by similarity.
+	// Sort descending by similarity+recency blend.
 	for i := 1; i < len(ranked); i++ {
 		for j := i; j > 0 && ranked[j].score > ranked[j-1].score; j-- {
 			ranked[j], ranked[j-1] = ranked[j-1], ranked[j]

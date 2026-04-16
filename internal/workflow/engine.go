@@ -32,6 +32,7 @@ type Engine struct {
 	eventBus      *event.Bus
 	adapters      map[string]adapter.Adapter // agentID -> adapter
 	agentConfigs  map[string]string          // agentID -> baseURL
+	concurrency   int                        // per-workflow level concurrency cap
 	mu            sync.Mutex
 }
 
@@ -66,6 +67,9 @@ type RunResult struct {
 
 // Run executes a workflow end-to-end following DAG order with parallel level execution.
 func (e *Engine) Run(ctx context.Context, cfg *Config) (*RunResult, error) {
+	// Respect per-workflow concurrency cap (Story 2.5).
+	e.concurrency = cfg.Concurrency
+
 	// 1. Create workflow record
 	wf, err := e.workflowStore.Create(ctx, cfg.Name, cfg)
 	if err != nil {
@@ -198,14 +202,24 @@ func (e *Engine) executeLevel(ctx context.Context, workflowID string, level []Ta
 		slog.Info("task dispatched", "task", td.Name, "agent", agentName)
 	}
 
-	// Phase 2: Invoke agents in parallel
+	// Phase 2: Invoke agents in parallel, bounded by workflow concurrency (Story 2.5).
 	var wg sync.WaitGroup
 	errCh := make(chan error, len(prepared))
+
+	// A nil semaphore = unlimited parallelism; otherwise acquire before each invoke.
+	var sem chan struct{}
+	if e.concurrency > 0 {
+		sem = make(chan struct{}, e.concurrency)
+	}
 
 	for _, pt := range prepared {
 		wg.Add(1)
 		go func(p preparedTask) {
 			defer wg.Done()
+			if sem != nil {
+				sem <- struct{}{}
+				defer func() { <-sem }()
+			}
 
 			taskResult, err := p.adapter.Invoke(ctx, adapter.Task{
 				ID: p.taskID, Type: p.taskDef.Type, Input: e.buildInput(p.taskDef, result),

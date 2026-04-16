@@ -1,9 +1,11 @@
 package cli
 
 import (
+	"bufio"
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/JulienLeotier/hive/internal/hivehub"
 	"github.com/spf13/cobra"
@@ -59,7 +61,20 @@ var installCmd = &cobra.Command{
 			dest = args[0]
 		}
 
-		tmpl, files, err := registry.Install(args[0], dest)
+		force, _ := cmd.Flags().GetBool("force")
+		tmpl, files, err := registry.InstallWith(args[0], dest, hivehub.InstallOptions{
+			Force: force,
+			Confirm: func(path string) bool {
+				// Story 14.3 AC: don't overwrite without confirmation.
+				fmt.Fprintf(os.Stderr, "File %s already exists. Overwrite? [y/N] ", path)
+				reader := bufio.NewReader(os.Stdin)
+				line, err := reader.ReadString('\n')
+				if err != nil {
+					return false
+				}
+				return strings.EqualFold(strings.TrimSpace(line), "y")
+			},
+		})
 		if err != nil {
 			return err
 		}
@@ -127,6 +142,7 @@ func init() {
 	searchCmd.Flags().String("registry", "", "override HiveHub registry index URL")
 	installCmd.Flags().String("registry", "", "override HiveHub registry index URL")
 	installCmd.Flags().String("dest", "", "destination directory (defaults to template name)")
+	installCmd.Flags().Bool("force", false, "overwrite existing files without prompting")
 
 	publishCmd.Flags().String("name", "", "template name (required)")
 	publishCmd.Flags().String("description", "", "short description")

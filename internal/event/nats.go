@@ -20,6 +20,12 @@ type NATSConn interface {
 	Close()
 }
 
+// NATSConnStatus is the optional interface a NATSConn can expose so the bus
+// can surface connection state in `hive status`. Story 15.3.
+type NATSConnStatus interface {
+	Status() string // e.g., "connected", "reconnecting", "closed"
+}
+
 // Unsubscribe closes a subscription.
 type Unsubscribe interface {
 	Unsubscribe() error
@@ -140,6 +146,15 @@ func (b *NATSBus) Close() {
 	if b.conn != nil {
 		b.conn.Close()
 	}
+}
+
+// ConnectionStatus surfaces the underlying NATSConn's status (Story 15.3).
+// Returns "unknown" if the connection doesn't implement NATSConnStatus.
+func (b *NATSBus) ConnectionStatus() string {
+	if s, ok := b.conn.(NATSConnStatus); ok {
+		return s.Status()
+	}
+	return "unknown"
 }
 
 func (b *NATSBus) handleInbound(_ string, data []byte) {
