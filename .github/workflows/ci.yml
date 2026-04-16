@@ -52,6 +52,31 @@ jobs:
       - name: Full test suite
         run: go test -race -timeout 5m ./...
 
+  postgres-integration:
+    name: Postgres Integration
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: hive
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+          cache: true
+      - name: Run Postgres-backed tests
+        env:
+          POSTGRES_URL: postgres://postgres:hive@localhost:5432/postgres?sslmode=disable
+        run: go test -race -timeout 2m -run Postgres ./internal/storage/...
+
   lint:
     name: Lint
     runs-on: ubuntu-latest
