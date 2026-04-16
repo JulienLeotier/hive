@@ -6,6 +6,7 @@
 		health_status: string;
 		trust_level: string;
 		capabilities: string;
+		updated_at: string;
 	};
 
 	let agents = $state<Agent[]>([]);
@@ -67,6 +68,7 @@
 					<th>Health</th>
 					<th>Trust</th>
 					<th>Capabilities</th>
+					<th>Last check</th>
 				</tr>
 			</thead>
 			<tbody>
@@ -81,6 +83,7 @@
 						</td>
 						<td>{agent.trust_level}</td>
 						<td><code>{agent.capabilities}</code></td>
+						<td>{agent.updated_at || '—'}</td>
 					</tr>
 				{/each}
 			</tbody>

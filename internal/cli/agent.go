@@ -49,6 +49,28 @@ func countByStatus(ctx context.Context, db *sql.DB, table string) (map[string]in
 	return out, rows.Err()
 }
 
+// summariseCapabilities renders the stored capability JSON as a compact list
+// for the status table. Truncates to keep the row readable.
+func summariseCapabilities(capsJSON string) string {
+	if capsJSON == "" {
+		return "—"
+	}
+	var parsed struct {
+		TaskTypes []string `json:"task_types"`
+	}
+	if err := json.Unmarshal([]byte(capsJSON), &parsed); err != nil {
+		return capsJSON
+	}
+	if len(parsed.TaskTypes) == 0 {
+		return "—"
+	}
+	joined := strings.Join(parsed.TaskTypes, ",")
+	if len(joined) > 60 {
+		joined = joined[:57] + "…"
+	}
+	return joined
+}
+
 // refreshHealth concurrently pokes each agent's /health endpoint and updates
 // the stored status. Story 1.4 AC. Keeps a short timeout so `hive status`
 // still responds within 500ms even when some agents are unreachable.
@@ -381,14 +403,15 @@ var statusCmd = &cobra.Command{
 			return nil
 		}
 
-		fmt.Printf("%-20s %-10s %-12s %-10s %-20s\n", "NAME", "TYPE", "HEALTH", "TRUST", "LAST CHECK")
-		fmt.Printf("%-20s %-10s %-12s %-10s %-20s\n", "----", "----", "------", "-----", "----------")
+		fmt.Printf("%-20s %-10s %-12s %-10s %-20s %s\n", "NAME", "TYPE", "HEALTH", "TRUST", "LAST CHECK", "CAPABILITIES")
+		fmt.Printf("%-20s %-10s %-12s %-10s %-20s %s\n", "----", "----", "------", "-----", "----------", "------------")
 		for _, a := range agents {
 			lastCheck := a.UpdatedAt.Format("2006-01-02 15:04:05")
 			if a.UpdatedAt.IsZero() {
 				lastCheck = "—"
 			}
-			fmt.Printf("%-20s %-10s %-12s %-10s %-20s\n", a.Name, a.Type, a.HealthStatus, a.TrustLevel, lastCheck)
+			fmt.Printf("%-20s %-10s %-12s %-10s %-20s %s\n",
+				a.Name, a.Type, a.HealthStatus, a.TrustLevel, lastCheck, summariseCapabilities(a.Capabilities))
 		}
 		fmt.Printf("\nTotal: %d agents\n", len(agents))
 

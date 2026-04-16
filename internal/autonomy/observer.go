@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"fmt"
 	"log/slog"
+	"os"
 	"sync"
 	"time"
 
@@ -151,10 +152,15 @@ type Claimer interface {
 // Story 4.3: observe state. Story 4.4: claim pending tasks. Story 4.5: suppress busywork.
 // Story 4.6: emit structured decision events.
 type DefaultHandler struct {
-	obs     *Observer
-	claimer Claimer
-	tracker *IdleTracker
-	bus     *event.Bus
+	obs      *Observer
+	claimer  Claimer
+	tracker  *IdleTracker
+	bus      *event.Bus
+	planPath string // Story 4.1: when set, re-read PLAN.yaml on every wake-up.
+
+	planMu   sync.Mutex
+	planInfo os.FileInfo
+	plan     *Plan
 }
 
 // NewDefaultHandler builds a wake-up handler that exercises the full cycle.
@@ -162,8 +168,52 @@ func NewDefaultHandler(obs *Observer, claimer Claimer, tracker *IdleTracker, bus
 	return &DefaultHandler{obs: obs, claimer: claimer, tracker: tracker, bus: bus}
 }
 
+// WithPlan enables plan hot-reload (Story 4.1 AC: "changes take effect at next
+// wake-up"). The YAML file is re-stat'd on every cycle and re-parsed when the
+// mtime changes; parse errors are logged but don't block the rest of the cycle.
+func (h *DefaultHandler) WithPlan(path string) *DefaultHandler {
+	h.planPath = path
+	return h
+}
+
+// CurrentPlan returns the most recently successfully-loaded plan (nil until
+// WithPlan has been called and at least one Handle() has succeeded).
+func (h *DefaultHandler) CurrentPlan() *Plan {
+	h.planMu.Lock()
+	defer h.planMu.Unlock()
+	return h.plan
+}
+
+// reloadPlanIfChanged compares the file mtime with what we last saw; when it
+// differs we re-parse. Called inside Handle before the observation.
+func (h *DefaultHandler) reloadPlanIfChanged() {
+	if h.planPath == "" {
+		return
+	}
+	info, err := os.Stat(h.planPath)
+	if err != nil {
+		slog.Warn("plan hot-reload stat failed", "path", h.planPath, "error", err)
+		return
+	}
+	h.planMu.Lock()
+	defer h.planMu.Unlock()
+	if h.planInfo != nil && info.ModTime().Equal(h.planInfo.ModTime()) && info.Size() == h.planInfo.Size() {
+		return
+	}
+	plan, err := ParsePlan(h.planPath)
+	if err != nil {
+		slog.Warn("plan hot-reload parse failed", "path", h.planPath, "error", err)
+		return
+	}
+	h.plan = plan
+	h.planInfo = info
+	slog.Info("plan reloaded", "path", h.planPath, "initial_state", plan.InitialState)
+}
+
 // Handle runs one wake-up cycle.
 func (h *DefaultHandler) Handle(ctx context.Context, agentName string) error {
+	h.reloadPlanIfChanged()
+
 	snap, err := h.obs.Snapshot(ctx, agentName)
 	if err != nil {
 		return fmt.Errorf("observe %s: %w", agentName, err)

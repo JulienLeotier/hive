@@ -113,7 +113,12 @@ var runCmd = &cobra.Command{
 			return err
 		}
 
-		if !quiet {
+		// Story 7.3 AC: --quiet suppresses progress output but still shows the
+		// final result summary. Non-quiet prints the verbose block.
+		if quiet {
+			fmt.Printf("workflow=%s tasks=%d duration=%s status=%s\n",
+				result.WorkflowID, len(result.TaskResults), elapsed, result.Status)
+		} else {
 			fmt.Println("---")
 			fmt.Printf("Workflow completed: %s\n", result.WorkflowID)
 			fmt.Printf("Tasks completed:    %d\n", len(result.TaskResults))

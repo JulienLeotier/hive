@@ -62,12 +62,14 @@ func (e *Engine) WithBus(bus *event.Bus) *Engine {
 }
 
 // AgentStats holds performance metrics for trust evaluation.
+// Story 9.1 AC: tracks total tasks, success rate, error rate, consecutive successes.
 type AgentStats struct {
-	TotalTasks  int
-	Successes   int
-	Failures    int
-	ErrorRate   float64
-	CurrentLevel string
+	TotalTasks           int
+	Successes            int
+	Failures             int
+	ErrorRate            float64
+	ConsecutiveSuccesses int
+	CurrentLevel         string
 }
 
 // GetStats returns performance stats for an agent.
@@ -102,6 +104,29 @@ func (e *Engine) GetStats(ctx context.Context, agentID string) (AgentStats, erro
 
 	if stats.TotalTasks > 0 {
 		stats.ErrorRate = float64(stats.Failures) / float64(stats.TotalTasks)
+	}
+
+	// Story 9.1: consecutive successes = count of most-recent 'completed' tasks
+	// in a row, broken by any 'failed' task.
+	rows, err := e.db.QueryContext(ctx,
+		`SELECT status FROM tasks
+		 WHERE agent_id = ? AND status IN ('completed','failed')
+		 ORDER BY created_at DESC LIMIT 200`, agentID)
+	if err == nil {
+		defer rows.Close()
+		streak := 0
+		for rows.Next() {
+			var s string
+			if err := rows.Scan(&s); err != nil {
+				continue
+			}
+			if s == "completed" {
+				streak++
+			} else {
+				break
+			}
+		}
+		stats.ConsecutiveSuccesses = streak
 	}
 
 	return stats, nil
