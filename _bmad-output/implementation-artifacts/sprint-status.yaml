@@ -84,12 +84,12 @@ development_status:
   epic-5-retrospective: optional
 
   # Epic 6: Observability & Monitoring
-  epic-6: backlog
-  6-1-hive-status-command: backlog
-  6-2-log-querying: backlog
-  6-3-task-execution-timeline: backlog
-  6-4-metrics-endpoint: backlog
-  6-5-orchestration-decision-logging: backlog
+  epic-6: done
+  6-1-hive-status-command: done
+  6-2-log-querying: done
+  6-3-task-execution-timeline: done
+  6-4-metrics-endpoint: done
+  6-5-orchestration-decision-logging: done
   epic-6-retrospective: optional
 
   # Epic 7: CLI & Developer Experience
