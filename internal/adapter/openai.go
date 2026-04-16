@@ -98,7 +98,12 @@ func (a *OpenAIAdapter) createThread(ctx context.Context) (string, error) {
 		return "", fmt.Errorf("creating thread: %w", err)
 	}
 	var result struct{ ID string `json:"id"` }
-	json.Unmarshal(data, &result)
+	if err := json.Unmarshal(data, &result); err != nil {
+		return "", fmt.Errorf("parsing thread response: %w", err)
+	}
+	if result.ID == "" {
+		return "", fmt.Errorf("empty thread ID in response")
+	}
 	return result.ID, nil
 }
 
@@ -117,11 +122,17 @@ func (a *OpenAIAdapter) createRunAndPoll(ctx context.Context, threadID string) (
 		return "", err
 	}
 	var run struct{ ID string `json:"id"` }
-	json.Unmarshal(data, &run)
+	if err := json.Unmarshal(data, &run); err != nil {
+		return "", fmt.Errorf("parsing run response: %w", err)
+	}
 
 	// Poll for completion (max 60 attempts, 2s intervals)
 	for i := 0; i < 60; i++ {
-		time.Sleep(2 * time.Second)
+		select {
+		case <-ctx.Done():
+			return "", ctx.Err()
+		case <-time.After(2 * time.Second):
+		}
 		data, err := a.apiCall(ctx, "GET", "/threads/"+threadID+"/runs/"+run.ID, nil)
 		if err != nil {
 			return "", err

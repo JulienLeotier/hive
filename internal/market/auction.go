@@ -47,7 +47,10 @@ func NewAuction(db *sql.DB) *Auction {
 
 // SubmitBid records an agent's bid for a task.
 func (a *Auction) SubmitBid(ctx context.Context, taskID, agentID, agentName string, price float64, estDuration time.Duration, reputation float64) (*Bid, error) {
-	id := ulid.MustNew(ulid.Timestamp(time.Now()), rand.Reader)
+	id, err := ulid.New(ulid.Timestamp(time.Now()), rand.Reader)
+	if err != nil {
+		return nil, fmt.Errorf("generating bid ID: %w", err)
+	}
 
 	bid := &Bid{
 		ID:          id.String(),

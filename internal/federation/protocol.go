@@ -7,6 +7,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"sync"
 	"time"
 )
 
@@ -30,6 +31,7 @@ type SharedCapability struct {
 
 // Manager handles federation links and capability discovery.
 type Manager struct {
+	mu     sync.Mutex
 	links  map[string]*Link
 	client *http.Client
 }
@@ -44,6 +46,9 @@ func NewManager() *Manager {
 
 // Connect establishes a federation link with another Hive.
 func (m *Manager) Connect(ctx context.Context, name, url string, sharedCaps []string) (*Link, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
 	link := &Link{
 		ID:         name,
 		Name:       name,
@@ -68,6 +73,8 @@ func (m *Manager) Connect(ctx context.Context, name, url string, sharedCaps []st
 
 // Disconnect removes a federation link.
 func (m *Manager) Disconnect(name string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	if _, ok := m.links[name]; !ok {
 		return fmt.Errorf("federation link %s not found", name)
 	}
@@ -78,6 +85,8 @@ func (m *Manager) Disconnect(name string) error {
 
 // ListLinks returns all federation links.
 func (m *Manager) ListLinks() []*Link {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	links := make([]*Link, 0, len(m.links))
 	for _, l := range m.links {
 		links = append(links, l)

@@ -67,12 +67,20 @@ func (l *Logger) ExportJSON(entries []Entry) ([]byte, error) {
 	return json.MarshalIndent(entries, "", "  ")
 }
 
-// ExportCSV exports audit entries as CSV.
+// ExportCSV exports audit entries as CSV with injection protection.
 func (l *Logger) ExportCSV(entries []Entry) string {
 	csv := "id,action,actor,resource,detail,created_at\n"
 	for _, e := range entries {
-		csv += fmt.Sprintf("%d,%s,%s,%s,%q,%s\n",
-			e.ID, e.Action, e.Actor, e.Resource, e.Detail, e.CreatedAt.Format(time.RFC3339))
+		csv += fmt.Sprintf("%d,%q,%q,%q,%q,%s\n",
+			e.ID, csvSafe(e.Action), csvSafe(e.Actor), csvSafe(e.Resource), csvSafe(e.Detail), e.CreatedAt.Format(time.RFC3339))
 	}
 	return csv
+}
+
+// csvSafe prevents CSV injection by prefixing dangerous characters with a single quote.
+func csvSafe(s string) string {
+	if len(s) > 0 && (s[0] == '=' || s[0] == '+' || s[0] == '-' || s[0] == '@') {
+		return "'" + s
+	}
+	return s
 }

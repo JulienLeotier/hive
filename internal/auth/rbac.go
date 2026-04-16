@@ -20,8 +20,8 @@ type Permission struct {
 	Action   string // "read", "write", "delete", "admin"
 }
 
-// Policy maps roles to their allowed permissions.
-var Policy = map[Role][]Permission{
+// policy maps roles to their allowed permissions. Unexported to prevent runtime mutation.
+var policy = map[Role][]Permission{
 	RoleAdmin: {
 		{Resource: "*", Action: "*"},
 	},
@@ -44,7 +44,7 @@ var Policy = map[Role][]Permission{
 
 // CheckPermission verifies if a role has a specific permission.
 func CheckPermission(role Role, resource, action string) bool {
-	perms, ok := Policy[role]
+	perms, ok := policy[role]
 	if !ok {
 		return false
 	}
@@ -63,7 +63,10 @@ func RBACMiddleware(resource, action string) func(http.Handler) http.Handler {
 			// Get role from context (set by auth middleware)
 			role, ok := r.Context().Value(ctxRoleKey).(Role)
 			if !ok {
-				role = RoleViewer // default to most restrictive
+				// No role in context — deny access (fail-closed)
+				http.Error(w, `{"error":{"code":"FORBIDDEN","message":"no role in request context"}}`,
+					http.StatusForbidden)
+				return
 			}
 
 			if !CheckPermission(role, resource, action) {
