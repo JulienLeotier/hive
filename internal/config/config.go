@@ -12,11 +12,21 @@ import (
 
 // Config holds the application configuration.
 type Config struct {
-	LogLevel    string `yaml:"log_level"`
-	DataDir     string `yaml:"data_dir"`
-	Port        int    `yaml:"port"`
-	Storage     string `yaml:"storage"`      // "sqlite" (default) or "postgres"
-	PostgresURL string `yaml:"postgres_url"` // used when storage=postgres
+	LogLevel    string     `yaml:"log_level"`
+	DataDir     string     `yaml:"data_dir"`
+	Port        int        `yaml:"port"`
+	Storage     string     `yaml:"storage"`      // "sqlite" (default) or "postgres"
+	PostgresURL string     `yaml:"postgres_url"` // used when storage=postgres
+	OIDC        *OIDCBlock `yaml:"oidc,omitempty"`
+}
+
+// OIDCBlock holds OIDC SSO settings. Story 21.1.
+type OIDCBlock struct {
+	Issuer       string   `yaml:"issuer"`
+	ClientID     string   `yaml:"client_id"`
+	ClientSecret string   `yaml:"client_secret"`
+	RedirectURL  string   `yaml:"redirect_url"`
+	Scopes       []string `yaml:"scopes,omitempty"`
 }
 
 // Default returns a Config with sensible defaults.

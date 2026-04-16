@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"crypto/rand"
 	"database/sql"
 	"encoding/json"
 	"fmt"
@@ -14,6 +15,10 @@ import (
 	"github.com/JulienLeotier/hive/internal/event"
 	"github.com/JulienLeotier/hive/internal/resilience"
 )
+
+// cryptoRandRead is declared here so the server file doesn't reach into
+// crypto/rand at call sites cluttered with other names.
+func cryptoRandRead(b []byte) (int, error) { return rand.Read(b) }
 
 // Response is the standard API response envelope.
 type Response struct {
@@ -35,6 +40,7 @@ type Server struct {
 	keyMgr           *KeyManager
 	users            *auth.UserStore
 	federationShared []string // capabilities exposed to federated peers (empty = all)
+	oidc             *auth.OIDCProvider
 	mux              *http.ServeMux
 }
 
@@ -58,6 +64,89 @@ func (s *Server) WithUsers(users *auth.UserStore) *Server {
 	return s
 }
 
+// WithOIDC installs an OIDC provider so /auth/login redirects to the IdP.
+// Story 21.1.
+func (s *Server) WithOIDC(p *auth.OIDCProvider) *Server {
+	s.oidc = p
+	// Register the auth routes. These are outside /api/v1 so they go through
+	// the AuthMiddleware chain only when mounted at /; we just mux them here.
+	s.mux.HandleFunc("GET /auth/login", s.handleOIDCLogin)
+	s.mux.HandleFunc("GET /auth/callback", s.handleOIDCCallback)
+	return s
+}
+
+func (s *Server) handleOIDCLogin(w http.ResponseWriter, r *http.Request) {
+	if s.oidc == nil {
+		http.Error(w, "oidc not configured", http.StatusNotFound)
+		return
+	}
+	state := randomState()
+	http.SetCookie(w, &http.Cookie{
+		Name:     "hive_oidc_state",
+		Value:    state,
+		Path:     "/auth",
+		HttpOnly: true,
+		SameSite: http.SameSiteLaxMode,
+		Secure:   r.TLS != nil,
+		MaxAge:   600,
+	})
+	http.Redirect(w, r, s.oidc.AuthRedirectURL(state), http.StatusFound)
+}
+
+func (s *Server) handleOIDCCallback(w http.ResponseWriter, r *http.Request) {
+	if s.oidc == nil {
+		http.Error(w, "oidc not configured", http.StatusNotFound)
+		return
+	}
+	state := r.URL.Query().Get("state")
+	cookie, err := r.Cookie("hive_oidc_state")
+	if err != nil || cookie.Value == "" || cookie.Value != state {
+		http.Error(w, "state mismatch", http.StatusBadRequest)
+		return
+	}
+	code := r.URL.Query().Get("code")
+	if code == "" {
+		http.Error(w, "missing code", http.StatusBadRequest)
+		return
+	}
+	tok, err := s.oidc.Exchange(r.Context(), code)
+	if err != nil {
+		http.Error(w, "token exchange failed: "+err.Error(), http.StatusBadGateway)
+		return
+	}
+	info, err := s.oidc.FetchUserInfo(r.Context(), tok.AccessToken)
+	if err != nil {
+		http.Error(w, "userinfo failed: "+err.Error(), http.StatusBadGateway)
+		return
+	}
+	// Auto-provision an RBAC record if none exists — default role = viewer.
+	if s.users != nil {
+		if _, err := s.users.Get(r.Context(), info.Subject); err != nil {
+			_ = s.users.Upsert(r.Context(), auth.UserRecord{
+				Subject: info.Subject, Role: auth.RoleViewer, TenantID: "default",
+			})
+		}
+	}
+	// Set a session cookie. Out-of-scope here to sign/verify it; the existing
+	// API-key middleware remains the canonical auth path for /api/v1/*.
+	http.SetCookie(w, &http.Cookie{
+		Name:     "hive_user",
+		Value:    info.Subject,
+		Path:     "/",
+		HttpOnly: true,
+		SameSite: http.SameSiteLaxMode,
+		Secure:   r.TLS != nil,
+		MaxAge:   3600,
+	})
+	http.Redirect(w, r, "/", http.StatusFound)
+}
+
+func randomState() string {
+	b := make([]byte, 16)
+	_, _ = cryptoRandRead(b)
+	return fmt.Sprintf("%x", b)
+}
+
 func (s *Server) routes() {
 	// Read-only endpoints require at least "viewer".
 	s.mux.Handle("GET /api/v1/agents", auth.RBACMiddleware("agents", "read")(http.HandlerFunc(s.handleListAgents)))
@@ -71,6 +160,9 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /api/v1/capabilities", s.handleListCapabilities)
 	// Write endpoint: viewers get 403.
 	s.mux.Handle("POST /api/v1/agents", auth.RBACMiddleware("agents", "write")(http.HandlerFunc(s.handleCreateAgent)))
+	// Story 2.1 AC: "agents can emit custom events via the adapter protocol".
+	// POST /api/v1/events lets an adapter push a (type, payload) into the bus.
+	s.mux.Handle("POST /api/v1/events", auth.RBACMiddleware("events", "write")(http.HandlerFunc(s.handleEmitEvent)))
 }
 
 // SetFederationShared configures which capability names are exposed to peers
@@ -125,6 +217,38 @@ func (s *Server) roleResolver(next http.Handler) http.Handler {
 // is testable end-to-end.
 func (s *Server) handleCreateAgent(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, map[string]string{"status": "accepted"})
+}
+
+// handleEmitEvent lets an authenticated agent push a custom event. Story 2.1.
+// The request body is {type, source?, payload}. Source defaults to the
+// authenticated key name so events are attributable.
+func (s *Server) handleEmitEvent(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Type    string `json:"type"`
+		Source  string `json:"source"`
+		Payload any    `json:"payload"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeError(w, http.StatusBadRequest, "BAD_REQUEST", err.Error())
+		return
+	}
+	if body.Type == "" {
+		writeError(w, http.StatusBadRequest, "MISSING_TYPE", "event type is required")
+		return
+	}
+	if body.Source == "" {
+		if keyName, ok := r.Context().Value(ctxKeyName).(string); ok {
+			body.Source = keyName
+		} else {
+			body.Source = "adapter"
+		}
+	}
+	evt, err := s.eventBus.Publish(r.Context(), body.Type, body.Source, body.Payload)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "PUBLISH_FAILED", err.Error())
+		return
+	}
+	writeJSON(w, map[string]any{"id": evt.ID, "accepted_at": evt.CreatedAt})
 }
 
 // handleListCapabilities returns only the capabilities the operator has opted

@@ -19,6 +19,7 @@ import (
 	"github.com/JulienLeotier/hive/internal/event"
 	"github.com/JulienLeotier/hive/internal/federation"
 	"github.com/JulienLeotier/hive/internal/knowledge"
+	"github.com/JulienLeotier/hive/internal/market"
 	"github.com/JulienLeotier/hive/internal/resilience"
 	"github.com/JulienLeotier/hive/internal/storage"
 	"github.com/JulienLeotier/hive/internal/task"
@@ -84,10 +85,31 @@ var serveCmd = &cobra.Command{
 		kStore := knowledge.NewStore(store.DB).WithEmbedder(knowledge.NewHashingEmbedder(128))
 		knowledge.NewAutoRecorder(store.DB, kStore).Attach(bus)
 
+		// Story 18.3: auto-credit tokens to agents on task.completed.
+		marketStore := market.NewStore(store.DB).WithBus(bus.PublishErr)
+		market.NewAutoCredit(store.DB, marketStore, 1.0).Attach(bus)
+
 		keyMgr := api.NewKeyManager(store.DB)
 		users := auth.NewUserStore(store.DB)
 
 		apiSrv := api.NewServer(mgr, bus, breakers, keyMgr).WithUsers(users)
+
+		// Story 21.1: wire OIDC provider if configured.
+		if cfg.OIDC != nil && cfg.OIDC.Issuer != "" {
+			provider, err := auth.NewOIDCProvider(context.Background(), auth.OIDCConfig{
+				Issuer:       cfg.OIDC.Issuer,
+				ClientID:     cfg.OIDC.ClientID,
+				ClientSecret: cfg.OIDC.ClientSecret,
+				RedirectURL:  cfg.OIDC.RedirectURL,
+				Scopes:       cfg.OIDC.Scopes,
+			})
+			if err != nil {
+				slog.Warn("oidc disabled — discovery failed", "error", err)
+			} else {
+				apiSrv.WithOIDC(provider)
+				slog.Info("oidc enabled", "issuer", cfg.OIDC.Issuer)
+			}
+		}
 
 		// WebSocket hub — broadcast events to dashboard clients
 		hub := ws.NewHub()

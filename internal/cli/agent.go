@@ -49,6 +49,55 @@ func countByStatus(ctx context.Context, db *sql.DB, table string) (map[string]in
 	return out, rows.Err()
 }
 
+// refreshHealth concurrently pokes each agent's /health endpoint and updates
+// the stored status. Story 1.4 AC. Keeps a short timeout so `hive status`
+// still responds within 500ms even when some agents are unreachable.
+func refreshHealth(ctx context.Context, mgr *agent.Manager, agents []agent.Agent) []agent.Agent {
+	type update struct {
+		name   string
+		status string
+	}
+	updates := make(chan update, len(agents))
+
+	for _, a := range agents {
+		go func(a agent.Agent) {
+			// Pull base_url from stored config.
+			var agentCfg map[string]string
+			_ = json.Unmarshal([]byte(a.Config), &agentCfg)
+			baseURL := agentCfg["base_url"]
+			if baseURL == "" {
+				// Local / subprocess agent: trust the stored status.
+				updates <- update{name: a.Name, status: a.HealthStatus}
+				return
+			}
+			hCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+			defer cancel()
+			h, err := adapter.NewHTTPAdapter(baseURL).Health(hCtx)
+			if err != nil {
+				updates <- update{name: a.Name, status: "unavailable"}
+				return
+			}
+			updates <- update{name: a.Name, status: h.Status}
+		}(a)
+	}
+
+	result := make([]agent.Agent, 0, len(agents))
+	byName := map[string]string{}
+	for range agents {
+		u := <-updates
+		byName[u.name] = u.status
+	}
+	for _, a := range agents {
+		if newStatus, ok := byName[a.Name]; ok && newStatus != a.HealthStatus {
+			_ = mgr.UpdateHealth(ctx, a.Name, newStatus)
+			a.HealthStatus = newStatus
+		}
+		a.UpdatedAt = time.Now()
+		result = append(result, a)
+	}
+	return result
+}
+
 // confirmDetectedType asks the user to accept or change the auto-detected type
 // (Story 7.2 AC). Non-TTY stdin = auto-accept so CI doesn't stall.
 func confirmDetectedType(detected string) string {
@@ -293,6 +342,14 @@ var statusCmd = &cobra.Command{
 		agents, err := mgr.List(ctx)
 		if err != nil {
 			return err
+		}
+
+		// Story 1.4 AC: "health is refreshed by calling each agent's /health
+		// endpoint". Skip when --no-refresh is set or when the agent was
+		// registered with a local path (subprocess adapters are always "fresh").
+		noRefresh, _ := cmd.Flags().GetBool("no-refresh")
+		if !noRefresh {
+			agents = refreshHealth(ctx, mgr, agents)
 		}
 
 		showCosts, _ := cmd.Flags().GetBool("costs")
@@ -660,6 +717,7 @@ func init() {
 
 	statusCmd.Flags().Bool("json", false, "output in JSON format")
 	statusCmd.Flags().Bool("costs", false, "include cost rollup and budget alerts")
+	statusCmd.Flags().Bool("no-refresh", false, "skip live /health probes and show stored statuses only")
 
 	agentCmd.AddCommand(agentSwapCmd)
 	agentCmd.AddCommand(agentStatsCmd)

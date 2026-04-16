@@ -80,3 +80,19 @@ docker_manifests:
     image_templates:
       - "ghcr.io/julienleotier/hive:latest-amd64"
       - "ghcr.io/julienleotier/hive:latest-arm64"
+
+# Story 7.9 AC: "updates the Homebrew tap formula".
+# Requires a JulienLeotier/homebrew-tap repository with a GITHUB_TOKEN that
+# has write access; skipped automatically on snapshot builds.
+brews:
+  - name: hive
+    repository:
+      owner: JulienLeotier
+      name: homebrew-tap
+    homepage: "https://github.com/JulienLeotier/hive"
+    description: "Universal AI agent orchestration platform"
+    license: "MIT"
+    install: |
+      bin.install "hive"
+    test: |
+      system "#{bin}/hive", "--help"
