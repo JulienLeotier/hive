@@ -24,6 +24,7 @@ type Config struct {
 	Retry       *RetryBlock      `yaml:"retry,omitempty"`
 	Knowledge   *KnowledgeBlock  `yaml:"knowledge,omitempty"`
 	EventBus    *EventBusBlock   `yaml:"event_bus,omitempty"`
+	Cluster     *ClusterBlock    `yaml:"cluster,omitempty"`
 }
 
 // CheckpointBlock tunes the background checkpoint supervisor. Story 2.6.
@@ -72,6 +73,13 @@ type EventBusBlock struct {
 	Backend string `yaml:"backend,omitempty"` // "sqlite" (default) or "nats"
 	NATSURL string `yaml:"nats_url,omitempty"`
 	Subject string `yaml:"subject,omitempty"` // default "hive.events"
+}
+
+// ClusterBlock configures this node's identity and routing preferences in a
+// multi-node deployment. Story 22.3.
+type ClusterBlock struct {
+	NodeID  string `yaml:"node_id,omitempty"`
+	Routing string `yaml:"routing,omitempty"` // "local-first" (default) or "best-fit"
 }
 
 // Default returns a Config with sensible defaults.

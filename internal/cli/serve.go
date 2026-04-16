@@ -36,6 +36,17 @@ var serveCmd = &cobra.Command{
 			return err
 		}
 
+		// Story 22.3: apply cluster routing config.
+		if cfg.Cluster != nil {
+			if cfg.Cluster.NodeID != "" {
+				task.LocalNodeID = cfg.Cluster.NodeID
+				agent.LocalNodeID = cfg.Cluster.NodeID
+			}
+			if cfg.Cluster.Routing != "" {
+				task.RoutingMode = cfg.Cluster.Routing
+			}
+		}
+
 		// Story 22.1: dispatch storage backend from config.
 		store, err := storage.Open2(storage.Backend{
 			Type:        cfg.Storage,

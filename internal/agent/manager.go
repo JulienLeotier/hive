@@ -17,6 +17,10 @@ import (
 // events. Usually backed by event.Bus (SQLite) or event.NATSBus (clustered).
 type Publisher func(ctx context.Context, eventType, source string, payload any) error
 
+// LocalNodeID is stamped onto newly registered agents so node-aware routing
+// can prefer locally-registered agents. Story 22.3.
+var LocalNodeID = ""
+
 // Manager handles agent registration, listing, and removal.
 type Manager struct {
 	db  *sql.DB
@@ -64,9 +68,9 @@ func (m *Manager) Register(ctx context.Context, name, agentType, baseURL string)
 	id := ulid.MustNew(ulid.Timestamp(time.Now()), rand.Reader)
 
 	_, err = m.db.ExecContext(ctx,
-		`INSERT INTO agents (id, name, type, config, capabilities, health_status, trust_level)
-		 VALUES (?, ?, ?, ?, ?, ?, 'scripted')`,
-		id.String(), name, agentType, string(configJSON), string(capsJSON), health.Status,
+		`INSERT INTO agents (id, name, type, config, capabilities, health_status, trust_level, node_id)
+		 VALUES (?, ?, ?, ?, ?, ?, 'scripted', ?)`,
+		id.String(), name, agentType, string(configJSON), string(capsJSON), health.Status, LocalNodeID,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("inserting agent %s: %w", name, err)
@@ -109,9 +113,9 @@ func (m *Manager) RegisterLocal(ctx context.Context, name, agentType, path strin
 	id := ulid.MustNew(ulid.Timestamp(time.Now()), rand.Reader)
 
 	if _, err := m.db.ExecContext(ctx,
-		`INSERT INTO agents (id, name, type, config, capabilities, health_status, trust_level)
-		 VALUES (?, ?, ?, ?, ?, 'healthy', 'scripted')`,
-		id.String(), name, agentType, string(configJSON), string(capsJSON),
+		`INSERT INTO agents (id, name, type, config, capabilities, health_status, trust_level, node_id)
+		 VALUES (?, ?, ?, ?, ?, 'healthy', 'scripted', ?)`,
+		id.String(), name, agentType, string(configJSON), string(capsJSON), LocalNodeID,
 	); err != nil {
 		return nil, fmt.Errorf("inserting local agent %s: %w", name, err)
 	}

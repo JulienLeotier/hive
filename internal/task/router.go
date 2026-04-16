@@ -45,11 +45,25 @@ func (r *Router) WithBus(bus *event.Bus) *Router {
 // capacity"). Default matches the common desktop-concurrency ceiling.
 var CapacityLimit = 10
 
+// LocalNodeID identifies the local node. When set, FindCapableAgent prefers
+// agents whose agents.node_id matches. Story 22.3.
+var LocalNodeID = ""
+
+// RoutingMode controls node affinity: "local-first" or "best-fit". Story 22.3.
+var RoutingMode = "local-first"
+
 // FindCapableAgent returns the ID and name of a healthy agent capable of handling the given task type.
 // Returns empty strings if no capable agent is available.
 func (r *Router) FindCapableAgent(ctx context.Context, taskType string) (agentID, agentName string, err error) {
+	// Story 22.3: when local-first routing is configured and we know the local
+	// node id, order agents so local candidates come first. Empty node_id
+	// agents (single-node deployments) are treated as local.
+	orderBy := "ORDER BY name"
+	if RoutingMode == "local-first" && LocalNodeID != "" {
+		orderBy = fmt.Sprintf("ORDER BY CASE WHEN node_id = %q OR node_id = '' THEN 0 ELSE 1 END, name", LocalNodeID)
+	}
 	rows, err := r.db.QueryContext(ctx,
-		`SELECT id, name, capabilities FROM agents WHERE health_status = 'healthy' ORDER BY name`,
+		`SELECT id, name, capabilities FROM agents WHERE health_status = 'healthy' `+orderBy,
 	)
 	if err != nil {
 		return "", "", fmt.Errorf("querying agents: %w", err)
