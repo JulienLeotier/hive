@@ -34,6 +34,7 @@ var policy = map[Role][]Permission{
 		{Resource: "tasks", Action: "read"},
 		{Resource: "tasks", Action: "write"},
 		{Resource: "events", Action: "read"},
+		{Resource: "events", Action: "write"}, // adapters POST /api/v1/events
 	},
 	RoleViewer: {
 		{Resource: "agents", Action: "read"},

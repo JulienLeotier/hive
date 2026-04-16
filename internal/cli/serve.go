@@ -94,6 +94,12 @@ var serveCmd = &cobra.Command{
 
 		apiSrv := api.NewServer(mgr, bus, breakers, keyMgr).WithUsers(users)
 
+		// Story 19.2: honour the `federation.share:` list so only whitelisted
+		// capabilities appear at /api/v1/capabilities.
+		if cfg.Federation != nil && len(cfg.Federation.Share) > 0 {
+			apiSrv.SetFederationShared(cfg.Federation.Share)
+		}
+
 		// Story 21.1: wire OIDC provider if configured.
 		if cfg.OIDC != nil && cfg.OIDC.Issuer != "" {
 			provider, err := auth.NewOIDCProvider(context.Background(), auth.OIDCConfig{

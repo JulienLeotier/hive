@@ -21,6 +21,8 @@ var runCmd = &cobra.Command{
 	RunE: func(cmd *cobra.Command, args []string) error {
 		quiet, _ := cmd.Flags().GetBool("quiet")
 		jsonOutput, _ := cmd.Flags().GetBool("json")
+		trigger, _ := cmd.Flags().GetString("trigger")
+		_ = trigger // reserved for future trigger-aware engines; currently emitted as an event
 
 		wfPath := "hive.yaml"
 		if len(args) > 0 {
@@ -94,7 +96,13 @@ var runCmd = &cobra.Command{
 			})
 		}
 
-		// Execute workflow
+		// Execute workflow. When --trigger is set, publish a manual trigger
+		// event before the run so timelines show why the workflow fired.
+		if trigger != "" {
+			_, _ = bus.Publish(context.Background(), "workflow.trigger", "cli",
+				map[string]string{"workflow": wfConfig.Name, "trigger": trigger})
+		}
+
 		started := time.Now()
 		result, err := engine.Run(context.Background(), wfConfig)
 		elapsed := time.Since(started)
@@ -135,5 +143,7 @@ var runCmd = &cobra.Command{
 func init() {
 	runCmd.Flags().Bool("quiet", false, "suppress progress output, show only final result")
 	runCmd.Flags().Bool("json", false, "output results as JSON")
+	// Story 3.4 AC: `hive run --trigger manual` instantiates the workflow as if a manual trigger fired.
+	runCmd.Flags().String("trigger", "", "trigger source tag recorded on events (e.g., manual, ci)")
 	rootCmd.AddCommand(runCmd)
 }

@@ -12,12 +12,13 @@ import (
 
 // Config holds the application configuration.
 type Config struct {
-	LogLevel    string     `yaml:"log_level"`
-	DataDir     string     `yaml:"data_dir"`
-	Port        int        `yaml:"port"`
-	Storage     string     `yaml:"storage"`      // "sqlite" (default) or "postgres"
-	PostgresURL string     `yaml:"postgres_url"` // used when storage=postgres
-	OIDC        *OIDCBlock `yaml:"oidc,omitempty"`
+	LogLevel    string           `yaml:"log_level"`
+	DataDir     string           `yaml:"data_dir"`
+	Port        int              `yaml:"port"`
+	Storage     string           `yaml:"storage"`      // "sqlite" (default) or "postgres"
+	PostgresURL string           `yaml:"postgres_url"` // used when storage=postgres
+	OIDC        *OIDCBlock       `yaml:"oidc,omitempty"`
+	Federation  *FederationBlock `yaml:"federation,omitempty"`
 }
 
 // OIDCBlock holds OIDC SSO settings. Story 21.1.
@@ -27,6 +28,12 @@ type OIDCBlock struct {
 	ClientSecret string   `yaml:"client_secret"`
 	RedirectURL  string   `yaml:"redirect_url"`
 	Scopes       []string `yaml:"scopes,omitempty"`
+}
+
+// FederationBlock controls which capabilities this hive exposes to federated
+// peers. Story 19.2.
+type FederationBlock struct {
+	Share []string `yaml:"share,omitempty"` // empty = expose every capability
 }
 
 // Default returns a Config with sensible defaults.
