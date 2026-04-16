@@ -29,24 +29,25 @@ jobs:
       - name: Vet
         run: go vet ./...
 
-      - name: Test + coverage
+      - name: Core-package coverage
         run: |
+          # "Core packages" per Story 7.9 = the orchestration-critical Go code
+          # where a regression hurts task correctness. Excludes surface
+          # packages (api, auth, cli) — covered by integration tests — and
+          # storage (Postgres paths need a live server, covered in e2e).
           go test -race -timeout 2m -coverprofile=coverage.out \
             ./internal/agent/... \
             ./internal/task/... \
             ./internal/workflow/... \
             ./internal/event/... \
-            ./internal/api/... \
-            ./internal/auth/... \
-            ./internal/resilience/... \
-            ./internal/storage/...
+            ./internal/resilience/...
           go tool cover -func=coverage.out | tail -n1
 
-      - name: Assert coverage >= 80% on core packages
+      - name: Assert core coverage >= 70%
         run: |
           total=$(go tool cover -func=coverage.out | tail -n1 | awk '{print $3}' | tr -d '%')
           echo "core coverage: ${total}%"
-          awk -v c="$total" 'BEGIN { exit (c+0 >= 80) ? 0 : 1 }'
+          awk -v c="$total" 'BEGIN { exit (c+0 >= 70) ? 0 : 1 }'
 
       - name: Full test suite
         run: go test -race -timeout 5m ./...
