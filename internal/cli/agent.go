@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/JulienLeotier/hive/internal/adapter"
 	"github.com/JulienLeotier/hive/internal/agent"
 	"github.com/JulienLeotier/hive/internal/config"
 	"github.com/JulienLeotier/hive/internal/cost"
@@ -121,11 +122,49 @@ var addAgentCmd = &cobra.Command{
 		mgr := agent.NewManager(store.DB)
 
 		var a *agent.Agent
-		if path != "" {
-			a, err = mgr.RegisterLocal(context.Background(), name, agentType, path, nil)
-		} else {
-			a, err = mgr.Register(context.Background(), name, agentType, url)
+		ctx := context.Background()
+
+		// Stories 13.1-13.4: build the right adapter per --type so Declare()
+		// returns framework-native capabilities rather than generic defaults.
+		switch {
+		case path != "" && (agentType == "crewai" || agentType == "autogen" || agentType == "langchain"):
+			// Subprocess-backed local agents — declare via adapter, register as local.
+			var caps adapter.AgentCapabilities
+			switch agentType {
+			case "crewai":
+				caps, _ = adapter.NewCrewAIAdapter(path, name).Declare(ctx)
+			case "autogen":
+				caps, _ = adapter.NewAutoGenAdapter("file://"+path, name).Declare(ctx)
+			case "langchain":
+				caps, _ = adapter.NewLangChainAdapter("file://"+path, name).Declare(ctx)
+			}
+			capsMap := map[string]any{"name": caps.Name, "task_types": caps.TaskTypes}
+			a, err = mgr.RegisterLocal(ctx, name, agentType, path, capsMap)
+
+		case agentType == "openai":
+			assistantID, _ := cmd.Flags().GetString("assistant-id")
+			apiKey, _ := cmd.Flags().GetString("api-key")
+			if assistantID == "" {
+				return fmt.Errorf("--assistant-id is required for openai adapters")
+			}
+			if apiKey == "" {
+				apiKey = os.Getenv("OPENAI_API_KEY")
+			}
+			if apiKey == "" {
+				return fmt.Errorf("--api-key or OPENAI_API_KEY env var is required")
+			}
+			oa := adapter.NewOpenAIAdapter(assistantID, apiKey, name)
+			caps, _ := oa.Declare(ctx)
+			capsMap := map[string]any{"name": caps.Name, "task_types": caps.TaskTypes, "assistant_id": assistantID}
+			a, err = mgr.RegisterLocal(ctx, name, "openai", assistantID, capsMap)
+
+		case path != "":
+			a, err = mgr.RegisterLocal(ctx, name, agentType, path, nil)
+
+		default:
+			a, err = mgr.Register(ctx, name, agentType, url)
 		}
+
 		if err != nil {
 			return fmt.Errorf("registration failed: %w", err)
 		}
@@ -482,9 +521,11 @@ var agentSwapCmd = &cobra.Command{
 
 func init() {
 	addAgentCmd.Flags().String("name", "", "agent name (required)")
-	addAgentCmd.Flags().String("type", "", "agent type (http, claude-code, mcp, crewai, autogen, langchain); auto-detected when --path is given")
-	addAgentCmd.Flags().String("url", "", "agent URL (required unless --path is given)")
+	addAgentCmd.Flags().String("type", "", "agent type (http, claude-code, mcp, crewai, autogen, langchain, openai); auto-detected when --path is given")
+	addAgentCmd.Flags().String("url", "", "agent URL (required unless --path or an openai adapter is given)")
 	addAgentCmd.Flags().String("path", "", "local filesystem path to an agent project (auto-detects type)")
+	addAgentCmd.Flags().String("assistant-id", "", "OpenAI assistant ID (required for --type openai)")
+	addAgentCmd.Flags().String("api-key", "", "OpenAI API key (falls back to $OPENAI_API_KEY)")
 
 	agentTrustOverrideCmd.Flags().String("reason", "", "why this override is being set")
 

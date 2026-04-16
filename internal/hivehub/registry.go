@@ -73,6 +73,76 @@ func (r *Registry) Get(name string) (*Template, error) {
 	return nil, fmt.Errorf("template %q not found in HiveHub", name)
 }
 
+// Install downloads a template tarball into dest/. dest is created if missing.
+// Returns the list of files written. Only http(s) template URLs are accepted.
+func (r *Registry) Install(name, dest string) (*Template, []string, error) {
+	tmpl, err := r.Get(name)
+	if err != nil {
+		return nil, nil, err
+	}
+	if !strings.HasPrefix(tmpl.URL, "http://") && !strings.HasPrefix(tmpl.URL, "https://") {
+		return nil, nil, fmt.Errorf("template URL must be http(s), got %q", tmpl.URL)
+	}
+
+	resp, err := r.client.Get(tmpl.URL)
+	if err != nil {
+		return nil, nil, fmt.Errorf("fetching template: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, nil, fmt.Errorf("template download returned %d", resp.StatusCode)
+	}
+
+	if err := ensureDir(dest); err != nil {
+		return nil, nil, err
+	}
+
+	// For v0.3 we support a JSON manifest of files; tarball support lands in
+	// a later story. A manifest is a list of {path, content} pairs.
+	data, err := io.ReadAll(io.LimitReader(resp.Body, 50<<20))
+	if err != nil {
+		return nil, nil, fmt.Errorf("reading template body: %w", err)
+	}
+	var manifest []struct {
+		Path    string `json:"path"`
+		Content string `json:"content"`
+	}
+	if err := json.Unmarshal(data, &manifest); err != nil {
+		return nil, nil, fmt.Errorf("parsing template manifest: %w", err)
+	}
+
+	var written []string
+	for _, f := range manifest {
+		if strings.Contains(f.Path, "..") {
+			return nil, nil, fmt.Errorf("unsafe path in manifest: %s", f.Path)
+		}
+		if err := writeTemplateFile(dest, f.Path, f.Content); err != nil {
+			return nil, nil, err
+		}
+		written = append(written, f.Path)
+	}
+	return tmpl, written, nil
+}
+
+// PublishDir packages a directory as a JSON manifest ready to POST to a registry
+// endpoint. Returns the manifest bytes. The registry upload itself is out of
+// scope for v0.3 — callers pipe the manifest into a PR against the index.
+func (r *Registry) PublishDir(dir string, meta Template) ([]byte, error) {
+	var manifest []map[string]string
+	if err := walkTemplateDir(dir, func(relPath, content string) {
+		manifest = append(manifest, map[string]string{"path": relPath, "content": content})
+	}); err != nil {
+		return nil, err
+	}
+	if len(manifest) == 0 {
+		return nil, fmt.Errorf("no files to publish in %s", dir)
+	}
+	return json.MarshalIndent(map[string]any{
+		"template": meta,
+		"files":    manifest,
+	}, "", "  ")
+}
+
 func (r *Registry) fetchIndex() ([]Template, error) {
 	resp, err := r.client.Get(r.IndexURL)
 	if err != nil {

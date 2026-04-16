@@ -11,6 +11,15 @@ import (
 	"time"
 )
 
+// EventBus is the abstract contract every backend (SQLite, NATS, …) implements.
+// Extracted in Story 15.1 so a NATS backend can replace the SQLite one without
+// rippling changes through the rest of the codebase.
+type EventBus interface {
+	Publish(ctx context.Context, eventType, source string, payload any) (Event, error)
+	Subscribe(prefix string, fn Subscriber)
+	Query(ctx context.Context, opts QueryOpts) ([]Event, error)
+}
+
 // Bus is an in-process event bus backed by SQLite for persistence.
 // Events are persisted before delivery to subscribers.
 type Bus struct {
@@ -18,6 +27,9 @@ type Bus struct {
 	mu          sync.RWMutex
 	subscribers map[string][]Subscriber // prefix → callbacks
 }
+
+// Compile-time check that Bus satisfies the interface.
+var _ EventBus = (*Bus)(nil)
 
 // NewBus creates an event bus backed by the given database.
 func NewBus(db *sql.DB) *Bus {
