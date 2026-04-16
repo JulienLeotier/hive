@@ -96,14 +96,17 @@ Proves one thing: **agents from different frameworks can be orchestrated togethe
 - Documentation site with "Hello Hive" quickstart tutorial
 - Single binary, single node, embedded SQLite, zero external dependencies
 
-### Growth Features (Post-MVP)
+### v0.2 Scope — Trust & Visibility
 
-- Dashboard UI (agent health, task flow, cost tracking, event timeline)
-- Graduated autonomy engine (4-level trust spectrum with configurable thresholds)
-- Shared knowledge layer (append-only pattern store with vector search)
+**Goal:** Add visual dashboard, earned autonomy, and institutional memory.
+
+- Dashboard UI: real-time agent health, task flow, event timeline, cost tracking (Svelte 5, embedded in Go binary)
+- Graduated autonomy engine: 4-level trust spectrum (Supervised → Guided → Autonomous → Trusted) with configurable thresholds per agent and per task type
+- Shared knowledge layer: append-only pattern store with vector similarity search, new agents inherit colony knowledge on boot
 - Additional adapters: CrewAI, LangChain/LangGraph, AutoGen, OpenAI Assistants
-- Agent-to-agent dialog threads (multi-turn collaboration between agents)
-- Webhook integrations (Slack, GitHub, email notifications)
+- Agent-to-agent dialog threads: multi-turn conversations between agents for collaborative problem-solving
+- Webhook integrations: Slack, GitHub, email notifications for key events
+- WebSocket support for real-time dashboard updates
 
 ### Vision (Future)
 
@@ -446,6 +449,48 @@ interface HiveAdapter {
 - FR55: System provides clear error messages with suggested remediation actions
 - FR56: User can configure retry policies per agent or per task type
 
+### Dashboard (v0.2)
+
+- FR57: User can view real-time agent health, status, and capabilities in a web dashboard
+- FR58: User can view task flow visualization with status, duration, and agent assignment
+- FR59: User can view event timeline with filtering by type, source, and time range
+- FR60: User can view cost tracking per agent, per workflow, and per time period
+- FR61: Dashboard updates in real-time via WebSocket without page refresh
+- FR62: Dashboard is served embedded in the Go binary (no separate frontend deployment)
+
+### Graduated Autonomy (v0.2)
+
+- FR63: System tracks agent trust level (Supervised, Guided, Autonomous, Trusted) based on performance history
+- FR64: User can configure trust thresholds per agent (e.g., "promote to Guided after 50 successful tasks with <5% error rate")
+- FR65: User can configure trust overrides per task type (e.g., "always Supervised for financial transactions")
+- FR66: System automatically promotes agents when they meet configured thresholds
+- FR67: User can manually promote or demote an agent's trust level
+- FR68: System enforces approval gates based on trust level (Supervised requires approval, Trusted acts freely)
+- FR69: System logs all trust level changes with reasoning (promotion criteria met, manual override, demotion trigger)
+
+### Shared Knowledge Layer (v0.2)
+
+- FR70: System stores successful task approaches as reusable knowledge entries (task type, approach, outcome, context)
+- FR71: System stores failed approaches as negative knowledge to prevent repetition
+- FR72: New agents query the knowledge layer before starting a task type for the first time
+- FR73: Knowledge entries support vector similarity search for finding relevant prior approaches
+- FR74: Knowledge entries decay over time (weighted by recency and success rate)
+- FR75: User can view, search, and manage knowledge entries via CLI (`hive knowledge list`, `hive knowledge search`)
+
+### Agent Collaboration (v0.2)
+
+- FR76: Agents can initiate multi-turn dialog threads with other agents for collaborative problem-solving
+- FR77: Dialog threads maintain conversation history and context
+- FR78: Dialog results are logged as events and available in the event timeline
+- FR79: User can view active and completed dialog threads
+
+### Webhook Integrations (v0.2)
+
+- FR80: User can configure webhook notifications for key events (task completed, agent failed, workflow finished)
+- FR81: System supports Slack webhook format for channel notifications
+- FR82: System supports GitHub webhook format for PR/issue integration
+- FR83: User can configure notification rules with filters (e.g., "only notify on failed tasks")
+
 ## Non-Functional Requirements
 
 ### Performance
@@ -482,6 +527,13 @@ interface HiveAdapter {
 - NFR18: All CLI commands provide `--help` with examples
 - NFR19: Error messages include actionable remediation suggestions (not just error codes)
 - NFR20: CLI supports shell completion for bash, zsh, and fish
+
+### Dashboard Performance (v0.2)
+
+- NFR24: Dashboard initial page load under 2 seconds
+- NFR25: WebSocket event delivery to dashboard under 100ms from event publication
+- NFR26: Dashboard serves from embedded assets in Go binary (no separate CDN or static file server)
+- NFR27: Dashboard supports 10 concurrent browser sessions without degradation
 
 ### Scalability (Design Constraints for Future)
 
