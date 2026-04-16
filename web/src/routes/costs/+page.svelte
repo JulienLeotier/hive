@@ -1,9 +1,13 @@
 <script lang="ts">
 	type Summary = { agent_name: string; total_cost: number; task_count: number };
 	type Alert = { agent_name: string; daily_limit: number; spend: number; breached: boolean };
+	type WorkflowSummary = { workflow_id: string; total_cost: number; task_count: number };
+	type TrendPoint = { day: string; total_cost: number };
 
 	let summaries = $state<Summary[]>([]);
 	let alerts = $state<Alert[]>([]);
+	let perWorkflow = $state<WorkflowSummary[]>([]);
+	let trend = $state<TrendPoint[]>([]);
 	let loading = $state(true);
 
 	async function load() {
@@ -12,6 +16,8 @@
 			const json = await res.json();
 			summaries = json.data?.summaries ?? [];
 			alerts = json.data?.alerts ?? [];
+			perWorkflow = json.data?.per_workflow ?? [];
+			trend = json.data?.trend ?? [];
 		} catch {
 			/* API not ready */
 		}
@@ -85,6 +91,40 @@
 										{a.breached ? 'BREACHED' : 'ok'}
 									</span>
 								</td>
+							</tr>
+						{/each}
+					</tbody>
+				</table>
+			</section>
+		{/if}
+
+		{#if trend.length > 0}
+			<section>
+				<h2>Trend (last 14 days)</h2>
+				<div class="sparkline">
+					{#each trend as p}
+						<div class="bar-wrap" title="{p.day}: {fmt(p.total_cost)}">
+							<div class="bar" style="height:{Math.max(2, Math.round((p.total_cost / Math.max(...trend.map(t => t.total_cost))) * 80))}px"></div>
+							<span class="day">{p.day.slice(5)}</span>
+						</div>
+					{/each}
+				</div>
+			</section>
+		{/if}
+
+		{#if perWorkflow.length > 0}
+			<section>
+				<h2>Spend by workflow</h2>
+				<table>
+					<thead>
+						<tr><th>Workflow</th><th>Total</th><th>Tasks</th></tr>
+					</thead>
+					<tbody>
+						{#each perWorkflow as w (w.workflow_id)}
+							<tr>
+								<td><code>{w.workflow_id.slice(-12)}</code></td>
+								<td>{fmt(w.total_cost)}</td>
+								<td>{w.task_count}</td>
 							</tr>
 						{/each}
 					</tbody>
@@ -206,5 +246,30 @@
 	.empty {
 		color: #666;
 		font-style: italic;
+	}
+	.sparkline {
+		display: flex;
+		gap: 4px;
+		align-items: flex-end;
+		padding: 0.5rem;
+		border: 1px solid #e5e7eb;
+		border-radius: 8px;
+		height: 120px;
+	}
+	.sparkline .bar-wrap {
+		display: flex;
+		flex-direction: column;
+		align-items: center;
+		flex: 1;
+	}
+	.sparkline .bar {
+		width: 100%;
+		background: linear-gradient(to top, #3b82f6, #60a5fa);
+		border-radius: 2px;
+	}
+	.sparkline .day {
+		font-size: 0.65rem;
+		color: #64748b;
+		margin-top: 4px;
 	}
 </style>

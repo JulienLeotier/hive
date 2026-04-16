@@ -91,13 +91,27 @@ func TestV10FeaturesEndToEnd(t *testing.T) {
 	require.NoError(t, err)
 	assert.Len(t, nodes, 1)
 
-	// --- Optimizer: a Trend call must succeed even on empty tasks.
+	// --- Optimizer: Trend + Analyze + baseline roundtrip. Story 23.2 AC:
+	// "exercises optimization analysis".
 	an := optimizer.NewAnalyzer(st.DB)
 	cur, prev, err := an.Trend(ctx, 7)
 	require.NoError(t, err)
 	assert.Equal(t, "7d", cur.Window)
 	assert.Equal(t, 0, cur.TasksRun)
 	assert.Equal(t, 0, prev.TasksRun)
+
+	// Analyze should return empty recommendations on an empty DB — but it
+	// must not error.
+	_, err = an.Analyze(ctx)
+	require.NoError(t, err)
+
+	baseline, err := an.SnapshotBaseline(ctx, 7, "e2e-baseline")
+	require.NoError(t, err)
+	assert.Equal(t, "e2e-baseline", baseline.Description)
+
+	delta, err := an.CompareToBaseline(ctx, baseline, 7)
+	require.NoError(t, err)
+	assert.True(t, delta.Improved, "self-comparison must not regress")
 }
 
 // TestV10RBACEnforcement exercises the full auth + RBAC chain end to end:

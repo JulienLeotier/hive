@@ -450,9 +450,49 @@ func (s *Server) handleCosts(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Per-workflow breakdown — Story 8.6 "cost per workflow".
+	type wfSummary struct {
+		WorkflowID string  `json:"workflow_id"`
+		TotalCost  float64 `json:"total_cost"`
+		TaskCount  int     `json:"task_count"`
+	}
+	var perWorkflow []wfSummary
+	if wfRows, err := db.QueryContext(ctx,
+		`SELECT workflow_id, SUM(cost), COUNT(*) FROM costs
+		 GROUP BY workflow_id ORDER BY SUM(cost) DESC LIMIT 50`); err == nil {
+		defer wfRows.Close()
+		for wfRows.Next() {
+			var s wfSummary
+			if err := wfRows.Scan(&s.WorkflowID, &s.TotalCost, &s.TaskCount); err == nil {
+				perWorkflow = append(perWorkflow, s)
+			}
+		}
+	}
+
+	// Daily trend over the last 14 days — Story 8.6 "cost trend over time".
+	type dailyPoint struct {
+		Day       string  `json:"day"`
+		TotalCost float64 `json:"total_cost"`
+	}
+	var trend []dailyPoint
+	if tRows, err := db.QueryContext(ctx,
+		`SELECT date(created_at), SUM(cost) FROM costs
+		 WHERE created_at >= date('now','-14 days')
+		 GROUP BY date(created_at) ORDER BY date(created_at)`); err == nil {
+		defer tRows.Close()
+		for tRows.Next() {
+			var p dailyPoint
+			if err := tRows.Scan(&p.Day, &p.TotalCost); err == nil {
+				trend = append(trend, p)
+			}
+		}
+	}
+
 	writeJSON(w, map[string]any{
-		"summaries": summaries,
-		"alerts":    alerts,
+		"summaries":    summaries,
+		"per_workflow": perWorkflow,
+		"trend":        trend,
+		"alerts":       alerts,
 	})
 }
 

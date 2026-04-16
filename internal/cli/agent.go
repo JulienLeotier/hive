@@ -415,6 +415,34 @@ var statusCmd = &cobra.Command{
 		}
 		fmt.Printf("\nTotal: %d agents\n", len(agents))
 
+		// Story 15.3: if an event_bus.nats_url is configured, show the
+		// connection status so ops can see cluster link health.
+		if cfg.EventBus != nil && cfg.EventBus.Backend == "nats" && cfg.EventBus.NATSURL != "" {
+			// Best-effort probe — we don't want `hive status` to block on a
+			// dead NATS. Report "unknown" if the probe takes too long.
+			status := "unknown"
+			done := make(chan string, 1)
+			go func() {
+				conn, err := event.NewNATSConnFromURL(cfg.EventBus.NATSURL)
+				if err != nil {
+					done <- "unreachable: " + err.Error()
+					return
+				}
+				defer conn.Close()
+				if s, ok := conn.(event.NATSConnStatus); ok {
+					done <- s.Status()
+					return
+				}
+				done <- "connected"
+			}()
+			select {
+			case s := <-done:
+				status = s
+			case <-time.After(500 * time.Millisecond):
+			}
+			fmt.Printf("\nNATS bus: %s (%s)\n", cfg.EventBus.NATSURL, status)
+		}
+
 		if len(taskCounts) > 0 {
 			fmt.Println("\nTasks:")
 			for _, s := range []string{"pending", "assigned", "running", "completed", "failed"} {
