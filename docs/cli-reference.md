@@ -1,227 +1,121 @@
 # CLI Reference
 
-The `hive` CLI is built with Cobra (`github.com/spf13/cobra`). All commands support `--help`.
+The `hive` CLI is built with Cobra (`github.com/spf13/cobra`). All commands support `--help`. Global flag: `--log-level` (default: `info`; values: `debug`, `info`, `warn`, `error`).
 
-## Global Flags
+## hive init
 
-| Flag | Default | Description |
-|---|---|---|
-| `--log-level` | `info` | Log level: `debug`, `info`, `warn`, `error` |
-
-Logging is configured via `slog.TextHandler` writing to stderr.
-
-## Commands
-
-### hive init
-
-Scaffold a new Hive project.
+Scaffold a new project. Source: `internal/cli/init_cmd.go`
 
 ```
-hive init [project-name] [flags]
+hive init [project-name] [--template <name>]
 ```
 
-**Arguments:**
-- `project-name` (optional, default: `my-hive`)
+- `project-name` defaults to `my-hive`
+- `--template`: `code-review`, `content-pipeline`, `research`
+- Creates `hive.yaml`, `agents/`, and `README.md` in the project directory
 
-**Flags:**
-- `--template string` -- Project template: `code-review`, `content-pipeline`, `research`
-
-**Creates:**
-- `<project-name>/hive.yaml` -- workflow configuration
-- `<project-name>/agents/` -- agent configs directory
-- `<project-name>/README.md` -- getting started
-
-**Examples:**
 ```bash
-hive init my-project
 hive init my-project --template code-review
-hive init  # creates "my-hive" directory
 ```
 
-**Source:** `internal/cli/init_cmd.go`
+## hive add-agent
 
----
-
-### hive add-agent
-
-Register an agent with the hive.
+Register an agent. Source: `internal/cli/agent.go`
 
 ```
-hive add-agent [flags]
+hive add-agent --name <name> --url <url> [--type <type>]
 ```
 
-**Flags:**
-- `--name string` (required) -- Agent name
-- `--type string` (default: `http`) -- Agent type: `http`, `claude-code`, `mcp`
-- `--url string` (required) -- Agent URL or path
+- `--name` (required) -- agent name
+- `--url` (required) -- agent URL or path
+- `--type` (default: `http`) -- `http`, `claude-code`, `mcp`
 
-On registration, Hive calls the agent's `/health` and `/declare` endpoints. The agent must be running and reachable.
+Calls `/health` and `/declare` on the agent to verify connectivity. Agent starts at trust level `scripted`.
 
-**Examples:**
 ```bash
 hive add-agent --name reviewer --type http --url http://localhost:8080
-hive add-agent --name coder --type claude-code --url ./skills/code-skill
-hive add-agent --name tools --type mcp --url http://localhost:3000
 ```
 
-**Source:** `internal/cli/agent.go`
+## hive remove-agent
 
----
+Remove an agent by name. Source: `internal/cli/agent.go`
 
-### hive remove-agent
-
-Remove an agent from the hive.
-
-```
-hive remove-agent [name]
-```
-
-**Arguments:**
-- `name` (required) -- Name of the agent to remove
-
-**Examples:**
 ```bash
 hive remove-agent reviewer
 ```
 
-**Source:** `internal/cli/agent.go`
+## hive status
 
----
-
-### hive status
-
-Show hive status -- agents, health, and trust levels.
+Show agents, health, and trust levels. Source: `internal/cli/agent.go`
 
 ```
-hive status [flags]
+hive status [--json]
 ```
 
-**Flags:**
-- `--json` -- Output in JSON format
+Columns: NAME, TYPE, HEALTH, TRUST. Use `--json` for machine-readable output.
 
-**Output columns:** NAME, TYPE, HEALTH, TRUST
-
-**Examples:**
 ```bash
 hive status
-hive status --json
 hive status --json | jq '.[] | select(.health_status == "healthy")'
 ```
 
-**Source:** `internal/cli/agent.go`
+## hive serve
 
----
+Start the API server and dashboard on port 8233 (default). Source: `internal/cli/serve.go`
 
-### hive serve
-
-Start the API server and web dashboard.
-
-```
-hive serve
-```
-
-Starts an HTTP server on the port configured in `hive.yaml` (default: 8233). Serves:
-- `/api/v1/*` -- REST API (authenticated if API keys exist)
-- `/` -- Web dashboard (Svelte SPA, no auth)
-
-Supports graceful shutdown via SIGINT/SIGTERM.
-
-**Examples:**
 ```bash
 hive serve
-hive serve --log-level debug
-HIVE_PORT=9000 hive serve
+HIVE_PORT=9000 hive serve --log-level debug
 ```
 
-**Source:** `internal/cli/serve.go`
+Serves `/api/v1/*` (REST API with optional auth) and `/` (Svelte dashboard). Graceful shutdown on SIGINT/SIGTERM.
 
----
+## hive logs
 
-### hive logs
-
-Query event logs with filtering.
+Query event logs with filtering. Source: `internal/cli/logs.go`
 
 ```
-hive logs [flags]
+hive logs [--type <prefix>] [--agent <name>] [--since <duration>] [--limit <n>] [--json]
 ```
 
-**Flags:**
-- `--type string` -- Filter by event type prefix (e.g., `task`, `agent.health`)
-- `--agent string` -- Filter by agent/source name
-- `--since string` -- Show events since duration (e.g., `1h`, `30m`, `24h`)
-- `--limit int` (default: `50`) -- Maximum events to return
-- `--json` -- Output in JSON format
+- `--type` -- event type prefix (e.g., `task`, `agent.health`)
+- `--agent` -- filter by source name
+- `--since` -- duration (e.g., `1h`, `30m`)
+- `--limit` -- max events (default: 50)
 
-**Examples:**
 ```bash
-hive logs
-hive logs --type task --since 1h
-hive logs --agent reviewer --limit 100
-hive logs --json
+hive logs --type task --since 1h --limit 20
 ```
 
-**Source:** `internal/cli/logs.go`
+## hive validate
 
----
-
-### hive validate
-
-Validate workflow configuration.
+Validate workflow YAML. Source: `internal/cli/validate.go`
 
 ```
 hive validate [workflow-file]
 ```
 
-**Arguments:**
-- `workflow-file` (optional, default: `hive.yaml`)
+Defaults to `hive.yaml`. Checks syntax, required fields, dependency references, and circular dependencies (Kahn's algorithm). Reports task count and parallel execution levels.
 
-Checks:
-- YAML syntax
-- Required fields (name, tasks, task names, task types)
-- Dependency references exist
-- No self-dependencies or circular dependencies
-- Reports task count and parallel execution levels
+## hive version
 
-**Examples:**
-```bash
-hive validate
-hive validate custom-workflow.yaml
-```
+Print version, Go version, and OS/arch. Source: `internal/cli/version.go`
 
-**Source:** `internal/cli/validate.go`
-
----
-
-### hive version
-
-Print version information.
-
-```
-hive version
-```
-
-Output includes Hive version (set via ldflags at build time), Go version, and OS/architecture.
-
-**Examples:**
 ```bash
 hive version
-# hive v0.1.0
+# hive dev
 #   go:   go1.25
 #   os:   darwin/arm64
 ```
 
-**Source:** `internal/cli/version.go`
+## Makefile Targets
 
----
-
-## Build Commands (Makefile)
-
-| Target | Command | Description |
-|---|---|---|
-| `make build` | Build dashboard + Go binary | Produces `./hive` |
-| `make test` | `go test ./... -v -count=1` | Run all tests |
-| `make lint` | `go vet ./...` | Static analysis |
-| `make dev` | `go run ./cmd/hive --log-level debug` | Run in dev mode |
-| `make serve` | Build then `./hive serve` | Build and serve |
-| `make clean` | Remove binary and dashboard dist | Clean build artifacts |
-| `make dashboard` | `cd web && npm run build` | Build Svelte dashboard only |
+| Target | Description |
+|---|---|
+| `make build` | Build dashboard + Go binary (produces `./hive`) |
+| `make test` | Run all tests (`go test ./... -v -count=1`) |
+| `make lint` | Static analysis (`go vet ./...`) |
+| `make dev` | Run with debug logging |
+| `make serve` | Build then serve |
+| `make clean` | Remove binary and dashboard dist |
+| `make dashboard` | Build Svelte dashboard only |

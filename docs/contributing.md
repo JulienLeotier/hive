@@ -135,12 +135,10 @@ Dot notation, past tense: `task.created`, `agent.registered`, `workflow.complete
 
 ## Pull Request Process
 
-1. Fork the repository
-2. Create a feature branch from `main`
-3. Make your changes following the code style above
-4. Ensure `make test` and `make lint` pass
-5. Write or update tests for your changes
-6. Submit a PR with a clear description of what and why
+1. Fork the repository and create a feature branch from `main`
+2. Follow the code style above; ensure `make test` and `make lint` pass
+3. Write or update tests for your changes
+4. Submit a PR with a clear description of what and why
 
 ## Architecture Principles
 
