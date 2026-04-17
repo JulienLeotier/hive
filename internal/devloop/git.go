@@ -49,9 +49,8 @@ func (g *GitCommitter) EnsureRepo(ctx context.Context, workdir string) error {
 	if workdir == "" {
 		return errors.New("git: empty workdir")
 	}
-	if _, err := exec.LookPath("git"); err != nil {
-		return nil
-	}
+	// git CLI presence was verified at NewGitCommitter — a nil receiver
+	// above short-circuited the no-git case.
 	// Already a repo? Check for .git as directory or file (worktrees).
 	if out, err := g.run(ctx, workdir, "rev-parse", "--is-inside-work-tree"); err == nil && strings.TrimSpace(string(out)) == "true" {
 		return nil
