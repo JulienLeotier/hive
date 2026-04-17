@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { apiGet, apiPost, apiDelete } from '$lib/api';
 	import { fmtRelative } from '$lib/format';
+	import { createReconnectingWS, wsURL } from '$lib/ws';
 	import ListScaffold from '$lib/ListScaffold.svelte';
 
 	type Project = {
@@ -37,10 +38,36 @@
 		}
 	}
 
+	// Any story.* or project.* event means a project row on this page
+	// probably just flipped status — refresh the list rather than the
+	// whole per-row payload (cheap, single query).
+	function shouldRefresh(type: string): boolean {
+		return (
+			type.startsWith('story.') ||
+			type.startsWith('project.') ||
+			type === 'intake.finalized'
+		);
+	}
+
 	$effect(() => {
 		load();
-		const i = setInterval(load, 10000);
-		return () => clearInterval(i);
+		const i = setInterval(load, 15000);
+		const ws = createReconnectingWS({
+			url: wsURL('/ws'),
+			onmessage: (msg) => {
+				try {
+					const evt = JSON.parse(msg.data) as { type?: string };
+					if (!evt.type || !shouldRefresh(evt.type)) return;
+					load();
+				} catch {
+					/* ignore non-JSON frames */
+				}
+			}
+		});
+		return () => {
+			clearInterval(i);
+			ws.close();
+		};
 	});
 
 	async function createProject(ev: Event) {
