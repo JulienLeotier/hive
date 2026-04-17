@@ -216,6 +216,25 @@
 		return s === 'dev' || s === 'review' || s === 'in_progress';
 	}
 
+	let retrying = $state<Record<string, boolean>>({});
+
+	async function retryStory(storyID: string) {
+		const id = $page.params.id ?? '';
+		if (!id) return;
+		retrying = { ...retrying, [storyID]: true };
+		try {
+			await apiPost(
+				`/api/v1/projects/${encodeURIComponent(id)}/stories/${encodeURIComponent(storyID)}/retry`,
+				{}
+			);
+			await load();
+		} catch {
+			/* banner */
+		} finally {
+			retrying = { ...retrying, [storyID]: false };
+		}
+	}
+
 	function eventColor(t: string): string {
 		if (t === 'project.shipped' || t === 'story.reviewed') return 'var(--ok)';
 		if (t === 'story.blocked' || t.endsWith('.failed')) return 'var(--err)';
@@ -427,6 +446,17 @@
 											<span class="badge" style="background:{statusColor(story.status)}">{story.status}</span>
 											{#if story.iterations > 0}
 												<span class="muted">· {story.iterations} iteration{story.iterations > 1 ? 's' : ''}</span>
+											{/if}
+											{#if story.status === 'blocked'}
+												<button
+													type="button"
+													class="retry"
+													onclick={() => retryStory(story.id)}
+													disabled={retrying[story.id]}
+													title="Reset iterations and send this story back to the dev loop"
+												>
+													{retrying[story.id] ? 'Retrying…' : '↻ Retry'}
+												</button>
 											{/if}
 										</div>
 										{#if story.acceptance_criteria && story.acceptance_criteria.length > 0}
@@ -752,6 +782,18 @@
 		align-items: center;
 		font-size: 0.9rem;
 	}
+	.retry {
+		margin-left: auto;
+		padding: 0.2rem 0.55rem;
+		background: var(--bg-alt);
+		border: 1px solid var(--warn);
+		color: var(--warn);
+		border-radius: 4px;
+		font-size: 0.75rem;
+		cursor: pointer;
+	}
+	.retry:hover { background: color-mix(in srgb, var(--warn) 18%, var(--bg-alt)); }
+	.retry:disabled { opacity: 0.5; cursor: not-allowed; }
 	.acs {
 		list-style: none;
 		padding: 0;

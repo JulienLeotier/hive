@@ -91,6 +91,67 @@ func (s *Server) handleCreateProject(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, p)
 }
 
+// handleRetryStory clears a blocked story's iteration counter so the
+// devloop picks it back up on the next tick. Without this endpoint, a
+// story that exhausts MaxIterations leaves the whole project wedged —
+// the only recovery path is manual SQL, which we don't want operators
+// reaching for. Only applies to stories in status `blocked`; any other
+// status is left alone so we don't rewind in-flight work.
+func (s *Server) handleRetryStory(w http.ResponseWriter, r *http.Request) {
+	if s.projectStore == nil {
+		writeError(w, http.StatusServiceUnavailable, "NO_PROJECT_STORE",
+			"project subsystem is not configured on this node")
+		return
+	}
+	projectID := r.PathValue("id")
+	storyID := r.PathValue("story_id")
+	if projectID == "" || storyID == "" {
+		writeError(w, http.StatusBadRequest, "BAD_REQUEST", "project and story id required")
+		return
+	}
+	if _, err := s.projectStore.GetByID(r.Context(), projectID); err != nil {
+		if strings.Contains(err.Error(), "not found") {
+			writeError(w, http.StatusNotFound, "NOT_FOUND", err.Error())
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "QUERY_FAILED", err.Error())
+		return
+	}
+	// Only reset when the story is genuinely blocked and belongs to this project.
+	res, err := s.db().ExecContext(r.Context(),
+		`UPDATE stories
+		 SET status = 'pending', iterations = 0, updated_at = datetime('now')
+		 WHERE id = ?
+		   AND status = 'blocked'
+		   AND epic_id IN (SELECT id FROM epics WHERE project_id = ?)`,
+		storyID, projectID,
+	)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "UPDATE_FAILED", err.Error())
+		return
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		writeError(w, http.StatusConflict, "NOT_BLOCKED",
+			"story is not in blocked state (or doesn't belong to this project)")
+		return
+	}
+	// If the project had been flipped to `failed`/`review` because of this
+	// blockage, nudge it back to `building` so the supervisor will tick it.
+	if _, err := s.db().ExecContext(r.Context(),
+		`UPDATE projects SET status = 'building', updated_at = datetime('now')
+		 WHERE id = ? AND status IN ('review','failed')`,
+		projectID,
+	); err != nil {
+		// best-effort; the story reset is what matters
+		_ = err
+	}
+	writeJSON(w, map[string]any{
+		"status":   "retrying",
+		"story_id": storyID,
+	})
+}
+
 // handleDeleteProject removes a project and cascades its epic/story tree.
 // Currently-building projects aren't stopped automatically — that's a
 // Phase 3 concern when the BMADEngine orchestrator exists.

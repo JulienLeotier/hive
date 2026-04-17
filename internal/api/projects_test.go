@@ -107,6 +107,61 @@ func TestDeleteProjectCascades(t *testing.T) {
 	assert.Equal(t, 0, count)
 }
 
+func TestRetryStoryResetsBlocked(t *testing.T) {
+	srv := setupServer(t)
+	store := project.NewStore(srv.db())
+	srv.WithProjectStore(store)
+
+	p, err := store.Create(httptest.NewRequest("POST", "/", nil).Context(),
+		"default", "idea", project.CreateOpts{Name: "demo"})
+	require.NoError(t, err)
+	_, err = srv.db().Exec(
+		`INSERT INTO epics (id, project_id, title, ordering, status) VALUES ('e1', ?, 'E', 0, 'in_progress')`,
+		p.ID)
+	require.NoError(t, err)
+	_, err = srv.db().Exec(
+		`INSERT INTO stories (id, epic_id, title, ordering, status, iterations) VALUES ('s1', 'e1', 'stuck', 0, 'blocked', 3)`,
+	)
+	require.NoError(t, err)
+
+	req := httptest.NewRequest("POST", "/api/v1/projects/"+p.ID+"/stories/s1/retry", nil)
+	w := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, req)
+
+	require.Equal(t, http.StatusOK, w.Code, "body=%s", w.Body.String())
+
+	var status string
+	var iterations int
+	require.NoError(t, srv.db().QueryRow(
+		`SELECT status, iterations FROM stories WHERE id = 's1'`,
+	).Scan(&status, &iterations))
+	assert.Equal(t, "pending", status, "retry must unblock the story")
+	assert.Equal(t, 0, iterations, "retry must reset the iteration counter")
+}
+
+func TestRetryStoryRejectsNonBlocked(t *testing.T) {
+	srv := setupServer(t)
+	store := project.NewStore(srv.db())
+	srv.WithProjectStore(store)
+
+	p, err := store.Create(httptest.NewRequest("POST", "/", nil).Context(),
+		"default", "idea", project.CreateOpts{Name: "demo"})
+	require.NoError(t, err)
+	_, err = srv.db().Exec(
+		`INSERT INTO epics (id, project_id, title, ordering, status) VALUES ('e1', ?, 'E', 0, 'pending')`, p.ID)
+	require.NoError(t, err)
+	_, err = srv.db().Exec(
+		`INSERT INTO stories (id, epic_id, title, ordering, status) VALUES ('s1', 'e1', 'ok', 0, 'pending')`,
+	)
+	require.NoError(t, err)
+
+	req := httptest.NewRequest("POST", "/api/v1/projects/"+p.ID+"/stories/s1/retry", nil)
+	w := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusConflict, w.Code, "can't retry a story that isn't blocked")
+}
+
 func TestGetProjectNotFoundReturns404(t *testing.T) {
 	srv := setupServer(t)
 	srv.WithProjectStore(project.NewStore(srv.db()))
