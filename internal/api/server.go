@@ -19,6 +19,7 @@ import (
 	"github.com/JulienLeotier/hive/internal/billing"
 	"github.com/JulienLeotier/hive/internal/event"
 	"github.com/JulienLeotier/hive/internal/knowledge"
+	"github.com/JulienLeotier/hive/internal/project"
 	"github.com/JulienLeotier/hive/internal/resilience"
 	"github.com/JulienLeotier/hive/internal/webhook"
 	"github.com/JulienLeotier/hive/internal/workflow"
@@ -48,6 +49,7 @@ type Server struct {
 	triggerMgr       *workflow.TriggerManager // optional — enables workflow fire + retry endpoints
 	webhookDisp      *webhook.Dispatcher      // optional — enables webhook CRUD endpoints
 	billingGen       *billing.Generator       // optional — enables invoice endpoints
+	projectStore     *project.Store           // BMAD project CRUD
 	mux              *http.ServeMux
 }
 
@@ -90,6 +92,13 @@ func (s *Server) WithWebhookDispatcher(d *webhook.Dispatcher) *Server {
 // issue + mark-paid invoices. Without it, /api/v1/invoices returns 503.
 func (s *Server) WithBillingGenerator(g *billing.Generator) *Server {
 	s.billingGen = g
+	return s
+}
+
+// WithProjectStore wires the BMAD project store. The dashboard's /projects
+// page relies on it for the core BMAD flow.
+func (s *Server) WithProjectStore(p *project.Store) *Server {
+	s.projectStore = p
 	return s
 }
 
@@ -241,6 +250,14 @@ func (s *Server) routes() {
 	s.mux.Handle("GET /api/v1/invoices", auth.RBACMiddleware("system", "read")(http.HandlerFunc(s.handleListInvoices)))
 	s.mux.Handle("POST /api/v1/invoices/{id}/issue", auth.RBACMiddleware("system", "write")(http.HandlerFunc(s.handleIssueInvoice)))
 	s.mux.Handle("POST /api/v1/invoices/{id}/paid", auth.RBACMiddleware("system", "write")(http.HandlerFunc(s.handleMarkInvoicePaid)))
+
+	// BMAD projects — the new core surface. Read requires any authenticated
+	// user; write requires operator/admin since starting a build costs real
+	// money (Claude Code tokens + possible CI runtime).
+	s.mux.Handle("GET /api/v1/projects", auth.RBACMiddleware("system", "read")(http.HandlerFunc(s.handleListProjects)))
+	s.mux.Handle("GET /api/v1/projects/{id}", auth.RBACMiddleware("system", "read")(http.HandlerFunc(s.handleGetProject)))
+	s.mux.Handle("POST /api/v1/projects", auth.RBACMiddleware("system", "write")(http.HandlerFunc(s.handleCreateProject)))
+	s.mux.Handle("DELETE /api/v1/projects/{id}", auth.RBACMiddleware("system", "write")(http.HandlerFunc(s.handleDeleteProject)))
 
 	// Agent playground. Lets an operator send an ad-hoc task to a registered
 	// agent without going through a workflow. Handy for verifying

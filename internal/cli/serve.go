@@ -26,6 +26,7 @@ import (
 	"github.com/JulienLeotier/hive/internal/knowledge"
 	"github.com/JulienLeotier/hive/internal/market"
 	"github.com/JulienLeotier/hive/internal/notify"
+	"github.com/JulienLeotier/hive/internal/project"
 	"github.com/JulienLeotier/hive/internal/resilience"
 	"github.com/JulienLeotier/hive/internal/storage"
 	"github.com/JulienLeotier/hive/internal/task"
@@ -379,7 +380,8 @@ var serveCmd = &cobra.Command{
 			WithUsers(users).
 			WithTriggerManager(triggerMgr).
 			WithWebhookDispatcher(webhookDisp).
-			WithBillingGenerator(billingGen)
+			WithBillingGenerator(billingGen).
+			WithProjectStore(project.NewStore(store.DB))
 
 		// Story 19.2: honour the `federation.share:` list so only whitelisted
 		// capabilities appear at /api/v1/capabilities.

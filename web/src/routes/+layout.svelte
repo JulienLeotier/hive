@@ -37,33 +37,52 @@
 		goto('/login');
 	}
 
-	const navGroups = [
+	// BMAD-mode nav: only what an operator driving an autonomous product
+	// build needs. Enterprise features (federation, marketplace, billing,
+	// multi-tenant, webhooks, cluster) are kept in the code but hidden
+	// because this tool is local, single-user, single-project-at-a-time.
+	// Flip HIVE_ENTERPRISE=1 on the build to expose them — see the Info
+	// doc for rationale.
+	const ENTERPRISE_MODE =
+		typeof window !== 'undefined' && localStorage.getItem('hive.mode') === 'enterprise';
+
+	const bmadNav = [
 		{
-			label: 'Overview',
-			items: [{ href: '/', label: 'Home' }]
-		},
-		{
-			label: 'Orchestration',
+			label: 'Build',
 			items: [
-				{ href: '/agents', label: 'Agents' },
-				{ href: '/playground', label: 'Playground' },
-				{ href: '/workflows', label: 'Workflows' },
-				{ href: '/tasks', label: 'Tasks' },
-				{ href: '/events', label: 'Events' }
+				{ href: '/', label: 'Home' },
+				{ href: '/projects', label: 'Projects' }
 			]
 		},
 		{
-			label: 'Intelligence',
+			label: 'Fleet',
 			items: [
-				{ href: '/trust', label: 'Trust' },
-				{ href: '/knowledge', label: 'Knowledge' },
-				{ href: '/dialogs', label: 'Dialogs' }
+				{ href: '/agents', label: 'Agents' },
+				{ href: '/playground', label: 'Playground' },
+				{ href: '/knowledge', label: 'Knowledge' }
+			]
+		},
+		{
+			label: 'Inspect',
+			items: [
+				{ href: '/tasks', label: 'Tasks' },
+				{ href: '/events', label: 'Events' },
+				{ href: '/costs', label: 'Costs' },
+				{ href: '/audit', label: 'Audit' }
+			]
+		}
+	];
+
+	const enterpriseNav = [
+		{
+			label: 'Orchestration',
+			items: [
+				{ href: '/workflows', label: 'Workflows' }
 			]
 		},
 		{
 			label: 'Economy',
 			items: [
-				{ href: '/costs', label: 'Costs' },
 				{ href: '/billing', label: 'Billing' },
 				{ href: '/market', label: 'Market' },
 				{ href: '/optimizer', label: 'Optimizer' }
@@ -75,7 +94,8 @@
 				{ href: '/cluster', label: 'Cluster' },
 				{ href: '/federation', label: 'Federation' },
 				{ href: '/marketplace', label: 'Marketplace' },
-				{ href: '/webhooks', label: 'Webhooks' }
+				{ href: '/webhooks', label: 'Webhooks' },
+				{ href: '/dialogs', label: 'Dialogs' }
 			]
 		},
 		{
@@ -83,10 +103,12 @@
 			items: [
 				{ href: '/users', label: 'Users' },
 				{ href: '/tenants', label: 'Tenants' },
-				{ href: '/audit', label: 'Audit' }
+				{ href: '/trust', label: 'Trust' }
 			]
 		}
 	];
+
+	const navGroups = ENTERPRISE_MODE ? [...bmadNav, ...enterpriseNav] : bmadNav;
 
 	onMount(() => {
 		applyStoredTheme();
