@@ -1,5 +1,39 @@
 # Hive
 
+Hive is a **local BMAD product factory**. Describe what you want built,
+the PM agent turns it into a PRD, the Architect decomposes into epics
+and stories with acceptance criteria, and Claude Code drives a
+Dev/Reviewer loop until every AC passes — commits land in your workdir,
+no human in the loop. One Go binary, one SvelteKit dashboard, one
+database (SQLite by default).
+
+**Flow:** Idea → PM Q&A → PRD → Architect → Dev + Review → Shipped.
+Everything is piloted from the web dashboard; there's no CLI for the
+user-facing build flow. See `web/src/routes/projects/` for the UI entry
+points and `internal/devloop/` for the autonomous loop.
+
+Running the real `claude` CLI end-to-end against a throwaway project:
+
+```bash
+# Requires: claude CLI on PATH, go 1.25+, jq, curl.
+# HIVE_E2E_TIMEOUT=1200  # seconds; default 20 min
+./scripts/claude-e2e.sh
+```
+
+The script spins up a temp hive on port 18233, creates a tiny project
+("write a CLI that prints a random compliment"), finalises the intake,
+lets the real Claude Code adapter drive the dev loop, and verifies the
+project flips to `shipped`. For quick adapter-only plumbing checks:
+`go test -tags claude_e2e ./internal/devloop`.
+
+---
+
+Below is the legacy README from before the BMAD pivot. Some of this is
+stale — federation, marketplace, billing, workflow DAGs, etc. are no
+longer part of the product surface. Kept here until it's rewritten.
+
+## Legacy description
+
 Universal AI agent orchestration platform. Register heterogeneous agents
 (HTTP, Claude Code, MCP, CrewAI, LangChain, AutoGen, OpenAI), compose
 workflows as DAGs (YAML or visual builder), and let Hive route tasks,
