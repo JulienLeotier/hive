@@ -99,7 +99,7 @@ func (s *Server) handleFSList(w http.ResponseWriter, r *http.Request) {
 		"vendor":       true,
 		"target":       true,
 	}
-	var entries []fsEntry
+	entries := []fsEntry{} // never nil — JSON marshal en [] au lieu de null
 	for _, e := range raw {
 		name := e.Name()
 		if strings.HasPrefix(name, ".") {

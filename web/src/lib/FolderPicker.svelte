@@ -202,7 +202,7 @@
 					{/if}
 
 					<ul>
-						{#each listing.entries as e (e.path)}
+						{#each listing.entries ?? [] as e (e.path)}
 							<li>
 								<button
 									type="button"
@@ -214,7 +214,7 @@
 								</button>
 							</li>
 						{/each}
-						{#if listing.entries.length === 0}
+						{#if (listing.entries ?? []).length === 0}
 							<li class="empty">Dossier vide</li>
 						{/if}
 					</ul>
