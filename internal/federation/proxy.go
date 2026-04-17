@@ -23,10 +23,28 @@ type Proxy struct {
 	clients map[string]*http.Client // name → cached client (plain or mTLS)
 }
 
+// maxCachedClients caps the http.Client cache. Realistic federation
+// deployments have a handful of peers, not thousands. A bug or misconfig
+// (e.g. a resolver that generates random peer names) could otherwise leak
+// one *http.Client per unique name. When the cap is hit we reset the whole
+// cache — simpler than LRU, correct enough for an edge case that shouldn't
+// happen.
+const maxCachedClients = 256
+
 // NewProxy builds a proxy backed by a federation store. mTLS config is pulled
 // from the store per-peer so clients pick up rotated certs on the next call.
 func NewProxy(store *Store) *Proxy {
 	return &Proxy{store: store, clients: map[string]*http.Client{}}
+}
+
+// InvalidateClient drops the cached http.Client for a peer so the next call
+// rebuilds it from the latest stored TLS material. Intended to be called
+// after cert rotation via CLI (hive federation set-cert ...). No error if
+// the peer isn't cached.
+func (p *Proxy) InvalidateClient(peer string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	delete(p.clients, peer)
 }
 
 // MaxHops caps how many times a task can bounce across federated hives
@@ -153,6 +171,13 @@ func (p *Proxy) clientFor(ctx context.Context, peer string) (*http.Client, strin
 		return nil, "", err
 	}
 	p.mu.Lock()
+	// Hard cap on cache size; if we overflow we nuke the whole map rather
+	// than pick an eviction victim. At typical peer counts (<10) this never
+	// fires; it exists purely to stop pathological peer-churn from blowing
+	// the map into memory.
+	if len(p.clients) >= maxCachedClients {
+		p.clients = map[string]*http.Client{}
+	}
 	p.clients[peer] = client
 	p.mu.Unlock()
 	return client, url, nil

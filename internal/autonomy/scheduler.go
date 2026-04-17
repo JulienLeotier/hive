@@ -23,16 +23,24 @@ type Scheduler struct {
 	maxConcurrent int
 }
 
+// defaultMaxConcurrent bounds in-flight wake-up cycles. 16 is picked so a
+// single hive with a busy scheduler can keep a small agent fleet warm
+// without saturating the DB's connection pool (SQLite default) or the
+// adapter HTTP clients. Operators with larger fleets should call
+// SetMaxConcurrent explicitly — a future config lever under
+// `autonomy.max_concurrent` would expose this properly.
+const defaultMaxConcurrent = 16
+
 // NewScheduler creates a heartbeat scheduler with a default backpressure limit.
-// MaxConcurrent defaults to 16 wake-up cycles in flight; call SetMaxConcurrent
-// to tune.
+// MaxConcurrent defaults to defaultMaxConcurrent wake-up cycles in flight;
+// call SetMaxConcurrent to tune.
 func NewScheduler(handler WakeUpHandler) *Scheduler {
 	s := &Scheduler{
 		timers:  make(map[string]*time.Ticker),
 		handler: handler,
 		stopChs: make(map[string]chan struct{}),
 	}
-	s.SetMaxConcurrent(16)
+	s.SetMaxConcurrent(defaultMaxConcurrent)
 	return s
 }
 

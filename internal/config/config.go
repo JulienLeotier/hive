@@ -145,7 +145,32 @@ func Load(path string) (Config, error) {
 		cfg.DataDir = filepath.Join(home, cfg.DataDir[2:])
 	}
 
+	if err := cfg.Validate(); err != nil {
+		return cfg, err
+	}
 	return cfg, nil
+}
+
+// Validate rejects configurations that would start but misbehave silently.
+// Port 0 lets the OS pick a random port — surprising to an operator expecting
+// the declared value, and breaks external probes. Retention intervals that go
+// negative would immediately expire every row.
+func (c Config) Validate() error {
+	if c.Port <= 0 || c.Port > 65535 {
+		return fmt.Errorf("invalid port %d (must be 1-65535)", c.Port)
+	}
+	if c.Retention != nil && c.Retention.IntervalMinutes < 0 {
+		return fmt.Errorf("retention.interval_minutes must not be negative, got %d", c.Retention.IntervalMinutes)
+	}
+	if c.Checkpoint != nil {
+		if c.Checkpoint.IntervalSeconds < 0 {
+			return fmt.Errorf("checkpoint.interval_seconds must not be negative, got %d", c.Checkpoint.IntervalSeconds)
+		}
+		if c.Checkpoint.MaxAgeSeconds < 0 {
+			return fmt.Errorf("checkpoint.max_age_seconds must not be negative, got %d", c.Checkpoint.MaxAgeSeconds)
+		}
+	}
+	return nil
 }
 
 func applyEnvOverrides(cfg *Config) {

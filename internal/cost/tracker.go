@@ -74,6 +74,10 @@ func (t *Tracker) ByAgent(ctx context.Context) ([]Summary, error) {
 	for rows.Next() {
 		var s Summary
 		if err := rows.Scan(&s.AgentName, &s.TotalCost, &s.TaskCount); err != nil {
+			// Scan error here is unusual (costs rows are simple), so log it
+			// at warn rather than silently dropping: it most likely signals
+			// schema drift or a partially written row worth investigating.
+			slog.Warn("cost summary scan failed", "error", err)
 			continue
 		}
 		summaries = append(summaries, s)

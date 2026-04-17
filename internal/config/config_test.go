@@ -73,3 +73,21 @@ func TestTildeExpansion(t *testing.T) {
 	home, _ := os.UserHomeDir()
 	assert.Equal(t, filepath.Join(home, ".hive", "data"), cfg.DataDir)
 }
+
+func TestValidate_RejectsBadPort(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "hive.yaml")
+	for _, bad := range []string{"port: 0\n", "port: -1\n", "port: 70000\n"} {
+		require.NoError(t, os.WriteFile(cfgPath, []byte(bad), 0644))
+		_, err := Load(cfgPath)
+		assert.Error(t, err, "port config %q must be rejected", bad)
+	}
+}
+
+func TestValidate_RejectsNegativeRetention(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "hive.yaml")
+	require.NoError(t, os.WriteFile(cfgPath, []byte("retention:\n  interval_minutes: -10\n"), 0644))
+	_, err := Load(cfgPath)
+	assert.Error(t, err)
+}

@@ -126,19 +126,25 @@ func (a *OpenAIAdapter) createRunAndPoll(ctx context.Context, threadID string) (
 		return "", fmt.Errorf("parsing run response: %w", err)
 	}
 
-	// Poll for completion (max 60 attempts, 2s intervals)
+	// Poll for completion (max 60 attempts, 2s intervals). Using a single
+	// Ticker instead of time.After per iteration so we allocate one timer
+	// for the whole loop and the Stop() on ctx cancel is explicit.
+	ticker := time.NewTicker(2 * time.Second)
+	defer ticker.Stop()
 	for i := 0; i < 60; i++ {
 		select {
 		case <-ctx.Done():
 			return "", ctx.Err()
-		case <-time.After(2 * time.Second):
+		case <-ticker.C:
 		}
 		data, err := a.apiCall(ctx, "GET", "/threads/"+threadID+"/runs/"+run.ID, nil)
 		if err != nil {
 			return "", err
 		}
 		var status struct{ Status string `json:"status"` }
-		json.Unmarshal(data, &status)
+		if err := json.Unmarshal(data, &status); err != nil {
+			return "", fmt.Errorf("parsing run status: %w", err)
+		}
 		if status.Status == "completed" {
 			return a.getLastMessage(ctx, threadID)
 		}

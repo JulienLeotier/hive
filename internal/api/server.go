@@ -356,7 +356,14 @@ func (s *Server) handleListCapabilities(w http.ResponseWriter, r *http.Request) 
 		var decl struct {
 			TaskTypes []string `json:"task_types"`
 		}
-		_ = json.Unmarshal([]byte(a.Capabilities), &decl)
+		if err := json.Unmarshal([]byte(a.Capabilities), &decl); err != nil {
+			// Malformed capabilities in the DB: skip this agent but log
+			// so the operator can investigate instead of silently seeing
+			// a shortened capability list.
+			slog.Warn("malformed agent capabilities JSON — skipping",
+				"agent", a.Name, "error", err)
+			continue
+		}
 		for _, t := range decl.TaskTypes {
 			if len(shareFilter) > 0 && !shareFilter[t] {
 				continue

@@ -96,10 +96,17 @@ func sweepRetention(ctx context.Context, db *sql.DB, cfg RetentionConfig) {
 	}
 }
 
+// deleteOlderThan purges rows older than `days` from `table` using `column`
+// as the age marker. `extraWhere` is an additional SQL fragment appended as
+// `AND ...`. The time bound uses a parameterised cutoff (portable across
+// SQLite and Postgres) rather than a dialect-specific `NOW() - INTERVAL`.
+//
+// SECURITY PRECONDITION: table, column, and extraWhere are formatted into
+// the query without escaping. This is safe ONLY because every caller in
+// sweepRetention passes a hard-coded string literal. Do NOT expose this
+// function to any path that could accept user input for those arguments —
+// add a validated enum or allowlist first.
 func deleteOlderThan(ctx context.Context, db *sql.DB, table, column string, days int, extraWhere string) {
-	// Using a parameterised cutoff rather than SQLite's datetime('now', '-Nd')
-	// so the query is portable between SQLite and Postgres without dialect
-	// branches.
 	cutoff := time.Now().UTC().Add(-time.Duration(days) * 24 * time.Hour).Format("2006-01-02 15:04:05")
 	q := fmt.Sprintf(`DELETE FROM %s WHERE %s < ? %s`, table, column, extraWhere)
 	res, err := db.ExecContext(ctx, q, cutoff)
