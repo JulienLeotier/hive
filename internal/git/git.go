@@ -65,6 +65,9 @@ func CloneRepo(ctx context.Context, target, workdir string) error {
 	if target == "" || workdir == "" {
 		return errors.New("git: repo target ou workdir vide")
 	}
+	if err := validateWorkdir(workdir); err != nil {
+		return err
+	}
 	if info, err := os.Stat(workdir); err == nil {
 		if !info.IsDir() {
 			return fmt.Errorf("git: %s existe et n'est pas un répertoire", workdir)
@@ -102,6 +105,9 @@ func CreateRepo(ctx context.Context, name, workdir, visibility string) (string, 
 	if name == "" || workdir == "" {
 		return "", errors.New("git: nom de repo ou workdir vide")
 	}
+	if err := validateWorkdir(workdir); err != nil {
+		return "", err
+	}
 	if visibility != "public" && visibility != "private" && visibility != "internal" {
 		visibility = "private"
 	}
@@ -109,19 +115,22 @@ func CreateRepo(ctx context.Context, name, workdir, visibility string) (string, 
 		return "", fmt.Errorf("git: préparer workdir: %w", err)
 	}
 	// Init local si pas déjà un repo.
-	if _, err := os.Stat(workdir + "/.git"); err != nil {
+	if _, err := os.Stat(filepath.Join(workdir, ".git")); err != nil {
 		if err := runIn(ctx, workdir, "git", "init", "-b", "main"); err != nil {
 			return "", err
 		}
-		// Seed un README pour éviter le repo vide (gh repo create
-		// --push refuse le repo sans commit).
+	}
+	// Seed un README si absent (sinon gh repo create --push refuse un repo vide).
+	readmePath := filepath.Join(workdir, "README.md")
+	if _, err := os.Stat(readmePath); err != nil {
 		seed := "# " + name + "\n\nGéré par Hive BMAD.\n"
-		if err := os.WriteFile(workdir+"/README.md", []byte(seed), 0o644); err != nil {
+		if err := os.WriteFile(readmePath, []byte(seed), 0o644); err != nil {
 			return "", fmt.Errorf("git: seed README: %w", err)
 		}
-		_ = runIn(ctx, workdir, "git", "add", "-A")
-		_ = runIn(ctx, workdir, "git", "-c", "user.email=bmad@hive.local",
-			"-c", "user.name=Hive BMAD", "commit", "-m", "chore: initial Hive BMAD scaffold")
+	}
+	// Stage et commit si quelque chose n'est pas déjà committé.
+	if err := ensureInitialCommit(ctx, workdir); err != nil {
+		return "", fmt.Errorf("git: impossible de créer un commit initial : %w", err)
 	}
 	callCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
@@ -496,6 +505,73 @@ func EnsureStoryPushed(ctx context.Context, workdir, branch, storyTitle string) 
 		}
 	}
 	return strings.TrimSpace(string(out)), nil
+}
+
+// validateWorkdir refuse les workdir qui sont manifestement dangereux :
+// le home de l'user, les racines systèmes, les chemins trop courts.
+// Hive init + commit dans le home d'un user effacerait toute sa
+// config locale si le user continue à bosser ailleurs. Mieux vaut
+// lever une erreur claire tôt.
+func validateWorkdir(workdir string) error {
+	clean := filepath.Clean(workdir)
+	if !filepath.IsAbs(clean) {
+		return fmt.Errorf("git: workdir doit être un chemin absolu : %s", workdir)
+	}
+	if len(clean) < 4 {
+		return fmt.Errorf("git: workdir %q trop court, risque d'écraser une racine système", clean)
+	}
+	home, _ := os.UserHomeDir()
+	if home != "" && clean == home {
+		return fmt.Errorf("git: workdir %q est ton home directory — crée un sous-dossier dédié au projet (ex. %s/projets/<nom>)", clean, home)
+	}
+	// Racines / arborescences systèmes à bannir explicitement.
+	for _, forbidden := range []string{"/", "/Users", "/home", "/etc", "/var", "/tmp", "/usr", "/bin", "/sbin", "/opt", "/private", "/System", "/Library", "/Applications"} {
+		if clean == forbidden {
+			return fmt.Errorf("git: workdir %q est une racine système, choisis un sous-dossier dédié", clean)
+		}
+	}
+	return nil
+}
+
+// ensureInitialCommit stage tout ce qui n'est pas déjà committé et
+// crée un commit si le repo n'a pas de HEAD (ou si des fichiers sont
+// staged). Idempotent : si HEAD pointe déjà sur un commit et que tout
+// est clean, c'est un no-op.
+//
+// On utilise user.email / user.name locaux pour ne pas dépendre de la
+// config git globale du user (qui peut être absente ou volontairement
+// différente).
+func ensureInitialCommit(ctx context.Context, workdir string) error {
+	// Stage tout le workdir.
+	if err := runIn(ctx, workdir, "git", "add", "-A"); err != nil {
+		return err
+	}
+	// Regarde s'il y a un HEAD valide.
+	headCtx, headCancel := context.WithCancel(ctx)
+	headCmd := exec.CommandContext(headCtx, "git", "-C", workdir, "rev-parse", "--verify", "HEAD")
+	headErr := headCmd.Run()
+	headCancel()
+	hasHEAD := headErr == nil
+	// Regarde s'il y a quelque chose à committer.
+	diffCtx, diffCancel := context.WithCancel(ctx)
+	diffCmd := exec.CommandContext(diffCtx, "git", "-C", workdir, "diff", "--cached", "--quiet")
+	diffErr := diffCmd.Run()
+	diffCancel()
+	somethingStaged := diffErr != nil // --quiet + exit code != 0 = diff present
+
+	if hasHEAD && !somethingStaged {
+		return nil // rien à faire, HEAD pointe déjà vers un commit et tout est clean
+	}
+	// Commit. Utilise un config local pour ne pas polluer global.
+	if err := runIn(ctx, workdir,
+		"git", "-c", "user.email=bmad@hive.local", "-c", "user.name=Hive BMAD",
+		"commit", "--allow-empty-message", "-m", "chore: initial Hive BMAD scaffold",
+	); err != nil {
+		// Si git refuse encore (ex. nothing to commit et hasHEAD false —
+		// situation pathologique), remonte l'erreur claire.
+		return fmt.Errorf("git commit: %w", err)
+	}
+	return nil
 }
 
 func truncate(s string, n int) string {

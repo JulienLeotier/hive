@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -167,5 +168,83 @@ func TestLoginWithTokenRejectsEmpty(t *testing.T) {
 	err := LoginWithToken(context.Background(), "   ")
 	if err == nil || !strings.Contains(err.Error(), "vide") {
 		t.Fatalf("expected vide-token error, got %v", err)
+	}
+}
+
+func TestValidateWorkdirAcceptsProperPath(t *testing.T) {
+	// Chemins ok : absolus, sous-dossiers profonds.
+	for _, p := range []string{
+		"/tmp/hive-demo",
+		"/var/folders/vf/hm5b/hive-test",
+		"/Users/alice/Projects/hive-x",
+	} {
+		if err := validateWorkdir(p); err != nil {
+			t.Errorf("validateWorkdir(%q) = %v, want nil", p, err)
+		}
+	}
+}
+
+func TestValidateWorkdirRejectsHome(t *testing.T) {
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		t.Skip("no home directory")
+	}
+	err = validateWorkdir(home)
+	if err == nil {
+		t.Fatal("validateWorkdir(home) must refuse")
+	}
+	if !strings.Contains(err.Error(), "home") {
+		t.Errorf("message must mention home: %v", err)
+	}
+}
+
+func TestValidateWorkdirRejectsSystemRoots(t *testing.T) {
+	for _, p := range []string{"/", "/Users", "/home", "/etc", "/var", "/tmp", "/usr", "/Library", "/Applications"} {
+		if err := validateWorkdir(p); err == nil {
+			t.Errorf("validateWorkdir(%q) accepted, want reject", p)
+		}
+	}
+}
+
+func TestValidateWorkdirRejectsRelative(t *testing.T) {
+	if err := validateWorkdir("relative/path"); err == nil {
+		t.Fatal("relative path must be rejected")
+	}
+}
+
+func TestEnsureInitialCommitCreatesOne(t *testing.T) {
+	dir := t.TempDir()
+	// Init repo à vide
+	if err := runIn(context.Background(), dir, "git", "init", "-b", "main"); err != nil {
+		t.Skipf("git not available: %v", err)
+	}
+	// Seed un fichier
+	if err := os.WriteFile(filepath.Join(dir, "a.txt"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := ensureInitialCommit(context.Background(), dir); err != nil {
+		t.Fatalf("ensureInitialCommit: %v", err)
+	}
+	// Vérifie qu'un HEAD existe maintenant.
+	cmd := exec.CommandContext(context.Background(), "git", "-C", dir, "rev-parse", "HEAD")
+	if out, err := cmd.Output(); err != nil || len(strings.TrimSpace(string(out))) == 0 {
+		t.Fatalf("no HEAD after ensureInitialCommit: %v / %q", err, string(out))
+	}
+}
+
+func TestEnsureInitialCommitIdempotent(t *testing.T) {
+	dir := t.TempDir()
+	if err := runIn(context.Background(), dir, "git", "init", "-b", "main"); err != nil {
+		t.Skipf("git not available: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "a.txt"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := ensureInitialCommit(context.Background(), dir); err != nil {
+		t.Fatalf("first call: %v", err)
+	}
+	// Deuxième appel sans modif : doit être no-op sans erreur.
+	if err := ensureInitialCommit(context.Background(), dir); err != nil {
+		t.Fatalf("idempotent call: %v", err)
 	}
 }
