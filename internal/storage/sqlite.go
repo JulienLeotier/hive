@@ -28,14 +28,21 @@ func Open(dataDir string) (*Store, error) {
 	}
 
 	dbPath := filepath.Join(dataDir, "hive.db")
-	db, err := sql.Open("sqlite", dbPath)
+	// PRAGMAs ride in the DSN so every connection the database/sql pool
+	// opens gets them. Setting them via db.Exec() only applies to the one
+	// connection that ran the Exec — newly opened pool members would start
+	// without WAL or busy_timeout, and the first lock contention at boot
+	// (cluster heartbeat, autonomy scheduler, checkpoint supervisor all
+	// writing concurrently) surfaces as SQLITE_BUSY instead of waiting.
+	dsn := dbPath + "?" +
+		"_pragma=journal_mode(WAL)&" +
+		"_pragma=busy_timeout(5000)&" +
+		"_pragma=foreign_keys(on)&" +
+		"_pragma=synchronous(normal)&" +
+		"_pragma=journal_size_limit(67108864)"
+	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("opening database %s: %w", dbPath, err)
-	}
-
-	if err := configureSQLite(db); err != nil {
-		db.Close()
-		return nil, err
 	}
 
 	s := &Store{DB: db, dir: dataDir}
@@ -52,22 +59,6 @@ func Open(dataDir string) (*Store, error) {
 // Close closes the database connection.
 func (s *Store) Close() error {
 	return s.DB.Close()
-}
-
-func configureSQLite(db *sql.DB) error {
-	pragmas := []string{
-		"PRAGMA journal_mode=WAL",
-		"PRAGMA busy_timeout=5000",
-		"PRAGMA journal_size_limit=67108864",
-		"PRAGMA foreign_keys=ON",
-		"PRAGMA synchronous=NORMAL",
-	}
-	for _, p := range pragmas {
-		if _, err := db.Exec(p); err != nil {
-			return fmt.Errorf("executing %s: %w", p, err)
-		}
-	}
-	return nil
 }
 
 func (s *Store) migrate() error {
