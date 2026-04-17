@@ -2,6 +2,7 @@
 	import { page } from '$app/stores';
 	import { apiGet, apiPost } from '$lib/api';
 	import { fmtRelative } from '$lib/format';
+	import { createReconnectingWS, wsURL } from '$lib/ws';
 
 	type IntakeMessage = {
 		id: number;
@@ -128,10 +129,45 @@
 		}
 	}
 
+	// Adaptive polling: a project that's actively building can move in
+	// seconds (devloop ticks + Claude Code finishes a story), so we poll
+	// fast. Draft/shipped projects barely change; poll slowly so we're
+	// not hammering SQLite for no reason.
 	$effect(() => {
 		load();
-		const i = setInterval(load, 5000);
+		const fast = project?.status === 'building' || project?.status === 'review';
+		const intervalMs = fast ? 2000 : 10000;
+		const i = setInterval(load, intervalMs);
 		return () => clearInterval(i);
+	});
+
+	// WebSocket subscription: the devloop emits story.* and project.shipped
+	// events as it works. Reacting to them eliminates polling lag — the
+	// UI updates the moment a story flips dev → review → done.
+	$effect(() => {
+		const ws = createReconnectingWS({
+			url: wsURL('/ws'),
+			onmessage: (msg) => {
+				try {
+					const evt = JSON.parse(msg.data) as { type?: string; payload?: string };
+					if (!evt.type) return;
+					if (!evt.type.startsWith('story.') && evt.type !== 'project.shipped') return;
+					// Payload is a JSON string on the wire; parse and match project_id.
+					const pid = $page.params.id ?? '';
+					let payloadProject = '';
+					try {
+						const p = JSON.parse(evt.payload ?? '{}') as { project_id?: string };
+						payloadProject = p.project_id ?? '';
+					} catch {
+						return;
+					}
+					if (payloadProject && payloadProject === pid) load();
+				} catch {
+					/* ignore non-JSON frames */
+				}
+			}
+		});
+		return () => ws.close();
 	});
 
 	// Load the intake conversation whenever we're on a draft project.
@@ -140,6 +176,10 @@
 			loadIntake();
 		}
 	});
+
+	function isActive(s: string): boolean {
+		return s === 'dev' || s === 'review' || s === 'in_progress';
+	}
 
 	function statusColor(s: string): string {
 		const map: Record<string, string> = {
@@ -222,6 +262,18 @@
 
 		<section class="progress">
 			<h2>Progress</h2>
+			{#if totalACs > 0}
+				<div class="bar" aria-label="acceptance criteria progress">
+					<div
+						class="bar-fill"
+						class:shipped={project.status === 'shipped'}
+						style="width:{Math.round((passedACs / totalACs) * 100)}%"
+					></div>
+					<span class="bar-label">
+						{passedACs}/{totalACs} ACs · {Math.round((passedACs / totalACs) * 100)}%
+					</span>
+				</div>
+			{/if}
 			<div class="metrics">
 				<div><strong>{doneStories}/{totalStories}</strong><span>stories done</span></div>
 				<div><strong>{passedACs}/{totalACs}</strong><span>acceptance criteria passed</span></div>
@@ -305,7 +357,7 @@
 						{#if epic.stories && epic.stories.length > 0}
 							<ul class="stories">
 								{#each epic.stories as story (story.id)}
-									<li>
+									<li class:active={isActive(story.status)}>
 										<div class="story-head">
 											<strong>{story.title}</strong>
 											<span class="badge" style="background:{statusColor(story.status)}">{story.status}</span>
@@ -386,6 +438,35 @@
 	.empty {
 		color: var(--muted);
 		font-style: italic;
+	}
+	.bar {
+		position: relative;
+		height: 18px;
+		background: var(--bg-alt);
+		border: 1px solid var(--border);
+		border-radius: 9px;
+		overflow: hidden;
+		margin-bottom: 0.75rem;
+	}
+	.bar-fill {
+		height: 100%;
+		background: linear-gradient(90deg, var(--accent), color-mix(in srgb, var(--accent) 60%, var(--ok)));
+		transition: width 400ms ease-out;
+	}
+	.bar-fill.shipped {
+		background: var(--ok);
+	}
+	.bar-label {
+		position: absolute;
+		inset: 0;
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		font-size: 0.7rem;
+		font-weight: 600;
+		color: var(--text);
+		mix-blend-mode: difference;
+		filter: invert(1);
 	}
 	.metrics {
 		display: grid;
@@ -549,6 +630,16 @@
 		background: var(--bg);
 		border: 1px solid var(--border);
 		border-radius: 4px;
+		transition: border-color 200ms ease, box-shadow 200ms ease;
+	}
+	.stories li.active {
+		border-color: var(--warn);
+		box-shadow: 0 0 0 2px color-mix(in srgb, var(--warn) 35%, transparent);
+		animation: pulse 1.8s ease-in-out infinite;
+	}
+	@keyframes pulse {
+		0%, 100% { box-shadow: 0 0 0 2px color-mix(in srgb, var(--warn) 35%, transparent); }
+		50%      { box-shadow: 0 0 0 4px color-mix(in srgb, var(--warn) 18%, transparent); }
 	}
 	.story-head {
 		display: flex;
