@@ -1,7 +1,9 @@
 package api
 
 import (
+	"bufio"
 	"fmt"
+	"net"
 	"net/http"
 	"sort"
 	"strings"
@@ -146,6 +148,11 @@ func formatFloat(v float64) string {
 
 // statusCapturingWriter captures the status code for the metrics registry.
 // http.ResponseWriter doesn't expose it otherwise.
+//
+// Also transparently forwards Hijack() and Flush() so wrapping /ws with
+// Instrument() doesn't break WebSocket upgrades (gorilla/websocket calls
+// Hijack on the underlying conn) or SSE-style flushing. Without this,
+// Upgrade returns 500 because the wrapper swallows the Hijacker interface.
 type statusCapturingWriter struct {
 	http.ResponseWriter
 	status      int
@@ -166,6 +173,26 @@ func (w *statusCapturingWriter) Write(b []byte) (int, error) {
 		w.wroteHeader = true
 	}
 	return w.ResponseWriter.Write(b)
+}
+
+// Hijack forwards to the underlying ResponseWriter when it supports hijacking.
+// Required for WebSocket upgrades to work through this middleware.
+func (w *statusCapturingWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	h, ok := w.ResponseWriter.(http.Hijacker)
+	if !ok {
+		return nil, nil, fmt.Errorf("response writer does not support hijacking")
+	}
+	// The status we record for hijacked connections is whatever the handler
+	// set before upgrade (typically 101 Switching Protocols, sometimes 200
+	// if there's no WriteHeader). Good enough for metrics.
+	return h.Hijack()
+}
+
+// Flush forwards to the underlying writer when supported (SSE, chunked).
+func (w *statusCapturingWriter) Flush() {
+	if f, ok := w.ResponseWriter.(http.Flusher); ok {
+		f.Flush()
+	}
 }
 
 // PromHandler returns an unauthenticated handler that emits Prometheus

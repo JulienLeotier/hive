@@ -94,6 +94,74 @@ func TestTenantIsolation_Agents(t *testing.T) {
 		"tenant B caller must not see agent-tenant-a")
 }
 
+// TestTenantIsolation_ReadEndpoints exercises every list endpoint that the
+// tenantFilter helper now protects. Each seeds two rows with different
+// tenant_id values and asserts that a viewer scoped to tenant-a never sees
+// tenant-b data. Failing this is a data leak.
+func TestTenantIsolation_ReadEndpoints(t *testing.T) {
+	store, err := storage.Open(t.TempDir())
+	require.NoError(t, err)
+	defer store.Close()
+
+	ctx := context.Background()
+	seed := []struct{ q string; args []any }{
+		{`INSERT INTO events (type, source, payload, tenant_id) VALUES ('e','s','{}','tenant-a'),('e','s','{}','tenant-b')`, nil},
+		{`INSERT INTO workflows (id, name, status, tenant_id) VALUES ('wf-a','a','idle','tenant-a'),('wf-b','b','idle','tenant-b')`, nil},
+		{`INSERT INTO knowledge (task_type, approach, outcome, tenant_id) VALUES ('t','a','o','tenant-a'),('t','a','o','tenant-b')`, nil},
+		{`INSERT INTO audit_log (action, actor, resource, tenant_id) VALUES ('x','u','r','tenant-a'),('x','u','r','tenant-b')`, nil},
+		{`INSERT INTO cluster_members (node_id, hostname, address, status, last_heartbeat, tenant_id) VALUES ('n-a','h','a','active',datetime('now'),'tenant-a'),('n-b','h','b','active',datetime('now'),'tenant-b')`, nil},
+	}
+	for _, s := range seed {
+		_, err := store.DB.ExecContext(ctx, s.q, s.args...)
+		require.NoError(t, err, s.q)
+	}
+
+	mgr := agent.NewManager(store.DB)
+	bus := event.NewBus(store.DB)
+	breakers := resilience.NewBreakerRegistry(resilience.DefaultBreakerConfig())
+	keyMgr := NewKeyManager(store.DB)
+	users := auth.NewUserStore(store.DB)
+
+	keyA, err := keyMgr.Generate(ctx, "key-a")
+	require.NoError(t, err)
+	// Admin role so the caller can read the "system:*" endpoints (knowledge,
+	// audit, cluster — only admin has these permissions in the RBAC policy).
+	// Tenant isolation is enforced independently of RBAC: even an admin
+	// scoped to tenant-a must not see tenant-b data. This guards both.
+	require.NoError(t, users.Upsert(ctx, auth.UserRecord{Subject: "key-a", Role: auth.RoleAdmin, TenantID: "tenant-a"}))
+
+	srv := NewServer(mgr, bus, breakers, keyMgr).WithUsers(users)
+
+	// Each endpoint returns an array of objects. We don't need to fully
+	// parse each shape — just verify the JSON has one row and that the row
+	// does NOT mention tenant-b.
+	endpoints := []string{
+		"/api/v1/events",
+		"/api/v1/workflows",
+		"/api/v1/knowledge",
+		"/api/v1/audit",
+		"/api/v1/cluster",
+	}
+	for _, url := range endpoints {
+		t.Run(url, func(t *testing.T) {
+			req := httptest.NewRequest("GET", url, nil)
+			req.Header.Set("Authorization", "Bearer "+keyA)
+			w := httptest.NewRecorder()
+			srv.Handler().ServeHTTP(w, req)
+			require.Equal(t, http.StatusOK, w.Code, w.Body.String())
+
+			var env struct {
+				Data []map[string]any `json:"data"`
+			}
+			require.NoError(t, json.Unmarshal(w.Body.Bytes(), &env), url)
+			assert.Len(t, env.Data, 1,
+				"tenant A caller should see exactly its own row in %s (got %d)", url, len(env.Data))
+			assert.NotContains(t, w.Body.String(), "tenant-b",
+				"tenant A caller must not see tenant-b rows in %s", url)
+		})
+	}
+}
+
 // TestTenantIsolation_Tasks does the same check for the tasks endpoint,
 // which uses a direct SQL query in the handler rather than a manager method.
 func TestTenantIsolation_Tasks(t *testing.T) {
