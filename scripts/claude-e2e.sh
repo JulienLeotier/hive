@@ -75,14 +75,15 @@ HIVE_PORT="$PORT" \
 "$BIN" serve >"$LOG" 2>&1 &
 HIVE_PID=$!
 
-# Wait for the server to accept connections.
+# Wait for the server to accept connections. Post-P18 hive has no auth
+# and no /setup endpoints, so probe /healthz instead.
 for _ in $(seq 1 40); do
-	if curl -fsS "http://127.0.0.1:$PORT/api/v1/setup/status" >/dev/null 2>&1; then
+	if curl -fsS "http://127.0.0.1:$PORT/healthz" >/dev/null 2>&1; then
 		break
 	fi
 	sleep 0.5
 done
-if ! curl -fsS "http://127.0.0.1:$PORT/api/v1/setup/status" >/dev/null 2>&1; then
+if ! curl -fsS "http://127.0.0.1:$PORT/healthz" >/dev/null 2>&1; then
 	echo "✗ hive did not come up — tail of log:" >&2
 	tail -40 "$LOG" >&2
 	exit 1
@@ -90,20 +91,9 @@ fi
 
 API="http://127.0.0.1:$PORT/api/v1"
 
-echo "→ bootstrapping admin"
-BOOTSTRAP=$(curl -fsS -X POST "$API/setup/bootstrap" \
-	-H 'content-type: application/json' \
-	-d '{"subject":"e2e@hive.local","tenant_id":"default"}')
-KEY=$(echo "$BOOTSTRAP" | jq -r '.data.api_key')
-[ "$KEY" != "null" ] && [ -n "$KEY" ] || {
-	echo "✗ bootstrap failed: $BOOTSTRAP" >&2
-	exit 1
-}
-AUTH=(-H "x-api-key: $KEY")
-
 echo "→ creating project (workdir=$WORKDIR)"
 IDEA='a tiny cli that prints a random compliment on each run, in Go'
-PROJECT=$(curl -fsS -X POST "$API/projects" "${AUTH[@]}" \
+PROJECT=$(curl -fsS -X POST "$API/projects" \
 	-H 'content-type: application/json' \
 	-d "$(jq -nc --arg idea "$IDEA" --arg wd "$WORKDIR" \
 		'{name:"e2e-compliment", idea:$idea, workdir:$wd}')")
@@ -114,7 +104,7 @@ echo "→ driving the scripted PM intake to completion"
 # Scripted PM asks up to 5 questions. Feed short canned answers until done=true.
 DONE=false
 for i in 1 2 3 4 5 6; do
-	RESP=$(curl -fsS -X POST "$API/projects/$PID/intake/messages" "${AUTH[@]}" \
+	RESP=$(curl -fsS -X POST "$API/projects/$PID/intake/messages" \
 		-H 'content-type: application/json' \
 		-d "$(jq -nc --arg c "OK, answer #$i" '{content:$c}')")
 	D=$(echo "$RESP" | jq -r '.data.done')
@@ -129,14 +119,14 @@ done
 }
 
 echo "→ finalising PRD (async architect kicks in)"
-curl -fsS -X POST "$API/projects/$PID/intake/finalize" "${AUTH[@]}" \
+curl -fsS -X POST "$API/projects/$PID/intake/finalize" \
 	-H 'content-type: application/json' -d '{}' >/dev/null
 
 echo "→ waiting up to ${TIMEOUT}s for project to ship"
 DEADLINE=$(( $(date +%s) + TIMEOUT ))
 LAST_STATUS=""
 while [ "$(date +%s)" -lt "$DEADLINE" ]; do
-	SUMMARY=$(curl -fsS "$API/projects/$PID" "${AUTH[@]}")
+	SUMMARY=$(curl -fsS "$API/projects/$PID")
 	STATUS=$(echo "$SUMMARY" | jq -r '.data.status')
 	if [ "$STATUS" != "$LAST_STATUS" ]; then
 		echo "  [$(date +%H:%M:%S)] project.status = $STATUS"
