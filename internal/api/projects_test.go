@@ -52,7 +52,7 @@ func TestGetProjectReturnsTree(t *testing.T) {
 	srv.WithProjectStore(store)
 
 	p, err := store.Create(httptest.NewRequest("POST", "/", nil).Context(),
-		"default", "demo", "a small todo app", "")
+		"default", "a small todo app", project.CreateOpts{Name: "demo"})
 	require.NoError(t, err)
 
 	// Seed one epic + one story + 2 ACs so we exercise the tree walk.
@@ -94,7 +94,7 @@ func TestDeleteProjectCascades(t *testing.T) {
 	srv.WithProjectStore(store)
 
 	p, err := store.Create(httptest.NewRequest("POST", "/", nil).Context(),
-		"default", "x", "an idea", "")
+		"default", "an idea", project.CreateOpts{Name: "x"})
 	require.NoError(t, err)
 
 	req := httptest.NewRequest("DELETE", "/api/v1/projects/"+p.ID, nil)

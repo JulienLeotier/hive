@@ -24,6 +24,8 @@
 	let name = $state('');
 	let idea = $state('');
 	let workdir = $state('');
+	let bmadOutputPath = $state('');
+	let repoPath = $state('');
 
 	async function load() {
 		try {
@@ -49,7 +51,9 @@
 			const p = (await apiPost('/api/v1/projects', {
 				name,
 				idea,
-				workdir
+				workdir,
+				bmad_output_path: bmadOutputPath,
+				repo_path: repoPath
 			})) as Project;
 			// Send the user straight to the detail page — Phase 2 will start
 			// the PM agent's Q&A from there.
@@ -120,6 +124,16 @@
 				Working directory
 				<input type="text" placeholder="/Users/me/projects/writers-app (optional for now)" bind:value={workdir} />
 				<small>Where the Dev agent will commit code. Can be set later when the build actually starts.</small>
+			</label>
+			<label>
+				Existing BMAD output path <span class="hint-pill">optional</span>
+				<input type="text" placeholder="/Users/me/bmad-output/writers-app" bind:value={bmadOutputPath} />
+				<small>If you've already run the BMAD method elsewhere (PRD, epics, stories), point at that directory and the Architect agent will skip decomposition and read the existing artefacts.</small>
+			</label>
+			<label>
+				Existing repo <span class="hint-pill">optional</span>
+				<input type="text" placeholder="/Users/me/projects/my-existing-app" bind:value={repoPath} />
+				<small>Add BMAD to an existing codebase. Dev agents work inside this repo instead of scaffolding a fresh one.</small>
 			</label>
 			<button type="submit" disabled={submitting || !idea.trim()}>
 				{submitting ? 'Creating…' : 'Create project'}
@@ -214,6 +228,18 @@
 	.create-form small {
 		font-size: 0.75rem;
 		color: var(--muted);
+	}
+	.hint-pill {
+		display: inline-block;
+		margin-left: 0.4rem;
+		padding: 0 0.4rem;
+		font-size: 0.65rem;
+		background: var(--bg);
+		border: 1px solid var(--border);
+		border-radius: 999px;
+		color: var(--muted);
+		text-transform: uppercase;
+		letter-spacing: 0.05em;
 	}
 	.form-error {
 		padding: 0.5rem 0.75rem;

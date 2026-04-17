@@ -37,16 +37,13 @@
 		goto('/login');
 	}
 
-	// BMAD-mode nav: only what an operator driving an autonomous product
-	// build needs. Enterprise features (federation, marketplace, billing,
-	// multi-tenant, webhooks, cluster) are kept in the code but hidden
-	// because this tool is local, single-user, single-project-at-a-time.
-	// Flip HIVE_ENTERPRISE=1 on the build to expose them — see the Info
-	// doc for rationale.
-	const ENTERPRISE_MODE =
-		typeof window !== 'undefined' && localStorage.getItem('hive.mode') === 'enterprise';
-
-	const bmadNav = [
+	// BMAD-mode nav. The tool is local, single-user, single-project-at-a-time.
+	// Three columns: Build (what you launch), Fleet (who executes), Inspect
+	// (what happened). Everything else (federation, billing, marketplace,
+	// webhooks, clustering) was cut in the cleanup pass — those were
+	// enterprise-SaaS concerns that don't fit the autonomous-product-factory
+	// vision.
+	const navGroups = [
 		{
 			label: 'Build',
 			items: [
@@ -72,43 +69,6 @@
 			]
 		}
 	];
-
-	const enterpriseNav = [
-		{
-			label: 'Orchestration',
-			items: [
-				{ href: '/workflows', label: 'Workflows' }
-			]
-		},
-		{
-			label: 'Economy',
-			items: [
-				{ href: '/billing', label: 'Billing' },
-				{ href: '/market', label: 'Market' },
-				{ href: '/optimizer', label: 'Optimizer' }
-			]
-		},
-		{
-			label: 'Operations',
-			items: [
-				{ href: '/cluster', label: 'Cluster' },
-				{ href: '/federation', label: 'Federation' },
-				{ href: '/marketplace', label: 'Marketplace' },
-				{ href: '/webhooks', label: 'Webhooks' },
-				{ href: '/dialogs', label: 'Dialogs' }
-			]
-		},
-		{
-			label: 'Governance',
-			items: [
-				{ href: '/users', label: 'Users' },
-				{ href: '/tenants', label: 'Tenants' },
-				{ href: '/trust', label: 'Trust' }
-			]
-		}
-	];
-
-	const navGroups = ENTERPRISE_MODE ? [...bmadNav, ...enterpriseNav] : bmadNav;
 
 	onMount(() => {
 		applyStoredTheme();

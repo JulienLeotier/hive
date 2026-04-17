@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/JulienLeotier/hive/internal/auth"
+	"github.com/JulienLeotier/hive/internal/project"
 )
 
 // handleListProjects returns every BMAD project visible to the caller's
@@ -60,9 +61,11 @@ func (s *Server) handleCreateProject(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var body struct {
-		Name    string `json:"name"`
-		Idea    string `json:"idea"`
-		Workdir string `json:"workdir"`
+		Name           string `json:"name"`
+		Idea           string `json:"idea"`
+		Workdir        string `json:"workdir"`
+		BMADOutputPath string `json:"bmad_output_path"`
+		RepoPath       string `json:"repo_path"`
 	}
 	if err := json.NewDecoder(io.LimitReader(r.Body, 1<<16)).Decode(&body); err != nil {
 		writeError(w, http.StatusBadRequest, "BAD_REQUEST", err.Error())
@@ -74,7 +77,12 @@ func (s *Server) handleCreateProject(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	tenant, _ := auth.TenantFromContext(r.Context())
-	p, err := s.projectStore.Create(r.Context(), tenant, body.Name, body.Idea, body.Workdir)
+	p, err := s.projectStore.Create(r.Context(), tenant, body.Idea, project.CreateOpts{
+		Name:           body.Name,
+		Workdir:        body.Workdir,
+		BMADOutputPath: body.BMADOutputPath,
+		RepoPath:       body.RepoPath,
+	})
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "CREATE_FAILED", err.Error())
 		return

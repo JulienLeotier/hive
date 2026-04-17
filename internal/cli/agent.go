@@ -17,7 +17,6 @@ import (
 	"github.com/JulienLeotier/hive/internal/event"
 	"github.com/JulienLeotier/hive/internal/storage"
 	"github.com/JulienLeotier/hive/internal/task"
-	"github.com/JulienLeotier/hive/internal/trust"
 	"github.com/spf13/cobra"
 	"gopkg.in/yaml.v3"
 )
@@ -504,218 +503,6 @@ var agentCmd = &cobra.Command{
 	Short: "Manage agents",
 }
 
-// Story 9.4 AC: `hive agent trust <agent> --level <level>`. Short-form that
-// delegates to the set subcommand when --level is supplied.
-var agentTrustCmd = &cobra.Command{
-	Use:   "trust [agent-name]",
-	Short: "Inspect or set an agent's trust level",
-	Args:  cobra.MaximumNArgs(1),
-	RunE: func(cmd *cobra.Command, args []string) error {
-		level, _ := cmd.Flags().GetString("level")
-		if len(args) == 0 || level == "" {
-			return cmd.Help()
-		}
-		return agentTrustSetCmd.RunE(cmd, []string{args[0], level})
-	},
-}
-
-var agentTrustGetCmd = &cobra.Command{
-	Use:   "get [agent-name]",
-	Short: "Show current trust level and stats for an agent",
-	Args:  cobra.ExactArgs(1),
-	RunE: func(cmd *cobra.Command, args []string) error {
-		cfg, err := config.Load("hive.yaml")
-		if err != nil {
-			return err
-		}
-		store, err := storage.Open(cfg.DataDir)
-		if err != nil {
-			return err
-		}
-		defer store.Close()
-
-		ctx := context.Background()
-		mgr := agent.NewManager(store.DB)
-		a, err := mgr.GetByName(ctx, args[0])
-		if err != nil {
-			return err
-		}
-
-		engine := trust.NewEngine(store.DB, trust.DefaultThresholds())
-		stats, err := engine.GetStats(ctx, a.ID)
-		if err != nil {
-			return err
-		}
-
-		fmt.Printf("Agent:       %s\n", a.Name)
-		fmt.Printf("Trust level: %s\n", a.TrustLevel)
-		fmt.Printf("Total tasks: %d (success=%d, failed=%d)\n", stats.TotalTasks, stats.Successes, stats.Failures)
-		fmt.Printf("Error rate:  %.2f%%\n", stats.ErrorRate*100)
-		return nil
-	},
-}
-
-var agentTrustSetCmd = &cobra.Command{
-	Use:   "set [agent-name] [level]",
-	Short: "Manually set an agent's trust level (supervised|guided|autonomous|trusted)",
-	Args:  cobra.ExactArgs(2),
-	RunE: func(cmd *cobra.Command, args []string) error {
-		name, level := args[0], args[1]
-		switch level {
-		case trust.LevelSupervised, trust.LevelGuided, trust.LevelAutonomous, trust.LevelTrusted:
-		default:
-			return fmt.Errorf("unknown trust level %q — use supervised|guided|autonomous|trusted", level)
-		}
-
-		cfg, err := config.Load("hive.yaml")
-		if err != nil {
-			return err
-		}
-		store, err := storage.Open(cfg.DataDir)
-		if err != nil {
-			return err
-		}
-		defer store.Close()
-
-		ctx := context.Background()
-		mgr := agent.NewManager(store.DB)
-		a, err := mgr.GetByName(ctx, name)
-		if err != nil {
-			return err
-		}
-
-		engine := trust.NewEngine(store.DB, trust.DefaultThresholds())
-		if err := engine.SetManual(ctx, a.ID, level); err != nil {
-			return err
-		}
-
-		fmt.Printf("Trust level for %s set to %s\n", name, level)
-		return nil
-	},
-}
-
-var agentStatsCmd = &cobra.Command{
-	Use:   "stats [agent-name]",
-	Short: "Show task stats + bid history + token balance for an agent",
-	Args:  cobra.ExactArgs(1),
-	RunE: func(cmd *cobra.Command, args []string) error {
-		cfg, err := config.Load("hive.yaml")
-		if err != nil {
-			return err
-		}
-		store, err := storage.Open(cfg.DataDir)
-		if err != nil {
-			return err
-		}
-		defer store.Close()
-
-		ctx := context.Background()
-		mgr := agent.NewManager(store.DB)
-		a, err := mgr.GetByName(ctx, args[0])
-		if err != nil {
-			return err
-		}
-
-		// Trust stats
-		engine := trust.NewEngine(store.DB, trust.DefaultThresholds())
-		stats, err := engine.GetStats(ctx, a.ID)
-		if err != nil {
-			return err
-		}
-
-		fmt.Printf("Agent: %s (id=%s)\n", a.Name, a.ID)
-		fmt.Printf("  Health:       %s\n", a.HealthStatus)
-		fmt.Printf("  Trust level:  %s\n", a.TrustLevel)
-		fmt.Printf("  Total tasks:  %d (success=%d, failed=%d)\n", stats.TotalTasks, stats.Successes, stats.Failures)
-		fmt.Printf("  Error rate:   %.2f%%\n", stats.ErrorRate*100)
-
-		// Bid stats (if any)
-		var bidCount, winCount int
-		_ = store.DB.QueryRowContext(ctx,
-			`SELECT COUNT(*), COALESCE(SUM(won), 0) FROM bids WHERE agent_name = ?`,
-			args[0]).Scan(&bidCount, &winCount)
-		if bidCount > 0 {
-			fmt.Printf("  Bids:         %d (won=%d, rate=%.1f%%)\n", bidCount, winCount, float64(winCount)*100/float64(bidCount))
-		}
-
-		// Token balance (if any)
-		var balance float64
-		_ = store.DB.QueryRowContext(ctx,
-			`SELECT COALESCE(balance, 0) FROM agent_tokens WHERE agent_name = ?`, args[0]).Scan(&balance)
-		if balance > 0 {
-			fmt.Printf("  Token balance: %.2f\n", balance)
-		}
-		return nil
-	},
-}
-
-var agentTrustOverrideCmd = &cobra.Command{
-	Use:   "override [agent] [task-type] [level]",
-	Short: "Set a per-task-type trust override",
-	Args:  cobra.ExactArgs(3),
-	RunE: func(cmd *cobra.Command, args []string) error {
-		reason, _ := cmd.Flags().GetString("reason")
-		if !trust.IsValidLevel(args[2]) {
-			return fmt.Errorf("invalid trust level %q", args[2])
-		}
-
-		cfg, err := config.Load("hive.yaml")
-		if err != nil {
-			return err
-		}
-		store, err := storage.Open(cfg.DataDir)
-		if err != nil {
-			return err
-		}
-		defer store.Close()
-
-		ctx := context.Background()
-		mgr := agent.NewManager(store.DB)
-		a, err := mgr.GetByName(ctx, args[0])
-		if err != nil {
-			return err
-		}
-
-		engine := trust.NewEngine(store.DB, trust.DefaultThresholds())
-		if err := engine.SetOverride(ctx, a.ID, args[1], args[2], reason); err != nil {
-			return err
-		}
-		fmt.Printf("Override set: %s[%s] = %s\n", args[0], args[1], args[2])
-		return nil
-	},
-}
-
-var agentTrustClearOverrideCmd = &cobra.Command{
-	Use:   "clear-override [agent] [task-type]",
-	Short: "Remove a per-task-type trust override",
-	Args:  cobra.ExactArgs(2),
-	RunE: func(cmd *cobra.Command, args []string) error {
-		cfg, err := config.Load("hive.yaml")
-		if err != nil {
-			return err
-		}
-		store, err := storage.Open(cfg.DataDir)
-		if err != nil {
-			return err
-		}
-		defer store.Close()
-
-		ctx := context.Background()
-		mgr := agent.NewManager(store.DB)
-		a, err := mgr.GetByName(ctx, args[0])
-		if err != nil {
-			return err
-		}
-
-		engine := trust.NewEngine(store.DB, trust.DefaultThresholds())
-		if err := engine.RemoveOverride(ctx, a.ID, args[1]); err != nil {
-			return err
-		}
-		fmt.Printf("Override cleared: %s[%s]\n", args[0], args[1])
-		return nil
-	},
-}
-
 // Story 5.4 AC phrases it as `hive agent swap old-agent --to new-agent`. We
 // accept both the AC form (one positional + --to flag) and the two-positional
 // shorthand.
@@ -808,11 +595,6 @@ func init() {
 	addAgentCmd.Flags().String("config", "", "YAML file providing name/type/url/path (CLI flags override file)")
 	addAgentCmd.Flags().Bool("yes", false, "accept auto-detected type without prompting")
 
-	agentTrustOverrideCmd.Flags().String("reason", "", "why this override is being set")
-
-	// Story 9.4 short-form: `hive agent trust <name> --level <level>`.
-	agentTrustCmd.Flags().String("level", "", "set trust level directly (supervised|guided|autonomous|trusted)")
-
 	// Story 5.4 phrasing: `hive agent swap old --to new`.
 	agentSwapCmd.Flags().String("to", "", "replacement agent name (alternative to second positional)")
 
@@ -821,12 +603,6 @@ func init() {
 	statusCmd.Flags().Bool("no-refresh", false, "skip live /health probes and show stored statuses only")
 
 	agentCmd.AddCommand(agentSwapCmd)
-	agentCmd.AddCommand(agentStatsCmd)
-	agentCmd.AddCommand(agentTrustCmd)
-	agentTrustCmd.AddCommand(agentTrustGetCmd)
-	agentTrustCmd.AddCommand(agentTrustSetCmd)
-	agentTrustCmd.AddCommand(agentTrustOverrideCmd)
-	agentTrustCmd.AddCommand(agentTrustClearOverrideCmd)
 
 	rootCmd.AddCommand(addAgentCmd)
 	rootCmd.AddCommand(removeAgentCmd)

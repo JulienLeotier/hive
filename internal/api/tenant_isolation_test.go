@@ -137,10 +137,8 @@ func TestTenantIsolation_ReadEndpoints(t *testing.T) {
 	// does NOT mention tenant-b.
 	endpoints := []string{
 		"/api/v1/events",
-		"/api/v1/workflows",
 		"/api/v1/knowledge",
 		"/api/v1/audit",
-		"/api/v1/cluster",
 	}
 	for _, url := range endpoints {
 		t.Run(url, func(t *testing.T) {

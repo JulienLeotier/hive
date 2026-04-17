@@ -16,22 +16,16 @@ import (
 	"github.com/JulienLeotier/hive/internal/api"
 	"github.com/JulienLeotier/hive/internal/auth"
 	"github.com/JulienLeotier/hive/internal/autonomy"
-	"github.com/JulienLeotier/hive/internal/billing"
-	"github.com/JulienLeotier/hive/internal/cluster"
 	"github.com/JulienLeotier/hive/internal/config"
 	"github.com/JulienLeotier/hive/internal/cost"
 	"github.com/JulienLeotier/hive/internal/dashboard"
 	"github.com/JulienLeotier/hive/internal/event"
-	"github.com/JulienLeotier/hive/internal/federation"
 	"github.com/JulienLeotier/hive/internal/knowledge"
-	"github.com/JulienLeotier/hive/internal/market"
-	"github.com/JulienLeotier/hive/internal/notify"
 	"github.com/JulienLeotier/hive/internal/project"
 	"github.com/JulienLeotier/hive/internal/resilience"
 	"github.com/JulienLeotier/hive/internal/storage"
 	"github.com/JulienLeotier/hive/internal/task"
 	"github.com/JulienLeotier/hive/internal/tracing"
-	"github.com/JulienLeotier/hive/internal/webhook"
 	"github.com/JulienLeotier/hive/internal/workflow"
 	"github.com/JulienLeotier/hive/internal/ws"
 	"github.com/spf13/cobra"
@@ -126,26 +120,11 @@ var serveCmd = &cobra.Command{
 		}
 		breakers := resilience.NewBreakerRegistry(breakerCfg)
 
-		// Story 19.3: federation resolver + proxy. When no local agent is
-		// capable, Router.WithFederation hands control to the resolver.
-		fedStore := federation.NewStore(store.DB)
-
-		// A3 follow-up: if HIVE_MASTER_KEY is set, warn about any plaintext
-		// cert material still sitting in federation_links so the operator
-		// can rotate it.
-		if n, err := fedStore.AuditEncryptionAtRest(context.Background()); err != nil {
-			slog.Warn("federation encryption audit failed", "error", err)
-		} else if n > 0 {
-			slog.Warn("federation peers have plaintext TLS material at rest", "count", n)
-		}
-
-		fedResolver, fedProxy := federation.NewResolver(context.Background(), fedStore)
-		router := task.NewRouter(store.DB).WithBus(bus).WithFederation(
-			func(ctx context.Context, taskType string) (string, string, bool) {
-				return fedResolver(ctx, taskType)
-			},
-		)
-		_ = fedProxy // kept alive as long as serve is running
+		// Local agent router — BMAD fleet resolves task types to the agents
+		// running on this machine. The federation-backed fallback was
+		// removed in the BMAD cleanup; single-user local deployments don't
+		// need cross-hive routing.
+		router := task.NewRouter(store.DB).WithBus(bus)
 
 		// Auto-isolate agents and failover their tasks when the breaker opens.
 		watcher := agent.NewHealthWatcher(mgr, router, bus)
@@ -188,38 +167,8 @@ var serveCmd = &cobra.Command{
 			storage.RunRetention(supervisorCtx, store.DB, r)
 		}
 
-		// Cost tracker with bus so budget breaches emit cost.alert events.
+		// Cost tracker — keeps per-project/per-agent token spend visible.
 		_ = cost.NewTracker(store.DB).WithBus(bus.PublishErr)
-
-		// Monthly billing aggregation. Runs once a day (idempotent thanks to
-		// the unique (tenant, period) constraint), rolls the previous full
-		// calendar month into one invoice per tenant.
-		// Stripe gateway auto-wires when STRIPE_SECRET_KEY is set; without
-		// it, invoices stay self-hosted (internal chargeback).
-		billingGen := billing.NewGenerator(store.DB, "USD")
-		if stripeKey := os.Getenv("STRIPE_SECRET_KEY"); stripeKey != "" {
-			billingGen.WithGateway(billing.NewStripeGateway(stripeKey, "USD"))
-			slog.Info("billing gateway: stripe")
-		}
-		go func() {
-			t := time.NewTicker(24 * time.Hour)
-			defer t.Stop()
-			// Run once at boot so fresh deployments don't wait a day to see
-			// last month's invoice. Safe because the generator is idempotent.
-			if _, err := billingGen.GenerateLastMonth(supervisorCtx); err != nil {
-				slog.Warn("billing: initial generation failed", "error", err)
-			}
-			for {
-				select {
-				case <-t.C:
-					if _, err := billingGen.GenerateLastMonth(supervisorCtx); err != nil {
-						slog.Warn("billing: daily generation failed", "error", err)
-					}
-				case <-supervisorCtx.Done():
-					return
-				}
-			}
-		}()
 
 		// Story 10.1 + 10.3: auto-record knowledge, configurable max-age.
 		// Story 16.2: opt-in OpenAI embeddings when knowledge.embedding is set,
@@ -230,25 +179,6 @@ var serveCmd = &cobra.Command{
 		}
 		knowledge.NewAutoRecorder(store.DB, kStore).Attach(bus)
 
-		// Story 18.3: auto-credit tokens to agents on task.completed.
-		marketStore := market.NewStore(store.DB).WithBus(bus.PublishErr)
-		market.NewAutoCredit(store.DB, marketStore, 1.0).Attach(bus)
-
-		// Story 11.3/11.4: configured webhooks are delivered by subscribing
-		// the dispatcher to every event on the bus. Without this, `hive
-		// webhook add` stored the config but nothing ever fired.
-		webhookDisp := webhook.NewDispatcher(store.DB)
-		bus.Subscribe("*", func(e event.Event) {
-			webhookDisp.Dispatch(supervisorCtx, e)
-		})
-
-		// Email notifier for ops-shaped events. Silent no-op when the config
-		// is missing or incomplete; serve keeps booting either way.
-		notify.NewNotifier(buildEmailConfig(cfg.Notifications)).Attach(bus)
-
-		// Slack notifier (dedicated ops channel — complements the generic
-		// webhook.Dispatcher for users who just want a webhook URL in YAML).
-		notify.NewSlackNotifier(buildSlackConfig(cfg.Notifications)).Attach(bus)
 
 		// Epic 4: autonomy. Wake-up cycles drive agent self-assignment of
 		// pending tasks, busywork suppression, and decision logging.
@@ -296,54 +226,12 @@ var serveCmd = &cobra.Command{
 		})
 		defer scheduler.StopAll()
 
-		// Story 22.2/22.3: advertise this node in the cluster roster. Without
-		// a periodic heartbeat, the /cluster dashboard is always empty and
-		// peer nodes can't detect when this one goes away.
-		nodeID := "local"
-		if cfg.Cluster != nil && cfg.Cluster.NodeID != "" {
-			nodeID = cfg.Cluster.NodeID
-		}
-		hostname, _ := os.Hostname()
-		selfNode := &cluster.Node{
-			ID:        nodeID,
-			Hostname:  hostname,
-			Address:   fmt.Sprintf(":%d", cfg.Port),
-			Status:    "active",
-			StartedAt: time.Now(),
-		}
-		roster := cluster.NewRoster(store.DB)
-		if err := roster.Heartbeat(supervisorCtx, selfNode); err != nil {
-			slog.Warn("cluster heartbeat: initial upsert failed", "error", err)
-		}
-		go func() {
-			t := time.NewTicker(15 * time.Second)
-			defer t.Stop()
-			for {
-				select {
-				case <-t.C:
-					if err := roster.Heartbeat(supervisorCtx, selfNode); err != nil {
-						slog.Warn("cluster heartbeat failed", "error", err)
-					}
-					// Mark nodes silent for >2 heartbeats as offline so the
-					// /cluster view stays honest.
-					if _, err := roster.MarkStale(supervisorCtx, 45*time.Second); err != nil {
-						slog.Warn("cluster stale-scan failed", "error", err)
-					}
-				case <-supervisorCtx.Done():
-					return
-				}
-			}
-		}()
-
-		// Story 3.4 AC: workflows declared with `trigger: {type: schedule|webhook}`
-		// need an active dispatcher. Without this block, scheduled workflows
-		// never fire and webhook paths are unknown to the HTTP server. YAML
-		// files are discovered under `${data_dir}/workflows/*.yaml`; missing
-		// dir = no-op.
+		// YAML workflow triggers kept for dev-mode batch jobs — BMAD itself
+		// doesn't use them, but the code stays because the scheduler +
+		// webhook-intake plumbing are reused by Phase 3's story worker.
 		wfStore := workflow.NewStore(store.DB, bus)
 		triggerMgr := workflow.NewTriggerManager(func(ctx context.Context, wfCfg *workflow.Config, payload workflow.TriggerPayload) error {
 			engine := workflow.NewEngine(wfStore, taskStore, router, bus)
-			engine.WithMarketStore(market.NewStore(store.DB).WithBus(bus.PublishErr))
 			engine.WithAgentLookup(buildAgentLookup(mgr))
 			_, err := engine.Run(ctx, wfCfg)
 			return err
@@ -379,15 +267,7 @@ var serveCmd = &cobra.Command{
 		apiSrv := api.NewServer(mgr, bus, breakers, keyMgr).
 			WithUsers(users).
 			WithTriggerManager(triggerMgr).
-			WithWebhookDispatcher(webhookDisp).
-			WithBillingGenerator(billingGen).
 			WithProjectStore(project.NewStore(store.DB))
-
-		// Story 19.2: honour the `federation.share:` list so only whitelisted
-		// capabilities appear at /api/v1/capabilities.
-		if cfg.Federation != nil && len(cfg.Federation.Share) > 0 {
-			apiSrv.SetFederationShared(cfg.Federation.Share)
-		}
 
 		// Story 21.1: wire OIDC provider if configured.
 		if cfg.OIDC != nil && cfg.OIDC.Issuer != "" {
@@ -437,15 +317,6 @@ var serveCmd = &cobra.Command{
 		// its own HMAC secret via trigger.secret). Path must match the
 		// `webhook:` field of a registered workflow trigger.
 		mux.Handle("/hooks/", api.Instrument("/hooks/", workflow.WebhookHandler(triggerMgr)))
-
-		// Stripe webhook — unauthenticated (signature verification gates
-		// payload authenticity instead of API keys). Only wired when the
-		// Stripe secret + webhook secret are both set.
-		if stripeSecret := os.Getenv("STRIPE_WEBHOOK_SECRET"); stripeSecret != "" {
-			mux.Handle("/webhooks/stripe", api.Instrument("/webhooks/stripe",
-				api.StripeWebhookHandler(billingGen, stripeSecret)))
-			slog.Info("stripe webhook endpoint armed", "path", "/webhooks/stripe")
-		}
 
 		// Dashboard (static, no auth)
 		mux.Handle("/", dashboard.Handler())
@@ -543,32 +414,6 @@ func buildEmbedder(cfg *config.KnowledgeBlock) knowledge.Embedder {
 	return hashing
 }
 
-// buildEmailConfig turns the YAML config into the shape notify.NewNotifier
-// expects, resolving PasswordEnv via the process environment. When the block
-// is missing or incomplete, the returned EmailConfig.Enabled() is false and
-// the notifier becomes a no-op.
-func buildEmailConfig(cfg *config.NotificationsBlock) notify.EmailConfig {
-	if cfg == nil || cfg.Email == nil {
-		return notify.EmailConfig{}
-	}
-	e := cfg.Email
-	password := ""
-	if e.PasswordEnv != "" {
-		password = os.Getenv(e.PasswordEnv)
-	}
-	return notify.EmailConfig{
-		Host:        e.Host,
-		Port:        e.Port,
-		From:        e.From,
-		To:          e.To,
-		Username:    e.Username,
-		Password:    password,
-		StartTLS:    e.StartTLS,
-		SMTPSOnly:   e.SMTPSOnly,
-		TimeoutSecs: e.TimeoutSecs,
-	}
-}
-
 // buildTracingConfig resolves the YAML observability.traces block into the
 // shape tracing.Setup expects. Returns a zero Config when the block is
 // missing, which makes tracing.Setup a no-op.
@@ -583,17 +428,6 @@ func buildTracingConfig(cfg *config.ObservabilityBlock) tracing.Config {
 		Protocol:       t.Protocol,
 		SampleRatio:    t.SampleRatio,
 		ServiceVersion: t.Version,
-	}
-}
-
-// buildSlackConfig mirrors buildEmailConfig for the Slack ops channel.
-func buildSlackConfig(cfg *config.NotificationsBlock) notify.SlackConfig {
-	if cfg == nil || cfg.Slack == nil {
-		return notify.SlackConfig{}
-	}
-	return notify.SlackConfig{
-		WebhookURL:  cfg.Slack.WebhookURL,
-		TimeoutSecs: cfg.Slack.TimeoutSecs,
 	}
 }
 

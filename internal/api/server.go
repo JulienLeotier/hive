@@ -16,12 +16,10 @@ import (
 	"github.com/JulienLeotier/hive/internal/adapter"
 	"github.com/JulienLeotier/hive/internal/agent"
 	"github.com/JulienLeotier/hive/internal/auth"
-	"github.com/JulienLeotier/hive/internal/billing"
 	"github.com/JulienLeotier/hive/internal/event"
 	"github.com/JulienLeotier/hive/internal/knowledge"
 	"github.com/JulienLeotier/hive/internal/project"
 	"github.com/JulienLeotier/hive/internal/resilience"
-	"github.com/JulienLeotier/hive/internal/webhook"
 	"github.com/JulienLeotier/hive/internal/workflow"
 )
 
@@ -44,11 +42,8 @@ type Server struct {
 	breakers         *resilience.BreakerRegistry
 	keyMgr           *KeyManager
 	users            *auth.UserStore
-	federationShared []string // capabilities exposed to federated peers (empty = all)
 	oidc             *auth.OIDCProvider
 	triggerMgr       *workflow.TriggerManager // optional — enables workflow fire + retry endpoints
-	webhookDisp      *webhook.Dispatcher      // optional — enables webhook CRUD endpoints
-	billingGen       *billing.Generator       // optional — enables invoice endpoints
 	projectStore     *project.Store           // BMAD project CRUD
 	mux              *http.ServeMux
 }
@@ -78,20 +73,6 @@ func (s *Server) WithUsers(users *auth.UserStore) *Server {
 // endpoint returns 503.
 func (s *Server) WithTriggerManager(tm *workflow.TriggerManager) *Server {
 	s.triggerMgr = tm
-	return s
-}
-
-// WithWebhookDispatcher wires the webhook dispatcher so the API exposes
-// CRUD endpoints for configured outbound webhooks.
-func (s *Server) WithWebhookDispatcher(d *webhook.Dispatcher) *Server {
-	s.webhookDisp = d
-	return s
-}
-
-// WithBillingGenerator wires the billing generator so the API can list +
-// issue + mark-paid invoices. Without it, /api/v1/invoices returns 503.
-func (s *Server) WithBillingGenerator(g *billing.Generator) *Server {
-	s.billingGen = g
 	return s
 }
 
@@ -202,54 +183,21 @@ func (s *Server) routes() {
 	// any network scanner. If a use case emerges for truly anonymous
 	// discovery, add a dedicated public sub-endpoint with only the capability
 	// names (no counts, no versions).
-	s.mux.Handle("GET /api/v1/capabilities", auth.RBACMiddleware("system", "read")(http.HandlerFunc(s.handleListCapabilities)))
-	// Marketplace: peer-facing catalog of publishable agents, and the
-	// aggregated view that pulls every federated peer's catalog.
-	s.mux.Handle("GET /api/v1/federation/catalog", auth.RBACMiddleware("system", "read")(http.HandlerFunc(s.handleCatalog)))
-	s.mux.Handle("GET /api/v1/marketplace", auth.RBACMiddleware("system", "read")(http.HandlerFunc(s.handleMarketplace)))
 	// Write endpoints: viewers get 403.
 	s.mux.Handle("POST /api/v1/agents", auth.RBACMiddleware("agents", "write")(http.HandlerFunc(s.handleCreateAgent)))
 	s.mux.Handle("DELETE /api/v1/agents/{name}", auth.RBACMiddleware("agents", "write")(http.HandlerFunc(s.handleDeleteAgent)))
-	// Story 2.1 AC: "agents can emit custom events via the adapter protocol".
 	// POST /api/v1/events lets an adapter push a (type, payload) into the bus.
 	s.mux.Handle("POST /api/v1/events", auth.RBACMiddleware("events", "write")(http.HandlerFunc(s.handleEmitEvent)))
-	// Story 10.2 AC: "agent queries for approaches similar to its current task".
-	s.mux.Handle("GET /api/v1/knowledge/search", auth.RBACMiddleware("system", "read")(http.HandlerFunc(s.handleKnowledgeSearch)))
-
-	// Dashboard-backing read-only endpoints (all require at least viewer).
-	s.mux.Handle("GET /api/v1/workflows", auth.RBACMiddleware("workflows", "read")(http.HandlerFunc(s.handleListWorkflows)))
-	s.mux.Handle("GET /api/v1/workflows/{id}", auth.RBACMiddleware("workflows", "read")(http.HandlerFunc(s.handleGetWorkflow)))
+	// Knowledge layer — shared context the agents consult during a build.
 	s.mux.Handle("GET /api/v1/knowledge", auth.RBACMiddleware("system", "read")(http.HandlerFunc(s.handleListKnowledge)))
-	s.mux.Handle("GET /api/v1/dialogs", auth.RBACMiddleware("system", "read")(http.HandlerFunc(s.handleListDialogs)))
-	s.mux.Handle("GET /api/v1/federation", auth.RBACMiddleware("system", "read")(http.HandlerFunc(s.handleListFederation)))
-	s.mux.Handle("GET /api/v1/auctions", auth.RBACMiddleware("system", "read")(http.HandlerFunc(s.handleListAuctions)))
-	s.mux.Handle("GET /api/v1/optimizations", auth.RBACMiddleware("system", "read")(http.HandlerFunc(s.handleListOptimizations)))
-	s.mux.Handle("GET /api/v1/recommendations", auth.RBACMiddleware("system", "read")(http.HandlerFunc(s.handleRecommendations)))
+	s.mux.Handle("GET /api/v1/knowledge/search", auth.RBACMiddleware("system", "read")(http.HandlerFunc(s.handleKnowledgeSearch)))
+	// Audit: every sensitive action — registrations, config changes.
 	s.mux.Handle("GET /api/v1/audit", auth.RBACMiddleware("system", "read")(http.HandlerFunc(s.handleListAudit)))
-	s.mux.Handle("GET /api/v1/users", auth.RBACMiddleware("system", "read")(http.HandlerFunc(s.handleListUsers)))
-	s.mux.Handle("GET /api/v1/tenants", auth.RBACMiddleware("system", "read")(http.HandlerFunc(s.handleListTenants)))
-	s.mux.Handle("GET /api/v1/cluster", auth.RBACMiddleware("system", "read")(http.HandlerFunc(s.handleListCluster)))
-	s.mux.Handle("GET /api/v1/trust", auth.RBACMiddleware("system", "read")(http.HandlerFunc(s.handleListTrustHistory)))
 
-	// Control-plane writes. POST fires a manual workflow run; POST retries a
-	// failed task. Both require the "workflows" / "tasks" write role.
-	s.mux.Handle("POST /api/v1/workflows/{name}/runs", auth.RBACMiddleware("workflows", "write")(http.HandlerFunc(s.handleFireWorkflow)))
+	// Retry a failed task — used by the dashboard when a story's dev agent
+	// stumbles and the operator wants to re-queue without spinning a fresh
+	// review cycle.
 	s.mux.Handle("POST /api/v1/tasks/{id}/retry", auth.RBACMiddleware("tasks", "write")(http.HandlerFunc(s.handleRetryTask)))
-
-	// Webhook CRUD. Outbound integrations (Slack, generic, github). GET is
-	// handled by the dashboard read path; POST/DELETE route through the
-	// dispatcher so SSRF validation stays centralised.
-	s.mux.Handle("GET /api/v1/webhooks", auth.RBACMiddleware("system", "read")(http.HandlerFunc(s.handleListWebhooks)))
-	s.mux.Handle("POST /api/v1/webhooks", auth.RBACMiddleware("system", "write")(http.HandlerFunc(s.handleCreateWebhook)))
-	s.mux.Handle("DELETE /api/v1/webhooks/{name}", auth.RBACMiddleware("system", "write")(http.HandlerFunc(s.handleDeleteWebhook)))
-	s.mux.Handle("GET /api/v1/webhooks/{name}/deliveries", auth.RBACMiddleware("system", "read")(http.HandlerFunc(s.handleWebhookDeliveries)))
-
-	// Billing: read invoices (RBAC system:read), issue + mark-paid require
-	// system:write. MarkPaid is usually driven by a gateway webhook; the
-	// manual endpoint covers offline / wire-transfer flows.
-	s.mux.Handle("GET /api/v1/invoices", auth.RBACMiddleware("system", "read")(http.HandlerFunc(s.handleListInvoices)))
-	s.mux.Handle("POST /api/v1/invoices/{id}/issue", auth.RBACMiddleware("system", "write")(http.HandlerFunc(s.handleIssueInvoice)))
-	s.mux.Handle("POST /api/v1/invoices/{id}/paid", auth.RBACMiddleware("system", "write")(http.HandlerFunc(s.handleMarkInvoicePaid)))
 
 	// BMAD projects — the new core surface. Read requires any authenticated
 	// user; write requires operator/admin since starting a build costs real
@@ -270,11 +218,6 @@ func (s *Server) routes() {
 	// when creating the user.
 	s.mux.Handle("POST /api/v1/users", auth.RBACMiddleware("system", "write")(http.HandlerFunc(s.handleCreateUser)))
 	s.mux.Handle("DELETE /api/v1/users/{subject}", auth.RBACMiddleware("system", "write")(http.HandlerFunc(s.handleDeleteUser)))
-
-	// Workflow management: create from YAML, delete by name. GET already
-	// exists for read. Used by the dashboard YAML editor.
-	s.mux.Handle("POST /api/v1/workflows", auth.RBACMiddleware("workflows", "write")(http.HandlerFunc(s.handleCreateWorkflow)))
-	s.mux.Handle("DELETE /api/v1/workflows/{name}", auth.RBACMiddleware("workflows", "write")(http.HandlerFunc(s.handleDeleteWorkflow)))
 
 	// First-run setup. Two unauthenticated endpoints that let a brand-new
 	// deployment bootstrap an admin user + API key before any OIDC/RBAC
@@ -418,470 +361,6 @@ func (s *Server) handleDeleteUser(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, map[string]string{"status": "removed", "subject": subject})
 }
 
-// handleGetWorkflow returns a single workflow with its full DAG — every task
-// that belongs to it, ordered by creation. The detail page uses this to
-// render a run timeline without requiring a client-side join.
-func (s *Server) handleGetWorkflow(w http.ResponseWriter, r *http.Request) {
-	id := r.PathValue("id")
-	if id == "" {
-		writeError(w, http.StatusBadRequest, "MISSING_ID", "workflow id is required")
-		return
-	}
-	ctx := r.Context()
-	tClause, tArgs := tenantFilter(ctx, "")
-
-	var wfName, wfStatus, wfConfig, wfCreated string
-	args := append([]any{id}, tArgs...)
-	err := s.db().QueryRowContext(ctx,
-		`SELECT name, status, config, created_at FROM workflows WHERE id = ?`+tClause,
-		args...,
-	).Scan(&wfName, &wfStatus, &wfConfig, &wfCreated)
-	if err == sql.ErrNoRows {
-		writeError(w, http.StatusNotFound, "NOT_FOUND", "workflow not found")
-		return
-	}
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "QUERY_FAILED", err.Error())
-		return
-	}
-
-	taskRows, err := s.db().QueryContext(ctx,
-		`SELECT t.id, t.type, t.status,
-		        COALESCE(t.agent_id,''), COALESCE(a.name,''),
-		        COALESCE(t.input,''), COALESCE(t.output,''),
-		        t.created_at, COALESCE(t.started_at,''), COALESCE(t.completed_at,'')
-		 FROM tasks t LEFT JOIN agents a ON a.id = t.agent_id
-		 WHERE t.workflow_id = ?
-		 ORDER BY t.created_at ASC`, id)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "QUERY_FAILED", err.Error())
-		return
-	}
-	defer taskRows.Close()
-
-	type taskDetail struct {
-		ID          string `json:"id"`
-		Type        string `json:"type"`
-		Status      string `json:"status"`
-		AgentID     string `json:"agent_id,omitempty"`
-		AgentName   string `json:"agent_name,omitempty"`
-		Input       string `json:"input,omitempty"`
-		Output      string `json:"output,omitempty"`
-		Error       string `json:"error,omitempty"`
-		CreatedAt   string `json:"created_at"`
-		StartedAt   string `json:"started_at,omitempty"`
-		CompletedAt string `json:"completed_at,omitempty"`
-	}
-	var tasks []taskDetail
-	for taskRows.Next() {
-		var t taskDetail
-		if err := taskRows.Scan(&t.ID, &t.Type, &t.Status, &t.AgentID, &t.AgentName,
-			&t.Input, &t.Output, &t.CreatedAt, &t.StartedAt, &t.CompletedAt); err != nil {
-			writeError(w, http.StatusInternalServerError, "SCAN_FAILED", err.Error())
-			return
-		}
-		// Failed tasks store the error message in output as JSON — surface
-		// it in a dedicated field so the frontend doesn't have to parse.
-		if t.Status == "failed" && t.Output != "" {
-			t.Error = t.Output
-		}
-		tasks = append(tasks, t)
-	}
-	if err := taskRows.Err(); err != nil {
-		writeError(w, http.StatusInternalServerError, "ROW_ERR", err.Error())
-		return
-	}
-
-	writeJSON(w, map[string]any{
-		"id":         id,
-		"name":       wfName,
-		"status":     wfStatus,
-		"config":     wfConfig,
-		"created_at": wfCreated,
-		"tasks":      tasks,
-	})
-}
-
-// handleCreateWorkflow accepts a YAML body and persists the workflow record.
-// The workflow starts in the "idle" state — callers still need to fire it
-// via POST /workflows/{name}/runs. Re-submitting the same name updates the
-// stored config.
-func (s *Server) handleCreateWorkflow(w http.ResponseWriter, r *http.Request) {
-	body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "READ_BODY", err.Error())
-		return
-	}
-	if len(body) == 0 {
-		writeError(w, http.StatusBadRequest, "EMPTY_BODY", "workflow YAML body is required")
-		return
-	}
-	cfg, err := workflow.Parse(body)
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "PARSE_FAILED", err.Error())
-		return
-	}
-	// Re-submitting the same name should replace, not duplicate. workflow.Store
-	// doesn't have an upsert method, so we delete-then-create — acceptable
-	// here because workflow rows are append-only run records; dropping the
-	// existing row just clears the "idle" placeholder if one exists.
-	_, _ = s.db().ExecContext(r.Context(),
-		`DELETE FROM workflows WHERE name = ? AND status = 'idle'`, cfg.Name)
-	wfStore := workflow.NewStore(s.db(), s.eventBus)
-	wf, err := wfStore.Create(r.Context(), cfg.Name, cfg)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "CREATE_FAILED", err.Error())
-		return
-	}
-	// If a trigger manager is wired and the workflow declares a schedule or
-	// webhook trigger, register it live — otherwise the config sits in the
-	// DB and only runs when someone POSTs to /runs.
-	if s.triggerMgr != nil && cfg.Trigger != nil {
-		if err := s.triggerMgr.Register(r.Context(), cfg); err != nil {
-			slog.Warn("workflow trigger register failed", "name", cfg.Name, "error", err)
-		}
-	}
-	w.WriteHeader(http.StatusCreated)
-	writeJSON(w, wf)
-}
-
-// handleDeleteWorkflow removes a workflow by name. Does NOT cancel in-flight
-// runs — those carry on to completion so their task history stays intact.
-func (s *Server) handleDeleteWorkflow(w http.ResponseWriter, r *http.Request) {
-	name := r.PathValue("name")
-	if name == "" {
-		writeError(w, http.StatusBadRequest, "MISSING_NAME", "workflow name is required")
-		return
-	}
-	res, err := s.db().ExecContext(r.Context(), `DELETE FROM workflows WHERE name = ?`, name)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "DELETE_FAILED", err.Error())
-		return
-	}
-	n, _ := res.RowsAffected()
-	if n == 0 {
-		writeError(w, http.StatusNotFound, "NOT_FOUND", "workflow not found")
-		return
-	}
-	writeJSON(w, map[string]any{"status": "removed", "name": name, "rows": n})
-}
-
-// CatalogAgent is one row of the federated marketplace catalog. Narrower
-// than the internal Agent type on purpose: peers should see the declared
-// capabilities and cost but NOT the adapter config (which may leak secrets
-// or internal URLs).
-type CatalogAgent struct {
-	Name       string   `json:"name"`
-	Type       string   `json:"type"`
-	Version    string   `json:"version,omitempty"`
-	TaskTypes  []string `json:"task_types"`
-	CostPerRun float64  `json:"cost_per_run,omitempty"`
-}
-
-// handleCatalog returns the list of locally-publishable agents in a shape
-// designed for peer consumption. Only agents with publishable=1 are
-// included — operators opt in per agent so internal/experimental agents
-// stay hidden.
-func (s *Server) handleCatalog(w http.ResponseWriter, r *http.Request) {
-	rows, err := s.db().QueryContext(r.Context(),
-		`SELECT name, type, COALESCE(version, '1.0.0'), capabilities
-		 FROM agents
-		 WHERE publishable = 1 AND health_status = 'healthy'
-		 ORDER BY name`)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "QUERY_FAILED", err.Error())
-		return
-	}
-	defer rows.Close()
-
-	shareFilter := map[string]bool{}
-	for _, c := range s.federationShared {
-		shareFilter[c] = true
-	}
-
-	var out []CatalogAgent
-	for rows.Next() {
-		var a CatalogAgent
-		var capsJSON string
-		if err := rows.Scan(&a.Name, &a.Type, &a.Version, &capsJSON); err != nil {
-			continue
-		}
-		var decl struct {
-			TaskTypes  []string `json:"task_types"`
-			CostPerRun float64  `json:"cost_per_run,omitempty"`
-		}
-		if err := json.Unmarshal([]byte(capsJSON), &decl); err != nil {
-			slog.Warn("catalog: malformed capabilities", "agent", a.Name, "error", err)
-			continue
-		}
-		a.CostPerRun = decl.CostPerRun
-		for _, tt := range decl.TaskTypes {
-			if len(shareFilter) > 0 && !shareFilter[tt] {
-				continue
-			}
-			a.TaskTypes = append(a.TaskTypes, tt)
-		}
-		if len(a.TaskTypes) == 0 {
-			continue
-		}
-		out = append(out, a)
-	}
-	if err := rows.Err(); err != nil {
-		writeError(w, http.StatusInternalServerError, "ROW_ERR", err.Error())
-		return
-	}
-	writeJSON(w, out)
-}
-
-// MarketplacePeer is one peer's slice of the aggregated marketplace view.
-type MarketplacePeer struct {
-	PeerName string         `json:"peer_name"`
-	PeerURL  string         `json:"peer_url"`
-	Status   string         `json:"status"`          // "ok", "unreachable", "error"
-	Error    string         `json:"error,omitempty"` // populated when Status != "ok"
-	Agents   []CatalogAgent `json:"agents,omitempty"`
-}
-
-// handleMarketplace fans out to every federated peer's /federation/catalog
-// endpoint and aggregates the results. Failed peers are reported with a
-// Status="unreachable" entry rather than hidden — operators need the
-// visibility. 10s total deadline; each peer gets up to 3s.
-func (s *Server) handleMarketplace(w http.ResponseWriter, r *http.Request) {
-	rows, err := s.db().QueryContext(r.Context(),
-		`SELECT name, url FROM federation_links WHERE status = 'active' ORDER BY name`)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "QUERY_FAILED", err.Error())
-		return
-	}
-	defer rows.Close()
-
-	type peer struct{ name, url string }
-	var peers []peer
-	for rows.Next() {
-		var p peer
-		if err := rows.Scan(&p.name, &p.url); err != nil {
-			continue
-		}
-		peers = append(peers, p)
-	}
-	if err := rows.Err(); err != nil {
-		writeError(w, http.StatusInternalServerError, "ROW_ERR", err.Error())
-		return
-	}
-
-	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
-	defer cancel()
-
-	// Fan out in parallel so a slow peer doesn't gate the whole response.
-	results := make([]MarketplacePeer, len(peers))
-	var wg sync.WaitGroup
-	for i, p := range peers {
-		wg.Add(1)
-		go func(i int, p peer) {
-			defer wg.Done()
-			results[i] = fetchPeerCatalog(ctx, p.name, p.url)
-		}(i, p)
-	}
-	wg.Wait()
-	writeJSON(w, results)
-}
-
-// Marketplace peer slice statuses.
-const (
-	peerStatusOK          = "ok"
-	peerStatusError       = "error"
-	peerStatusUnreachable = "unreachable"
-)
-
-// fetchPeerCatalog performs the per-peer GET /api/v1/federation/catalog
-// call and packages the result (or the failure mode) into a
-// MarketplacePeer. Kept standalone so the fan-out goroutines stay simple.
-func fetchPeerCatalog(ctx context.Context, name, url string) MarketplacePeer {
-	out := MarketplacePeer{PeerName: name, PeerURL: url}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, strings.TrimRight(url, "/")+"/api/v1/federation/catalog", nil)
-	if err != nil {
-		out.Status = peerStatusError
-		out.Error = err.Error()
-		return out
-	}
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		out.Status = peerStatusUnreachable
-		out.Error = err.Error()
-		return out
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		out.Status = peerStatusError
-		out.Error = fmt.Sprintf("peer responded %d", resp.StatusCode)
-		return out
-	}
-	var envelope struct {
-		Data  []CatalogAgent `json:"data"`
-		Error *Error         `json:"error"`
-	}
-	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&envelope); err != nil {
-		out.Status = peerStatusError
-		out.Error = "decode: " + err.Error()
-		return out
-	}
-	if envelope.Error != nil {
-		out.Status = peerStatusError
-		out.Error = envelope.Error.Message
-		return out
-	}
-	out.Status = peerStatusOK
-	out.Agents = envelope.Data
-	return out
-}
-
-// handleListWebhooks returns every configured webhook. URLs are decrypted on
-// the way out.
-func (s *Server) handleListWebhooks(w http.ResponseWriter, r *http.Request) {
-	if s.webhookDisp == nil {
-		writeError(w, http.StatusServiceUnavailable, "NO_WEBHOOK_DISPATCHER",
-			"webhook subsystem is not configured on this node")
-		return
-	}
-	cfgs, err := s.webhookDisp.List(r.Context())
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "LIST_FAILED", err.Error())
-		return
-	}
-	writeJSON(w, cfgs)
-}
-
-// handleCreateWebhook registers a new outbound webhook. Body: {name, url,
-// type, event_filter}. The dispatcher rejects SSRF-dangerous URLs and
-// encrypts the URL at rest when HIVE_MASTER_KEY is set.
-func (s *Server) handleCreateWebhook(w http.ResponseWriter, r *http.Request) {
-	if s.webhookDisp == nil {
-		writeError(w, http.StatusServiceUnavailable, "NO_WEBHOOK_DISPATCHER",
-			"webhook subsystem is not configured on this node")
-		return
-	}
-	var body struct {
-		Name        string `json:"name"`
-		URL         string `json:"url"`
-		Type        string `json:"type"`
-		EventFilter string `json:"event_filter"`
-	}
-	if err := json.NewDecoder(io.LimitReader(r.Body, 1<<16)).Decode(&body); err != nil {
-		writeError(w, http.StatusBadRequest, "BAD_REQUEST", err.Error())
-		return
-	}
-	if body.Name == "" || body.URL == "" || body.Type == "" {
-		writeError(w, http.StatusBadRequest, "MISSING_FIELDS", "name, url, and type are required")
-		return
-	}
-	cfg, err := s.webhookDisp.Add(r.Context(), body.Name, body.URL, body.Type, body.EventFilter)
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "ADD_FAILED", err.Error())
-		return
-	}
-	w.WriteHeader(http.StatusCreated)
-	writeJSON(w, cfg)
-}
-
-// handleListInvoices returns invoices for the caller's tenant (or all
-// tenants when called by an admin whose tenant context is empty).
-func (s *Server) handleListInvoices(w http.ResponseWriter, r *http.Request) {
-	if s.billingGen == nil {
-		writeError(w, http.StatusServiceUnavailable, "NO_BILLING",
-			"billing subsystem is not configured on this node")
-		return
-	}
-	tenant, _ := auth.TenantFromContext(r.Context())
-	limit := parseLimit(r, 100, 500)
-	invs, err := s.billingGen.List(r.Context(), tenant, limit)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "QUERY_FAILED", err.Error())
-		return
-	}
-	writeJSON(w, invs)
-}
-
-// handleIssueInvoice flips an invoice from draft to issued and pushes it to
-// the payment gateway (if one is attached).
-func (s *Server) handleIssueInvoice(w http.ResponseWriter, r *http.Request) {
-	if s.billingGen == nil {
-		writeError(w, http.StatusServiceUnavailable, "NO_BILLING",
-			"billing subsystem is not configured on this node")
-		return
-	}
-	id := r.PathValue("id")
-	if err := s.billingGen.Issue(r.Context(), id); err != nil {
-		if strings.Contains(err.Error(), "not found") {
-			writeError(w, http.StatusNotFound, "NOT_FOUND", err.Error())
-			return
-		}
-		writeError(w, http.StatusBadRequest, "ISSUE_FAILED", err.Error())
-		return
-	}
-	writeJSON(w, map[string]string{"status": "issued", "invoice_id": id})
-}
-
-// handleMarkInvoicePaid is the manual admin equivalent of a gateway
-// payment webhook. Useful for offline flows (wire transfer, check).
-func (s *Server) handleMarkInvoicePaid(w http.ResponseWriter, r *http.Request) {
-	if s.billingGen == nil {
-		writeError(w, http.StatusServiceUnavailable, "NO_BILLING",
-			"billing subsystem is not configured on this node")
-		return
-	}
-	id := r.PathValue("id")
-	if err := s.billingGen.MarkPaid(r.Context(), id); err != nil {
-		if strings.Contains(err.Error(), "not found") {
-			writeError(w, http.StatusNotFound, "NOT_FOUND", err.Error())
-			return
-		}
-		writeError(w, http.StatusBadRequest, "PAID_FAILED", err.Error())
-		return
-	}
-	writeJSON(w, map[string]string{"status": "paid", "invoice_id": id})
-}
-
-// handleWebhookDeliveries returns the last N delivery attempts for a
-// webhook so the dashboard history panel has something to render.
-func (s *Server) handleWebhookDeliveries(w http.ResponseWriter, r *http.Request) {
-	if s.webhookDisp == nil {
-		writeError(w, http.StatusServiceUnavailable, "NO_WEBHOOK_DISPATCHER",
-			"webhook subsystem is not configured on this node")
-		return
-	}
-	name := r.PathValue("name")
-	if name == "" {
-		writeError(w, http.StatusBadRequest, "MISSING_NAME", "webhook name is required")
-		return
-	}
-	limit := parseLimit(r, 100, 500)
-	deliveries, err := s.webhookDisp.Deliveries(r.Context(), name, limit)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "QUERY_FAILED", err.Error())
-		return
-	}
-	writeJSON(w, deliveries)
-}
-
-// handleDeleteWebhook removes a webhook by name.
-func (s *Server) handleDeleteWebhook(w http.ResponseWriter, r *http.Request) {
-	name := r.PathValue("name")
-	if name == "" {
-		writeError(w, http.StatusBadRequest, "MISSING_NAME", "webhook name is required")
-		return
-	}
-	res, err := s.db().ExecContext(r.Context(), `DELETE FROM webhooks WHERE name = ?`, name)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "DELETE_FAILED", err.Error())
-		return
-	}
-	n, _ := res.RowsAffected()
-	if n == 0 {
-		writeError(w, http.StatusNotFound, "NOT_FOUND", "webhook not found")
-		return
-	}
-	writeJSON(w, map[string]string{"status": "removed", "name": name})
-}
 
 // handleInvokeAgent forwards an ad-hoc task to a registered agent through
 // its adapter. Body: {type, input}. Returns the TaskResult produced by the
@@ -925,43 +404,6 @@ func (s *Server) handleInvokeAgent(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, result)
 }
 
-// handleFireWorkflow triggers a registered workflow by name with an optional
-// JSON body forwarded as the trigger payload. Returns 503 when no trigger
-// manager is attached, 404 when the workflow isn't registered, 202 on success.
-func (s *Server) handleFireWorkflow(w http.ResponseWriter, r *http.Request) {
-	if s.triggerMgr == nil {
-		writeError(w, http.StatusServiceUnavailable, "NO_TRIGGER_MANAGER",
-			"workflow triggers are not configured on this node")
-		return
-	}
-	name := r.PathValue("name")
-	if name == "" {
-		writeError(w, http.StatusBadRequest, "MISSING_NAME", "workflow name is required")
-		return
-	}
-
-	var payload map[string]any
-	if r.ContentLength > 0 {
-		if err := json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(&payload); err != nil {
-			writeError(w, http.StatusBadRequest, "BAD_REQUEST", err.Error())
-			return
-		}
-	}
-
-	// FireManual is synchronous — run it on a background context so the
-	// caller doesn't block on the whole workflow. Returns immediately with
-	// "accepted" and the caller polls /api/v1/workflows or the event stream.
-	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
-		defer cancel()
-		if err := s.triggerMgr.FireManual(ctx, name, payload); err != nil {
-			slog.Warn("workflow manual fire failed", "name", name, "error", err)
-		}
-	}()
-
-	w.WriteHeader(http.StatusAccepted)
-	writeJSON(w, map[string]string{"status": "accepted", "workflow": name})
-}
 
 // handleRetryTask re-queues a failed/completed task by creating a fresh task
 // row with the same type/input/workflow_id and status=pending. The original
@@ -1007,12 +449,6 @@ func (s *Server) handleRetryTask(w http.ResponseWriter, r *http.Request) {
 		"new_task_id":      newID,
 	})
 	writeJSON(w, map[string]string{"new_task_id": newID, "original_task_id": id})
-}
-
-// SetFederationShared configures which capability names are exposed to peers
-// via /api/v1/capabilities. Empty = everything.
-func (s *Server) SetFederationShared(caps []string) {
-	s.federationShared = caps
 }
 
 // Handler returns the HTTP handler with auth + role-resolver middleware chained.
@@ -1223,49 +659,6 @@ func (s *Server) handleKnowledgeSearch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, results)
-}
-
-// handleListCapabilities returns only the capabilities the operator has opted
-// to share with federated peers. Story 19.2.
-func (s *Server) handleListCapabilities(w http.ResponseWriter, r *http.Request) {
-	ctx := r.Context()
-	agents, err := s.agentMgr.List(ctx)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "LIST_FAILED", err.Error())
-		return
-	}
-
-	shareFilter := map[string]bool{}
-	for _, c := range s.federationShared {
-		shareFilter[c] = true
-	}
-
-	seen := map[string]bool{}
-	var caps []string
-	for _, a := range agents {
-		var decl struct {
-			TaskTypes []string `json:"task_types"`
-		}
-		if err := json.Unmarshal([]byte(a.Capabilities), &decl); err != nil {
-			// Malformed capabilities in the DB: skip this agent but log
-			// so the operator can investigate instead of silently seeing
-			// a shortened capability list.
-			slog.Warn("malformed agent capabilities JSON — skipping",
-				"agent", a.Name, "error", err)
-			continue
-		}
-		for _, t := range decl.TaskTypes {
-			if len(shareFilter) > 0 && !shareFilter[t] {
-				continue
-			}
-			if seen[t] {
-				continue
-			}
-			seen[t] = true
-			caps = append(caps, t)
-		}
-	}
-	writeJSON(w, caps)
 }
 
 func (s *Server) handleListAgents(w http.ResponseWriter, r *http.Request) {

@@ -32,6 +32,8 @@
 		idea: string;
 		prd?: string;
 		workdir?: string;
+		bmad_output_path?: string;
+		repo_path?: string;
 		status: string;
 		created_at: string;
 		updated_at: string;
@@ -123,6 +125,19 @@
 				<code class="id">{project.id}</code>
 			</div>
 			<p class="idea">{project.idea}</p>
+			{#if project.bmad_output_path || project.repo_path || project.workdir}
+				<dl class="refs">
+					{#if project.workdir}
+						<dt>Workdir</dt><dd><code>{project.workdir}</code></dd>
+					{/if}
+					{#if project.repo_path}
+						<dt>Existing repo</dt><dd><code>{project.repo_path}</code></dd>
+					{/if}
+					{#if project.bmad_output_path}
+						<dt>BMAD output</dt><dd><code>{project.bmad_output_path}</code></dd>
+					{/if}
+				</dl>
+			{/if}
 		</header>
 
 		<section class="progress">
@@ -229,6 +244,16 @@
 		color: var(--text);
 		line-height: 1.5;
 	}
+	.refs {
+		display: grid;
+		grid-template-columns: max-content 1fr;
+		column-gap: 0.75rem;
+		row-gap: 0.15rem;
+		margin: 0.75rem 0 0;
+		font-size: 0.8rem;
+	}
+	.refs dt { color: var(--muted); }
+	.refs dd { margin: 0; font-family: ui-monospace, monospace; }
 	.badge {
 		display: inline-block;
 		padding: 0.125rem 0.5rem;

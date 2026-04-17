@@ -1,0 +1,2 @@
+ALTER TABLE projects ADD COLUMN IF NOT EXISTS bmad_output_path TEXT;
+ALTER TABLE projects ADD COLUMN IF NOT EXISTS repo_path TEXT;

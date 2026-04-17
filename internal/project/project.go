@@ -30,17 +30,26 @@ const (
 
 // Project mirrors the projects table. Epics + stories are loaded separately
 // via WithTree so a list page doesn't pull the whole graph.
+//
+// BMADOutputPath and RepoPath let the operator opt out of phases when they
+// already have artefacts on disk: set BMADOutputPath and the Architect
+// skips decomposition and reads the existing epics/stories; set RepoPath
+// and the Dev agents work in that repo instead of scaffolding a fresh one.
+// This is what makes Hive usable for "add feature X to my existing
+// codebase" and not just greenfield builds.
 type Project struct {
-	ID        string    `json:"id"`
-	Name      string    `json:"name"`
-	Idea      string    `json:"idea"`
-	PRD       string    `json:"prd,omitempty"`
-	Workdir   string    `json:"workdir,omitempty"`
-	Status    string    `json:"status"`
-	TenantID  string    `json:"tenant_id"`
-	CreatedAt time.Time `json:"created_at"`
-	UpdatedAt time.Time `json:"updated_at"`
-	Epics     []Epic    `json:"epics,omitempty"`
+	ID             string    `json:"id"`
+	Name           string    `json:"name"`
+	Idea           string    `json:"idea"`
+	PRD            string    `json:"prd,omitempty"`
+	Workdir        string    `json:"workdir,omitempty"`
+	BMADOutputPath string    `json:"bmad_output_path,omitempty"`
+	RepoPath       string    `json:"repo_path,omitempty"`
+	Status         string    `json:"status"`
+	TenantID       string    `json:"tenant_id"`
+	CreatedAt      time.Time `json:"created_at"`
+	UpdatedAt      time.Time `json:"updated_at"`
+	Epics          []Epic    `json:"epics,omitempty"`
 }
 
 // Epic is one top-level work chunk inside a project, produced by the
@@ -93,13 +102,24 @@ type Store struct {
 // NewStore builds a store backed by the hive DB.
 func NewStore(db *sql.DB) *Store { return &Store{db: db} }
 
+// CreateOpts bundles the optional fields of a new project so Create's
+// signature doesn't balloon every time a phase adds an optional reference
+// (BMAD output path, existing repo, later: design mockup paths, etc).
+type CreateOpts struct {
+	Name           string
+	Workdir        string
+	BMADOutputPath string
+	RepoPath       string
+}
+
 // Create persists a new project in `draft` state. Name falls back to a
-// slugified snippet of the idea when the caller leaves it blank, so the
-// user can just type an idea and go.
-func (s *Store) Create(ctx context.Context, tenant, name, idea, workdir string) (*Project, error) {
+// short snippet of the idea when the caller leaves it blank, so the user
+// can just type an idea and go.
+func (s *Store) Create(ctx context.Context, tenant, idea string, opts CreateOpts) (*Project, error) {
 	if idea == "" {
 		return nil, fmt.Errorf("idea is required")
 	}
+	name := opts.Name
 	if name == "" {
 		name = shortName(idea)
 	}
@@ -109,9 +129,9 @@ func (s *Store) Create(ctx context.Context, tenant, name, idea, workdir string) 
 	id := "prj_" + ulid.MustNew(ulid.Timestamp(time.Now()), rand.Reader).String()
 
 	_, err := s.db.ExecContext(ctx,
-		`INSERT INTO projects (id, name, idea, workdir, status, tenant_id)
-		 VALUES (?, ?, ?, ?, ?, ?)`,
-		id, name, idea, workdir, StatusDraft, tenant,
+		`INSERT INTO projects (id, name, idea, workdir, bmad_output_path, repo_path, status, tenant_id)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		id, name, idea, opts.Workdir, opts.BMADOutputPath, opts.RepoPath, StatusDraft, tenant,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("inserting project: %w", err)
@@ -126,6 +146,7 @@ func (s *Store) List(ctx context.Context, tenant string, limit int) ([]Project, 
 		limit = 200
 	}
 	q := `SELECT id, name, idea, COALESCE(prd, ''), COALESCE(workdir, ''),
+	             COALESCE(bmad_output_path, ''), COALESCE(repo_path, ''),
 	             status, tenant_id, created_at, updated_at
 	      FROM projects`
 	args := []any{}
@@ -147,6 +168,7 @@ func (s *Store) List(ctx context.Context, tenant string, limit int) ([]Project, 
 		var p Project
 		var created, updated string
 		if err := rows.Scan(&p.ID, &p.Name, &p.Idea, &p.PRD, &p.Workdir,
+			&p.BMADOutputPath, &p.RepoPath,
 			&p.Status, &p.TenantID, &created, &updated); err != nil {
 			return nil, err
 		}
@@ -166,9 +188,11 @@ func (s *Store) GetByID(ctx context.Context, id string) (*Project, error) {
 	var created, updated string
 	err := s.db.QueryRowContext(ctx,
 		`SELECT id, name, idea, COALESCE(prd, ''), COALESCE(workdir, ''),
+		        COALESCE(bmad_output_path, ''), COALESCE(repo_path, ''),
 		        status, tenant_id, created_at, updated_at
 		 FROM projects WHERE id = ?`, id,
 	).Scan(&p.ID, &p.Name, &p.Idea, &p.PRD, &p.Workdir,
+		&p.BMADOutputPath, &p.RepoPath,
 		&p.Status, &p.TenantID, &created, &updated)
 	if err == sql.ErrNoRows {
 		return nil, fmt.Errorf("project %s not found", id)
