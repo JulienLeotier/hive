@@ -105,8 +105,9 @@ tasks:
 	emptyText="No workflows yet. Click 'New workflow' to create your first one, or run `hive run <file.yaml>`."
 >
 	<div class="toolbar">
-		<button class="create-btn" onclick={() => (editorOpen = !editorOpen)}>
-			{editorOpen ? 'Close editor' : '+ New workflow'}
+		<a class="create-btn" href="/workflows/new">+ Visual builder</a>
+		<button class="create-btn ghost" onclick={() => (editorOpen = !editorOpen)}>
+			{editorOpen ? 'Close YAML' : 'Paste YAML'}
 		</button>
 	</div>
 
@@ -155,6 +156,10 @@ tasks:
 	.toolbar {
 		margin-bottom: 1rem;
 	}
+	.toolbar {
+		display: flex;
+		gap: 0.5rem;
+	}
 	.create-btn {
 		padding: 0.45rem 0.9rem;
 		background: var(--accent);
@@ -163,6 +168,13 @@ tasks:
 		border-radius: 4px;
 		cursor: pointer;
 		font-weight: 600;
+		text-decoration: none;
+		display: inline-block;
+	}
+	.create-btn.ghost {
+		background: transparent;
+		color: var(--text);
+		border: 1px solid var(--border);
 	}
 	.yaml-form {
 		display: flex;
