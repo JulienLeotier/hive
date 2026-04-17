@@ -3,21 +3,22 @@ package devloop
 import (
 	"context"
 	"log/slog"
-	"os"
-	"path/filepath"
-	"regexp"
 	"strings"
 	"time"
 
 	"github.com/JulienLeotier/hive/internal/bmad"
 )
 
-// ClaudeCodeDev et ClaudeCodeReviewer ne font RIEN d'autre que lancer
-// automatiquement les slash-commands BMAD (`/bmad-dev-story`,
-// `/bmad-code-review`). Branches, commits, push, PR, tests, relecture
-// par AC — tout est géré par le framework BMAD lui-même. Hive lit
-// ensuite `_bmad-output/implementation-artifacts/sprint-status.yaml`
-// pour connaître l'issue de l'itération.
+// ClaudeCodeDev et ClaudeCodeReviewer lancent les séquences BMAD
+// officielles (workflow.go) telles que décrites dans les docs :
+//
+//   Dev  : /bmad-create-story puis /bmad-dev-story
+//   Review : /bmad-code-review
+//
+// Les skills BMAD elles-mêmes gèrent les branches, commits, push,
+// ouverture de PR, sélection de la story courante via
+// sprint-status.yaml. Hive ne fait que lancer les commandes et lire
+// les artefacts.
 
 type ClaudeCodeDev struct {
 	runner   *bmad.Runner
@@ -32,33 +33,91 @@ func NewClaudeCodeDev() DevAgent {
 		slog.Info("devloop dev: claude CLI absent — fallback scripted")
 		return fallback
 	}
-	return &ClaudeCodeDev{runner: r, fallback: fallback, timeout: 25 * time.Minute}
+	return &ClaudeCodeDev{runner: r, fallback: fallback, timeout: 30 * time.Minute}
 }
 
 func (*ClaudeCodeDev) Name() string { return "bmad-dev" }
 
-// Develop invoque /bmad-dev-story. BMAD choisit la story
-// ready-for-dev suivante dans sprint-status.yaml, crée une branche,
-// code, commit, push et ouvre la PR lui-même. Aucune orchestration
-// Go par-dessus.
+// Develop lance la séquence /bmad-create-story puis /bmad-dev-story.
+// BMAD choisit lui-même la prochaine story ready-for-dev dans
+// sprint-status.yaml. On collecte l'URL de PR + la branche soit
+// depuis la story file BMAD (front-matter yaml), soit en fallback
+// depuis le stdout des skills.
 func (d *ClaudeCodeDev) Develop(ctx context.Context, proj ProjectContext, story Story, iteration int, _ string) (DevOutput, error) {
 	workdir := pickWorkdir(proj)
 	callCtx, cancel := context.WithTimeout(ctx, d.timeout)
 	defer cancel()
 
-	res, err := d.runner.Invoke(callCtx, workdir, "/bmad-dev-story", nil)
+	// Snapshot sprint-status AVANT que BMAD tourne, pour que le
+	// Reviewer puisse détecter la story que la skill a traitée.
+	pre := snapshotSprint(workdir)
+
+	history, err := d.runner.RunSequence(callCtx, workdir, bmad.StorySequence)
 	if err != nil {
-		slog.Warn("devloop dev: /bmad-dev-story a échoué — fallback scripted", "error", err)
+		slog.Warn("devloop dev: séquence BMAD échouée — fallback scripted", "error", err)
 		return d.fallback.Develop(ctx, proj, story, iteration, "")
 	}
-	out := DevOutput{Summary: firstLine(res.Text), Details: strings.TrimSpace(res.Text)}
-	if branch := extractBranch(res.Text); branch != "" {
-		out.Branch = branch
+
+	combined := ""
+	for _, step := range history {
+		combined += step.Reply + "\n\n"
 	}
-	if pr := extractPRURL(res.Text); pr != "" {
-		out.PRURL = pr
+	out := DevOutput{
+		Summary:         firstLine(combined),
+		Details:         strings.TrimSpace(combined),
+		PreSprintStatus: pre,
+	}
+	// Branche + PR : on diffe la snapshot pour trouver la clé BMAD
+	// que dev-story vient d'activer, puis on lit la story file
+	// correspondante (elle contient branch + pr_url en front-matter
+	// quand BMAD a poussé). Fallback regex sur le stdout.
+	if key := activeBMADKey(pre, workdir); key != "" {
+		if sf, _ := bmad.ReadStoryFile(workdir, key); sf != nil {
+			out.Branch = sf.Branch
+			out.PRURL = sf.PRURL
+		}
+	}
+	if out.PRURL == "" {
+		out.PRURL = bmad.ExtractPRURL(combined)
 	}
 	return out, nil
+}
+
+// snapshotSprint renvoie une copie de development_status, ou une
+// map vide si le fichier n'existe pas encore.
+func snapshotSprint(workdir string) map[string]string {
+	st, err := bmad.ReadSprintStatus(workdir)
+	if err != nil || st == nil {
+		return map[string]string{}
+	}
+	cp := make(map[string]string, len(st.DevelopmentStatus))
+	for k, v := range st.DevelopmentStatus {
+		cp[k] = v
+	}
+	return cp
+}
+
+// activeBMADKey cherche la clé de story qui a bougé entre la
+// snapshot pre-dev et l'état actuel. On privilégie celle qui a
+// transité hors de "ready-for-dev" (ce que dev-story fait en premier).
+func activeBMADKey(pre map[string]string, workdir string) string {
+	post, err := bmad.ReadSprintStatus(workdir)
+	if err != nil || post == nil {
+		return ""
+	}
+	for k, newStatus := range post.DevelopmentStatus {
+		old := pre[k]
+		if old == "ready-for-dev" && newStatus != "ready-for-dev" {
+			return k
+		}
+		if old == "" && newStatus == "in-progress" {
+			return k
+		}
+		if old == "" && newStatus == "review" {
+			return k
+		}
+	}
+	return ""
 }
 
 type ClaudeCodeReviewer struct {
@@ -74,102 +133,63 @@ func NewClaudeCodeReviewer() ReviewerAgent {
 		slog.Info("devloop reviewer: claude CLI absent — fallback scripted")
 		return fallback
 	}
-	return &ClaudeCodeReviewer{runner: r, fallback: fallback, timeout: 10 * time.Minute}
+	return &ClaudeCodeReviewer{runner: r, fallback: fallback, timeout: 12 * time.Minute}
 }
 
 func (*ClaudeCodeReviewer) Name() string { return "bmad-reviewer" }
 
-// Review invoque /bmad-code-review. BMAD lit le diff de la PR, poste
-// ses commentaires et met à jour sprint-status.yaml. Hive relit le
-// fichier pour déterminer pass/fail.
+// Review lance /bmad-code-review. Après coup, on parse
+// sprint-status.yaml avec un vrai parser yaml pour déterminer si la
+// story est passée à "ready-for-done" (pass) ou renvoyée en
+// "ready-for-dev" (fail à ré-itérer).
 func (r *ClaudeCodeReviewer) Review(ctx context.Context, proj ProjectContext, story Story, output DevOutput) (ReviewVerdict, error) {
 	workdir := pickWorkdir(proj)
 	callCtx, cancel := context.WithTimeout(ctx, r.timeout)
 	defer cancel()
 
-	res, err := r.runner.Invoke(callCtx, workdir, "/bmad-code-review", nil)
+	history, err := r.runner.RunSequence(callCtx, workdir, bmad.ReviewSequence)
 	if err != nil {
-		slog.Warn("devloop reviewer: /bmad-code-review a échoué — fallback scripted", "error", err)
+		slog.Warn("devloop reviewer: séquence BMAD échouée — fallback scripted", "error", err)
 		return r.fallback.Review(ctx, proj, story, output)
 	}
 
-	pass := readBMADVerdict(workdir, story)
-	verdict := ReviewVerdict{
-		Pass:     pass,
-		Feedback: firstLine(res.Text),
+	// Identifier la clé de story active en diffant pre vs post. C'est
+	// la même clé que celle détectée dans Develop() — BMAD ne change
+	// pas de story entre dev-story et code-review.
+	key := activeBMADKey(output.PreSprintStatus, workdir)
+	pass := false
+	reason := "verdict indéterminé"
+	if key != "" {
+		if st, _ := bmad.ReadSprintStatus(workdir); st != nil {
+			status := st.StoryStatus(key)
+			switch status {
+			case "ready-for-done", "done", "approved":
+				pass = true
+				reason = "BMAD code-review : " + status
+			case "ready-for-dev":
+				reason = "BMAD review : renvoyée en ready-for-dev"
+			case "":
+				reason = "story " + key + " absente de sprint-status.yaml"
+			default:
+				reason = "BMAD review : " + status
+			}
+		}
 	}
-	// Hive a toujours besoin d'un verdict par AC pour son tableau de
-	// bord ; on duplique simplement le verdict global.
+
+	feedback := ""
+	if len(history) > 0 {
+		feedback = firstLine(history[len(history)-1].Reply)
+	}
+	if feedback == "" {
+		feedback = reason
+	}
+	verdict := ReviewVerdict{Pass: pass, Feedback: feedback}
 	for _, ac := range story.ACs {
 		verdict.ACs = append(verdict.ACs, ReviewedCriterion{
-			ID:     ac.ID,
-			Passed: pass,
-			Reason: statusReason(pass),
+			ID: ac.ID, Passed: pass, Reason: reason,
 		})
 	}
 	return verdict, nil
-}
-
-// readBMADVerdict lit sprint-status.yaml et retourne true quand
-// development_status[<story>] vaut "ready-for-done" ou "done" — les
-// deux états "pass" de BMAD après code-review. Retourne false si on
-// ne trouve rien de concluant : le superviseur ré-itérera.
-func readBMADVerdict(workdir string, story Story) bool {
-	path := filepath.Join(workdir, "_bmad-output", "implementation-artifacts", "sprint-status.yaml")
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return false
-	}
-	return matchStatus(string(data), story.Title, "ready-for-done", "done", "approved")
-}
-
-// matchStatus cherche la clé qui ressemble le plus au titre de la
-// story dans la section development_status du yaml, et teste si sa
-// valeur est un des statuts "pass". Parser yaml minimal : on évite
-// une dépendance supplémentaire pour deux regex triviaux.
-func matchStatus(yaml, storyTitle string, passValues ...string) bool {
-	slug := strings.ToLower(strings.ReplaceAll(storyTitle, " ", "-"))
-	slug = nonAlnum.ReplaceAllString(slug, "-")
-	slug = strings.Trim(slug, "-")
-	if slug == "" {
-		return false
-	}
-	re := regexp.MustCompile(`(?i)` + regexp.QuoteMeta(slug) + `[^\n]*:\s*["']?([a-z0-9\-]+)["']?`)
-	m := re.FindStringSubmatch(yaml)
-	if len(m) < 2 {
-		return false
-	}
-	status := strings.ToLower(m[1])
-	for _, v := range passValues {
-		if status == strings.ToLower(v) {
-			return true
-		}
-	}
-	return false
-}
-
-var (
-	nonAlnum      = regexp.MustCompile(`[^a-z0-9]+`)
-	branchHintRe  = regexp.MustCompile(`(?i)branch[^\n]*?[` + "`" + `"']([a-zA-Z0-9/_\-.]+)[` + "`" + `"']`)
-	prURLRe       = regexp.MustCompile(`https://github\.com/[^\s)]+/pull/\d+`)
-)
-
-func extractBranch(s string) string {
-	if m := branchHintRe.FindStringSubmatch(s); len(m) >= 2 {
-		return m[1]
-	}
-	return ""
-}
-
-func extractPRURL(s string) string {
-	return prURLRe.FindString(s)
-}
-
-func statusReason(pass bool) string {
-	if pass {
-		return "BMAD code-review : ready-for-done"
-	}
-	return "BMAD code-review : story non validée, voir la PR"
 }
 
 func firstLine(s string) string {

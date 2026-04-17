@@ -32,6 +32,7 @@
 		iterations: number;
 		agent_id?: string;
 		branch?: string;
+		pr_url?: string;
 		acceptance_criteria?: AcceptanceCriterion[];
 		last_review_verdict?: string;
 		last_review_feedback?: string;
@@ -544,6 +545,13 @@
 											{#if story.iterations > 0}
 												<span class="muted">· {story.iterations} itération{story.iterations > 1 ? 's' : ''}</span>
 											{/if}
+											{#if story.pr_url}
+												<a class="pr-link" href={story.pr_url} target="_blank" rel="noopener" title="Pull request ouverte par BMAD">
+													🔀 PR
+												</a>
+											{:else if story.branch}
+												<code class="branch-tag" title="Branche feature créée par BMAD">{story.branch}</code>
+											{/if}
 											{#if story.status === 'blocked'}
 												<button
 													type="button"
@@ -981,6 +989,30 @@
 		color: var(--muted);
 		margin-right: 0.3rem;
 		font-weight: 600;
+	}
+	.pr-link {
+		display: inline-flex;
+		align-items: center;
+		gap: 0.2rem;
+		padding: 0.15rem 0.5rem;
+		background: color-mix(in srgb, var(--accent) 16%, var(--bg-alt));
+		border: 1px solid var(--accent);
+		border-radius: 999px;
+		color: var(--accent);
+		text-decoration: none;
+		font-size: 0.72rem;
+		font-weight: 600;
+	}
+	.pr-link:hover { background: color-mix(in srgb, var(--accent) 30%, var(--bg-alt)); }
+	.branch-tag {
+		display: inline-block;
+		padding: 0.1rem 0.45rem;
+		font-family: ui-monospace, monospace;
+		font-size: 0.68rem;
+		color: var(--muted);
+		background: var(--bg-alt);
+		border: 1px solid var(--border);
+		border-radius: 999px;
 	}
 	.retry {
 		margin-left: auto;

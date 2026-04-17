@@ -262,21 +262,20 @@ func (s *Server) runArchitectAsync(projectID, idea, seedDoc string) {
 		return
 	}
 
-	// Planning : on laisse un petit dispatcher Haiku décider de la
-	// séquence de slash-commands (/bmad-create-prd →
-	// /bmad-create-architecture → /bmad-create-epics-and-stories, etc.)
-	// Hive ne préjuge pas de l'ordre — c'est BMAD + l'aiguilleur qui
-	// mènent.
-	if _, err := runner.RunPhase(ctx, workdir, bmad.Phase{
-		Name:     "planning",
-		Goal:     "Produire un PRD complet + un arbre epics/stories prêt pour le dev. Terminer (`done`) quand l'arbre et le PRD sont sur disque.",
-		MaxSteps: 6,
-	}); err != nil {
-		fail("planning-dispatcher", err)
+	// On applique à la lettre la séquence Planning + Solutioning +
+	// sprint-planning telle que décrite dans les docs BMAD-METHOD :
+	// 10 slash-commands dans l'ordre, chacune dans sa propre
+	// invocation `claude --print` (BMAD recommande "fresh chat each").
+	// Voir internal/bmad/workflow.go:PlanningSequence.
+	if _, err := runner.RunSequence(ctx, workdir, bmad.PlanningSequence); err != nil {
+		fail("planning-sequence", err)
 		return
 	}
 
-	// Lire le PRD qu'une des skills a écrit.
+	// Une fois sprint-planning exécuté, BMAD a écrit :
+	// - _bmad-output/planning-artifacts/prd.md (PRD)
+	// - _bmad-output/planning-artifacts/epics.md (arbre epics + stories)
+	// - _bmad-output/implementation-artifacts/sprint-status.yaml
 	prdText, err := readFirst(workdir, bmad.PRDFile, bmad.PRDFileLower)
 	if err != nil {
 		fail("read-prd", err)
@@ -290,17 +289,20 @@ func (s *Server) runArchitectAsync(projectID, idea, seedDoc string) {
 		return
 	}
 
-	// Une seconde passe courte pour demander à Claude de cracher
-	// l'arbre epics/stories dans un format que Hive peut ingérer
-	// (json-hive). Pas de skill BMAD — juste une lecture + formatage
-	// des artefacts que le dispatcher a déjà produits.
+	// Courte passe additionnelle : on demande à Claude de formatter
+	// les artefacts en json-hive pour qu'on les ingère en DB. Pas
+	// d'opinion : juste un adaptateur entre les fichiers markdown
+	// BMAD et notre schéma epics/stories/ACs.
 	ingestGoal := "Lis les artefacts BMAD sous `_bmad-output/planning-artifacts/` " +
-		"(epics.md, stories/, etc.) et émets UN bloc fencé `json-hive` à la fin, " +
-		"contenant TOUS les epics et stories dans cet exact schéma :\n" +
+		"(epics.md, stories/, etc.) et les story files dans `_bmad-output/implementation-artifacts/` " +
+		"puis émets UN bloc fencé `json-hive` à la fin contenant TOUS les epics et stories " +
+		"dans cet exact schéma :\n" +
 		"```json-hive\n" +
-		"[{\"title\":\"Epic\",\"description\":\"\",\"stories\":" +
-		"[{\"title\":\"Story\",\"description\":\"\",\"acceptance_criteria\":[\"AC\"]}]}]\n" +
-		"```\nAucune prose après le bloc."
+		"[{\"title\":\"Epic\",\"description\":\"\",\"key\":\"epic-1\",\"stories\":" +
+		"[{\"title\":\"Story\",\"description\":\"\",\"key\":\"1.1\"," +
+		"\"acceptance_criteria\":[\"AC\"]}]}]\n" +
+		"```\nLe `key` de chaque story DOIT correspondre exactement à celui utilisé par BMAD " +
+		"dans sprint-status.yaml. Aucune prose après le bloc."
 	res, err := runner.Invoke(ctx, workdir, ingestGoal, nil)
 	if err != nil {
 		fail("ingest-json", err)

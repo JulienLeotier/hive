@@ -26,6 +26,8 @@ import (
 	"fmt"
 	"log/slog"
 	"time"
+
+	"github.com/JulienLeotier/hive/internal/bmad"
 )
 
 // Project lifecycle strings (mirrored here so the package doesn't import
@@ -96,6 +98,12 @@ type DevOutput struct {
 	// can focus on the diff.
 	Branch string
 	PRURL  string
+	// PreSprintStatus est la snapshot de development_status dans
+	// sprint-status.yaml capturée JUSTE AVANT que le Dev tourne. Le
+	// Reviewer diffe cette snapshot avec l'état post-review pour
+	// identifier la story que BMAD vient de traiter et en déduire le
+	// verdict (ready-for-done ou renvoyée en ready-for-dev).
+	PreSprintStatus map[string]string
 }
 
 // DevAgent implementations produce code / artefacts for a story.
@@ -389,13 +397,28 @@ func (s *Supervisor) advance(ctx context.Context, proj ProjectContext) error {
 		return err
 	}
 
-	// On a passing iteration, persist the change set as a git commit so
-	// the build history is inspectable after the fact. Failure paths
-	// leave uncommitted changes for the next dev iteration to overwrite.
-	if verdict.Pass && workdir != "" && s.git != nil {
-		if err := s.git.CommitStory(ctx, workdir, story.Title, newIteration); err != nil {
-			slog.Warn("devloop: git commit failed",
-				"project", proj.ID, "story", story.ID, "error", err)
+	// BMAD gère lui-même branches/commits/push/PR via bmad-dev-story,
+	// donc Hive ne commite plus rien sur main directement. On se
+	// contente de déclencher la rétrospective BMAD quand tout l'epic
+	// de la story vient d'être complété — doc officielle Phase 4 :
+	// "bmad-agent-dev + bmad-retrospective (after epic completion)".
+	if verdict.Pass && workdir != "" && s.epicComplete(ctx, story.EpicID) {
+		if runner := bmad.NewRunner(); runner != nil {
+			//nolint:gosec // G118: retrospective tourne détachée ; le ctx de l'itération meurt avec elle
+			go func(rnr *bmad.Runner, wd, pid, eid, title string) {
+				rctx, rcancel := context.WithTimeout(context.Background(), 10*time.Minute)
+				defer rcancel()
+				if _, err := rnr.RunSequence(rctx, wd, bmad.RetrospectiveSequence); err != nil {
+					slog.Warn("devloop: bmad-retrospective failed",
+						"project", pid, "epic", eid, "error", err)
+					return
+				}
+				s.emit(rctx, "epic.retrospective", map[string]any{
+					"project_id": pid,
+					"epic_id":    eid,
+					"epic_title": title,
+				})
+			}(runner, workdir, proj.ID, story.EpicID, story.Title)
 		}
 	}
 
@@ -486,6 +509,19 @@ func (s *Supervisor) nextStory(ctx context.Context, projectID string) (*Story, e
 		story.ACs = append(story.ACs, ac)
 	}
 	return &story, acRows.Err()
+}
+
+// epicComplete reports whether every story of the given epic is now
+// in `done` state. Used to trigger the BMAD retrospective hook.
+func (s *Supervisor) epicComplete(ctx context.Context, epicID string) bool {
+	var pending int
+	if err := s.db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM stories WHERE epic_id = ? AND status <> ?`,
+		epicID, storyStatusDone,
+	).Scan(&pending); err != nil {
+		return false
+	}
+	return pending == 0
 }
 
 // previousFeedback pulls the latest failing review feedback so the next
