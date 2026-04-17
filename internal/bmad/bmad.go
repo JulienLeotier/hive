@@ -44,18 +44,24 @@ const (
 // Runner orchestrates BMAD against a single workdir.
 type Runner struct {
 	cliPath string        // resolved `claude`
-	timeout time.Duration // per-invocation cap
+	timeout time.Duration // per-invocation cap, 0 = no timeout (inherit parent ctx)
 }
 
 // NewRunner probes for the `claude` CLI and returns nil when it's
 // missing so callers can fall back without every invocation failing.
+//
+// timeout = 0 : une skill BMAD peut légitimement tourner plusieurs
+// heures (dev-story sur une grosse story, document-project sur un
+// repo volumineux). On laisse le parent ctx (annulé par cancel
+// button UI ou cost cap) piloter l'arrêt plutôt qu'un hard cap
+// arbitraire qui couperait une skill au milieu.
 func NewRunner() *Runner {
 	path, err := exec.LookPath("claude")
 	if err != nil {
 		slog.Info("bmad: claude CLI not on PATH — bmad disabled", "error", err)
 		return nil
 	}
-	return &Runner{cliPath: path, timeout: 15 * time.Minute}
+	return &Runner{cliPath: path, timeout: 0}
 }
 
 // Install runs `npx bmad-method install` inside workdir. Safe to
@@ -74,8 +80,12 @@ func (r *Runner) Install(ctx context.Context, workdir string) error {
 	if _, err := os.Stat(filepath.Join(workdir, BMADConfigDir)); err == nil {
 		return nil // already installed
 	}
-	installCtx, cancel := context.WithTimeout(ctx, 10*time.Minute)
-	defer cancel()
+	// Pas de timeout hard : `npx bmad-method install` peut prendre >10min
+	// sur une première install à froid (download du framework + ses
+	// deps). On laisse le parent ctx piloter.
+	installCtx := ctx
+	cancel := func() {}
+	_ = cancel
 	cmd := exec.CommandContext(installCtx,
 		"npx", "--yes", "bmad-method@latest", "install",
 		"--directory", workdir,
@@ -164,7 +174,14 @@ func (r *Runner) Invoke(ctx context.Context, workdir, goal string, expectedOutpu
 	if r == nil {
 		return Result{}, errors.New("bmad: runner unavailable")
 	}
-	callCtx, cancel := context.WithTimeout(ctx, r.timeout)
+	// Si r.timeout est 0 (défaut prod), on herite du parent ctx : pas de
+	// cap arbitraire, la skill peut tourner aussi longtemps que Claude
+	// en a besoin. Tests injectent un timeout court via Runner{timeout:N}.
+	callCtx := ctx
+	cancel := func() {}
+	if r.timeout > 0 {
+		callCtx, cancel = context.WithTimeout(ctx, r.timeout)
+	}
 	defer cancel()
 
 	prompt := buildPrompt(goal)

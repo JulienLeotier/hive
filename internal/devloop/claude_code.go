@@ -34,7 +34,10 @@ func NewClaudeCodeDev() DevAgent {
 		slog.Info("devloop dev: claude CLI absent — fallback scripted")
 		return fallback
 	}
-	return &ClaudeCodeDev{runner: r, fallback: fallback, timeout: 30 * time.Minute}
+	// timeout 0 → hérite du parent ctx. Une story légitime peut
+	// prendre >30min en dev-story sur du code non trivial ; ne pas
+	// couper arbitrairement.
+	return &ClaudeCodeDev{runner: r, fallback: fallback, timeout: 0}
 }
 
 func (*ClaudeCodeDev) Name() string { return "bmad-dev" }
@@ -46,7 +49,11 @@ func (*ClaudeCodeDev) Name() string { return "bmad-dev" }
 // depuis le stdout des skills.
 func (d *ClaudeCodeDev) Develop(ctx context.Context, proj ProjectContext, story Story, iteration int, _ string) (DevOutput, error) {
 	workdir := pickWorkdir(proj)
-	callCtx, cancel := context.WithTimeout(ctx, d.timeout)
+	callCtx := ctx
+	cancel := func() {}
+	if d.timeout > 0 {
+		callCtx, cancel = context.WithTimeout(ctx, d.timeout)
+	}
 	defer cancel()
 
 	// Snapshot sprint-status AVANT que BMAD tourne, pour que le
@@ -147,7 +154,8 @@ func NewClaudeCodeReviewer() ReviewerAgent {
 		slog.Info("devloop reviewer: claude CLI absent — fallback scripted")
 		return fallback
 	}
-	return &ClaudeCodeReviewer{runner: r, fallback: fallback, timeout: 12 * time.Minute}
+	// timeout 0 → hérite du parent ctx. Même logique que le Dev.
+	return &ClaudeCodeReviewer{runner: r, fallback: fallback, timeout: 0}
 }
 
 func (*ClaudeCodeReviewer) Name() string { return "bmad-reviewer" }
@@ -158,7 +166,11 @@ func (*ClaudeCodeReviewer) Name() string { return "bmad-reviewer" }
 // "ready-for-dev" (fail à ré-itérer).
 func (r *ClaudeCodeReviewer) Review(ctx context.Context, proj ProjectContext, story Story, output DevOutput) (ReviewVerdict, error) {
 	workdir := pickWorkdir(proj)
-	callCtx, cancel := context.WithTimeout(ctx, r.timeout)
+	callCtx := ctx
+	cancel := func() {}
+	if r.timeout > 0 {
+		callCtx, cancel = context.WithTimeout(ctx, r.timeout)
+	}
 	defer cancel()
 
 	history, err := r.runner.RunSequence(callCtx, workdir, bmad.ReviewSequence)

@@ -15,11 +15,13 @@
 #   - Test parallel projects (BMAD is single-project-at-a-time)
 #
 # Env:
-#   HIVE_E2E_TIMEOUT  — max seconds to wait for the build (default 7200 = 2h).
-#                       Real BMAD with real Claude takes ~45-90min for
-#                       planning (13 skills × 3-10min each) + 20-60min
-#                       per story in dev/review. 2h is the minimum
-#                       realistic ceiling for a mini project to ship.
+#   HIVE_E2E_TIMEOUT  — max seconds to wait for the build (default 0 =
+#                       wait as long as needed). Real BMAD with real
+#                       Claude takes ~45-90min for planning (13 skills
+#                       × 3-10min each) + 20-60min per story. Setting
+#                       a cap risks killing a legitimate long run; the
+#                       0 default means the script only exits on ship
+#                       or failure.
 #   HIVE_E2E_PORT     — port to bind hive to (default 18233, random-ish)
 #   HIVE_E2E_KEEP     — 1 to keep the temp hive binary + workdir after exit
 #
@@ -32,7 +34,7 @@ set -euo pipefail
 
 HERE="$(cd "$(dirname "$0")/.." && pwd)"
 PORT="${HIVE_E2E_PORT:-18233}"
-TIMEOUT="${HIVE_E2E_TIMEOUT:-7200}"
+TIMEOUT="${HIVE_E2E_TIMEOUT:-0}"
 TMP="$(mktemp -d -t hive-e2e-XXXXXX)"
 WORKDIR="$TMP/workdir"
 STATE="$TMP/state"
@@ -126,19 +128,30 @@ echo "→ finalising PRD (async architect kicks in)"
 curl -fsS -X POST "$API/projects/$PID/intake/finalize" \
 	-H 'content-type: application/json' -d '{}' >/dev/null
 
-echo "→ waiting up to ${TIMEOUT}s for project to ship"
-DEADLINE=$(( $(date +%s) + TIMEOUT ))
+if [ "$TIMEOUT" -gt 0 ]; then
+	echo "→ waiting up to ${TIMEOUT}s for project to ship"
+	DEADLINE=$(( $(date +%s) + TIMEOUT ))
+else
+	echo "→ waiting (no timeout — will exit only on ship or failure)"
+	DEADLINE=0
+fi
+
 LAST_STATUS=""
-while [ "$(date +%s)" -lt "$DEADLINE" ]; do
+LAST_COST=0
+START=$(date +%s)
+while [ "$DEADLINE" -eq 0 ] || [ "$(date +%s)" -lt "$DEADLINE" ]; do
 	SUMMARY=$(curl -fsS "$API/projects/$PID")
 	STATUS=$(echo "$SUMMARY" | jq -r '.data.status')
-	if [ "$STATUS" != "$LAST_STATUS" ]; then
-		echo "  [$(date +%H:%M:%S)] project.status = $STATUS"
+	COST=$(echo "$SUMMARY" | jq -r '.data.total_cost_usd // 0')
+	if [ "$STATUS" != "$LAST_STATUS" ] || [ "$COST" != "$LAST_COST" ]; then
+		ELAPSED=$(( $(date +%s) - START ))
+		printf "  [%s] (+%ds) status=%s cost=\$%s\n" "$(date +%H:%M:%S)" "$ELAPSED" "$STATUS" "$COST"
 		LAST_STATUS="$STATUS"
+		LAST_COST="$COST"
 	fi
 	case "$STATUS" in
 		shipped)
-			echo "✓ project shipped"
+			echo "✓ project shipped after $(( $(date +%s) - START ))s — cost \$$COST"
 			echo "→ files produced in $WORKDIR:"
 			find "$WORKDIR" -type f ! -path '*/.git/*' | head -20
 			exit 0 ;;
@@ -147,8 +160,6 @@ while [ "$(date +%s)" -lt "$DEADLINE" ]; do
 			tail -60 "$LOG"
 			exit 1 ;;
 	esac
-	# Print blocked stories as they happen so we notice a wedged loop.
-	# Null-guarded: .data.epics is null while still in `planning`.
 	BLOCKED=$(echo "$SUMMARY" | jq -r '(.data.epics // [])[] | (.stories // [])[] | select(.status=="blocked") | .title' 2>/dev/null | head -5 || true)
 	if [ -n "$BLOCKED" ]; then
 		echo "  blocked stories: $BLOCKED"

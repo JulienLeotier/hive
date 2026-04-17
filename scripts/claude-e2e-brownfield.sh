@@ -11,7 +11,7 @@
 #
 # Env:
 #   HIVE_BROWNFIELD_REPO  — repo to clone (default : a tiny throwaway repo)
-#   HIVE_E2E_TIMEOUT      — seconds (default 2400, BMAD brownfield is slow)
+#   HIVE_E2E_TIMEOUT      — seconds (default 0 = no timeout, wait until ship or fail)
 #   HIVE_E2E_PORT         — HTTP port (default 19888)
 #   HIVE_E2E_KEEP         — 1 to keep the temp dir after exit
 #
@@ -24,7 +24,7 @@ set -euo pipefail
 
 HERE="$(cd "$(dirname "$0")/.." && pwd)"
 PORT="${HIVE_E2E_PORT:-19888}"
-TIMEOUT="${HIVE_E2E_TIMEOUT:-2400}"
+TIMEOUT="${HIVE_E2E_TIMEOUT:-0}"
 REPO="${HIVE_BROWNFIELD_REPO:-}"
 TMP="$(mktemp -d -t hive-bf-XXXXXX)"
 WORKDIR="$TMP/workdir"
@@ -136,10 +136,16 @@ echo "→ finalising (launches IterationPipeline — bmad-document-project → .
 curl -fsS -X POST "$API/projects/$PID/intake/finalize" \
 	-H 'content-type: application/json' -d '{}' >/dev/null
 
-echo "→ waiting up to ${TIMEOUT}s for brownfield iteration to ship"
-DEADLINE=$(( $(date +%s) + TIMEOUT ))
+if [ "$TIMEOUT" -gt 0 ]; then
+	echo "→ waiting up to ${TIMEOUT}s for brownfield iteration to ship"
+	DEADLINE=$(( $(date +%s) + TIMEOUT ))
+else
+	echo "→ waiting (no timeout — will exit only on ship or failure)"
+	DEADLINE=0
+fi
 LAST_STATUS=""
-while [ "$(date +%s)" -lt "$DEADLINE" ]; do
+START=$(date +%s)
+while [ "$DEADLINE" -eq 0 ] || [ "$(date +%s)" -lt "$DEADLINE" ]; do
 	SUMMARY=$(curl -fsS "$API/projects/$PID")
 	STATUS=$(echo "$SUMMARY" | jq -r '.data.status')
 	COST=$(echo "$SUMMARY" | jq -r '.data.total_cost_usd // 0')
@@ -149,7 +155,7 @@ while [ "$(date +%s)" -lt "$DEADLINE" ]; do
 	fi
 	case "$STATUS" in
 		shipped)
-			echo "✓ brownfield iteration shipped"
+			echo "✓ brownfield iteration shipped after $(( $(date +%s) - START ))s — cost \$$COST"
 			echo "→ files changed vs. origin:"
 			(cd "$WORKDIR" && git log --oneline origin/HEAD..HEAD | head -10) || true
 			exit 0 ;;

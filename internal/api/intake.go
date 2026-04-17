@@ -252,7 +252,11 @@ func (s *Server) iterationAgent() intake.Agent {
 // Les epics/stories existants sont conservés en DB ; les nouveaux
 // seront ingérés en sortie via le même parseur json-hive.
 func (s *Server) runIterationAsync(projectID, idea, seedDoc string) {
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Minute)
+	// Pas de timeout : le brownfield IterationPipeline (14 skills) peut
+	// légitimement tourner >60min sur un gros repo (document-project
+	// seul peut prendre 15-20min). Les sorties sont le cancel UI ou
+	// le cost cap — pas un hard timeout qui couperait au milieu.
+	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	s.registerRun(projectID, cancel)
 	defer s.clearRun(projectID)
@@ -584,9 +588,12 @@ func (s *Server) runArchitectAsync(projectID, idea, seedDoc string) {
 }
 
 func (s *Server) runArchitectAsyncInternal(projectID, idea, seedDoc string, fromStep int) {
-	// Ctx cancellable côté UI (via POST /cancel). Timeout généreux
-	// parce que FullPlanningPipeline = 13 skills × 2-5 min chacune.
-	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Minute)
+	// Pas de timeout. FullPlanningPipeline = 13 skills qui peuvent
+	// chacune prendre 3-15 min avec le vrai Claude sur un projet
+	// moyen. Couper à 90min forçait des failures sur les pipelines
+	// légitimes qui prenaient juste 2h. Le cancel UI et le cost cap
+	// sont les sorties — pas un cap wall-clock arbitraire.
+	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	s.registerRun(projectID, cancel)
 	defer s.clearRun(projectID)

@@ -619,7 +619,8 @@ func (s *Server) handleRetrospective(w http.ResponseWriter, r *http.Request) {
 	}
 	//nolint:gosec // G118: retrospective tourne détachée pour ne pas bloquer la requête
 	go func(wd, pid string) {
-		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Minute)
+		// Pas de timeout : retrospective peut prendre son temps.
+		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 		obs := s.stepObserver(ctx, pid, "retrospective")
 		if _, err := runner.RunSequenceObserved(ctx, wd, bmad.RetrospectiveSequence, obs); err != nil {

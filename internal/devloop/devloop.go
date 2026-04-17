@@ -428,7 +428,8 @@ func (s *Supervisor) advance(ctx context.Context, proj ProjectContext) error {
 		if runner := bmad.NewRunner(); runner != nil {
 			//nolint:gosec // G118: retrospective tourne détachée ; le ctx de l'itération meurt avec elle
 			go func(rnr *bmad.Runner, wd, pid, eid, title string) {
-				rctx, rcancel := context.WithTimeout(context.Background(), 10*time.Minute)
+				// Pas de timeout : retrospective peut prendre son temps.
+				rctx, rcancel := context.WithCancel(context.Background())
 				defer rcancel()
 				if _, err := rnr.RunSequence(rctx, wd, bmad.RetrospectiveSequence); err != nil {
 					slog.Warn("devloop: bmad-retrospective failed",
