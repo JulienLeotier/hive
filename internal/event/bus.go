@@ -51,7 +51,12 @@ func (b *Bus) PublishErr(ctx context.Context, eventType, source string, payload 
 }
 
 // Publish persists an event to SQLite then delivers it to matching subscribers.
+// An empty eventType is rejected: it slips past every Subscribe prefix except
+// "*" and makes downstream filters fail silently.
 func (b *Bus) Publish(ctx context.Context, eventType, source string, payload any) (Event, error) {
+	if eventType == "" {
+		return Event{}, fmt.Errorf("event type is required")
+	}
 	payloadJSON, err := json.Marshal(payload)
 	if err != nil {
 		return Event{}, fmt.Errorf("marshaling event payload: %w", err)

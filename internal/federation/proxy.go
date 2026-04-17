@@ -65,6 +65,11 @@ type ProxyResponse struct {
 // before forwarding. A task that's already bounced 3 hives won't be
 // handed off a fourth time.
 func (p *Proxy) Invoke(ctx context.Context, peer string, req ProxyRequest) (*ProxyResponse, error) {
+	// Reject negative hops: a malformed or malicious request could use Hop=-999
+	// to push the actual loop budget far beyond MaxHops. Normalise to 0.
+	if req.Hop < 0 {
+		return nil, fmt.Errorf("federation hop counter must be non-negative, got %d", req.Hop)
+	}
 	if req.Hop >= MaxHops {
 		return nil, fmt.Errorf("federation hop limit reached (%d) — refusing to forward task %s to %s",
 			MaxHops, req.TaskID, peer)

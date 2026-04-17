@@ -78,8 +78,15 @@ func sweepRetention(ctx context.Context, db *sql.DB, cfg RetentionConfig) {
 	if days, ok := resolvedDays(cfg.CompletedTasksDays, 30); ok {
 		// Only completed/failed tasks — running/pending ones deserve a real
 		// resolution, not a silent purge.
+		//
+		// Two-pass delete: the primary pass uses completed_at as the age
+		// marker, but an earlier bug left some terminal tasks with NULL
+		// completed_at. A supplementary sweep keyed on created_at catches
+		// those so they don't accumulate forever.
 		deleteOlderThan(ctx, db, "tasks", "completed_at", days,
 			"AND status IN ('completed', 'failed')")
+		deleteOlderThan(ctx, db, "tasks", "created_at", days,
+			"AND status IN ('completed', 'failed') AND completed_at IS NULL")
 	}
 	if days, ok := resolvedDays(cfg.CostsDays, 365); ok {
 		deleteOlderThan(ctx, db, "costs", "created_at", days, "")

@@ -19,17 +19,6 @@ import (
 	"github.com/JulienLeotier/hive/internal/resilience"
 )
 
-// knowledgeStoreFromDB builds a Store on demand with the default HashingEmbedder.
-// Kept inline so the server stays self-contained without threading yet another
-// dependency through NewServer.
-func knowledgeStoreFromDB(db *sql.DB) *knowledge.Store {
-	return knowledge.NewStore(db).WithEmbedder(knowledge.NewHashingEmbedder(128))
-}
-
-// cryptoRandRead is declared here so the server file doesn't reach into
-// crypto/rand at call sites cluttered with other names.
-func cryptoRandRead(b []byte) (int, error) { return rand.Read(b) }
-
 // Response is the standard API response envelope.
 type Response struct {
 	Data  any    `json:"data"`
@@ -153,7 +142,7 @@ func (s *Server) handleOIDCCallback(w http.ResponseWriter, r *http.Request) {
 
 func randomState() string {
 	b := make([]byte, 16)
-	_, _ = cryptoRandRead(b)
+	_, _ = rand.Read(b)
 	return fmt.Sprintf("%x", b)
 }
 
@@ -334,7 +323,7 @@ func (s *Server) handleKnowledgeSearch(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Use VectorSearch when an embedder is attached; fall back to keyword.
-	store := knowledgeStoreFromDB(s.db())
+	store := knowledge.NewStore(s.db()).WithEmbedder(knowledge.NewHashingEmbedder(128))
 	results, err := store.VectorSearch(r.Context(), q, limit)
 	if err != nil {
 		results, err = store.Search(r.Context(), q, limit)
@@ -380,12 +369,6 @@ func (s *Server) handleListCapabilities(w http.ResponseWriter, r *http.Request) 
 		}
 	}
 	writeJSON(w, caps)
-}
-
-// Start runs the HTTP server.
-func (s *Server) Start(addr string) error {
-	slog.Info("API server starting", "addr", addr)
-	return http.ListenAndServe(addr, s.Handler())
 }
 
 func (s *Server) handleListAgents(w http.ResponseWriter, r *http.Request) {
@@ -457,7 +440,6 @@ func (s *Server) handleListTasks(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "QUERY_FAILED", err.Error())
 		return
 	}
-	defer rows.Close()
 
 	type taskRow struct {
 		ID              string   `json:"id"`
@@ -473,7 +455,7 @@ func (s *Server) handleListTasks(w http.ResponseWriter, r *http.Request) {
 		ResultSummary   string   `json:"result_summary,omitempty"`
 	}
 	var tasks []taskRow
-	for rows.Next() {
+	scanAll(rows, "tasks", func() error {
 		var (
 			t      taskRow
 			output string
@@ -481,14 +463,15 @@ func (s *Server) handleListTasks(w http.ResponseWriter, r *http.Request) {
 		if err := rows.Scan(&t.ID, &t.WorkflowID, &t.Type, &t.Status,
 			&t.AgentID, &t.AgentName, &t.CreatedAt,
 			&t.StartedAt, &t.CompletedAt, &output); err != nil {
-			continue
+			return err
 		}
 		if d, ok := taskDurationSeconds(t.StartedAt, t.CompletedAt); ok {
 			t.DurationSeconds = &d
 		}
 		t.ResultSummary = summariseTaskOutput(output)
 		tasks = append(tasks, t)
-	}
+		return nil
+	})
 	writeJSON(w, tasks)
 }
 

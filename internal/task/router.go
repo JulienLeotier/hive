@@ -43,6 +43,12 @@ func (r *Router) WithBus(bus *event.Bus) *Router {
 // CapacityLimit caps the number of simultaneously assigned/running tasks per
 // agent before routing considers it saturated (Story 2.3 AC: "healthy, not at
 // capacity"). Default matches the common desktop-concurrency ceiling.
+//
+// These three package-level vars are set ONCE at startup from serve.go and
+// never mutated at runtime. Tests that mutate them do so with t.Cleanup() to
+// restore. A future refactor can promote them to Router fields if parallel
+// test isolation becomes a blocker (today they're effectively immutable
+// after bootstrap).
 var CapacityLimit = 10
 
 // LocalNodeID identifies the local node. When set, FindCapableAgent prefers

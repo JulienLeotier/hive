@@ -9,6 +9,10 @@ import (
 // These handlers back the Svelte dashboard pages. Each is a read-only list
 // that joins the table with its most-useful adjacent data so the frontend
 // can render a single fetch per page.
+//
+// All list handlers funnel row iteration through scanAll so a bad scan is
+// logged instead of silently discarded — which hid data corruption in the
+// previous copy-pasted implementation.
 
 func (s *Server) handleListWorkflows(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
@@ -23,7 +27,6 @@ func (s *Server) handleListWorkflows(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "QUERY_FAILED", err.Error())
 		return
 	}
-	defer rows.Close()
 	type row struct {
 		ID        string `json:"id"`
 		Name      string `json:"name"`
@@ -31,12 +34,14 @@ func (s *Server) handleListWorkflows(w http.ResponseWriter, r *http.Request) {
 		CreatedAt string `json:"created_at"`
 	}
 	var out []row
-	for rows.Next() {
+	scanAll(rows, "workflows", func() error {
 		var v row
-		if err := rows.Scan(&v.ID, &v.Name, &v.Status, &v.CreatedAt); err == nil {
-			out = append(out, v)
+		if err := rows.Scan(&v.ID, &v.Name, &v.Status, &v.CreatedAt); err != nil {
+			return err
 		}
-	}
+		out = append(out, v)
+		return nil
+	})
 	writeJSON(w, out)
 }
 
@@ -59,7 +64,6 @@ func (s *Server) handleListKnowledge(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "QUERY_FAILED", err.Error())
 		return
 	}
-	defer rows.Close()
 	type entry struct {
 		ID        int64  `json:"id"`
 		TaskType  string `json:"task_type"`
@@ -69,12 +73,14 @@ func (s *Server) handleListKnowledge(w http.ResponseWriter, r *http.Request) {
 		CreatedAt string `json:"created_at"`
 	}
 	var out []entry
-	for rows.Next() {
+	scanAll(rows, "knowledge", func() error {
 		var e entry
-		if err := rows.Scan(&e.ID, &e.TaskType, &e.Approach, &e.Outcome, &e.Context, &e.CreatedAt); err == nil {
-			out = append(out, e)
+		if err := rows.Scan(&e.ID, &e.TaskType, &e.Approach, &e.Outcome, &e.Context, &e.CreatedAt); err != nil {
+			return err
 		}
-	}
+		out = append(out, e)
+		return nil
+	})
 	writeJSON(w, out)
 }
 
@@ -90,7 +96,6 @@ func (s *Server) handleListDialogs(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "QUERY_FAILED", err.Error())
 		return
 	}
-	defer rows.Close()
 	type thread struct {
 		ID           string `json:"id"`
 		Initiator    string `json:"initiator"`
@@ -101,12 +106,14 @@ func (s *Server) handleListDialogs(w http.ResponseWriter, r *http.Request) {
 		CreatedAt    string `json:"created_at"`
 	}
 	var out []thread
-	for rows.Next() {
+	scanAll(rows, "dialog_threads", func() error {
 		var t thread
-		if err := rows.Scan(&t.ID, &t.Initiator, &t.Participant, &t.Topic, &t.Status, &t.MessageCount, &t.CreatedAt); err == nil {
-			out = append(out, t)
+		if err := rows.Scan(&t.ID, &t.Initiator, &t.Participant, &t.Topic, &t.Status, &t.MessageCount, &t.CreatedAt); err != nil {
+			return err
 		}
-	}
+		out = append(out, t)
+		return nil
+	})
 	writeJSON(w, out)
 }
 
@@ -118,7 +125,6 @@ func (s *Server) handleListFederation(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "QUERY_FAILED", err.Error())
 		return
 	}
-	defer rows.Close()
 	type link struct {
 		Name          string `json:"name"`
 		URL           string `json:"url"`
@@ -127,12 +133,14 @@ func (s *Server) handleListFederation(w http.ResponseWriter, r *http.Request) {
 		LastHeartbeat string `json:"last_heartbeat"`
 	}
 	var out []link
-	for rows.Next() {
+	scanAll(rows, "federation_links", func() error {
 		var l link
-		if err := rows.Scan(&l.Name, &l.URL, &l.Status, &l.SharedCaps, &l.LastHeartbeat); err == nil {
-			out = append(out, l)
+		if err := rows.Scan(&l.Name, &l.URL, &l.Status, &l.SharedCaps, &l.LastHeartbeat); err != nil {
+			return err
 		}
-	}
+		out = append(out, l)
+		return nil
+	})
 	writeJSON(w, out)
 }
 
@@ -156,7 +164,6 @@ func (s *Server) handleListAuctions(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "QUERY_FAILED", err.Error())
 		return
 	}
-	defer rows.Close()
 	type auction struct {
 		ID       string `json:"id"`
 		TaskID   string `json:"task_id"`
@@ -167,12 +174,14 @@ func (s *Server) handleListAuctions(w http.ResponseWriter, r *http.Request) {
 		Opened   string `json:"opened_at"`
 	}
 	var out []auction
-	for rows.Next() {
+	scanAll(rows, "auctions", func() error {
 		var a auction
-		if err := rows.Scan(&a.ID, &a.TaskID, &a.Strategy, &a.Status, &a.Winner, &a.Bids, &a.Opened); err == nil {
-			out = append(out, a)
+		if err := rows.Scan(&a.ID, &a.TaskID, &a.Strategy, &a.Status, &a.Winner, &a.Bids, &a.Opened); err != nil {
+			return err
 		}
-	}
+		out = append(out, a)
+		return nil
+	})
 	writeJSON(w, out)
 }
 
@@ -186,7 +195,6 @@ func (s *Server) handleListOptimizations(w http.ResponseWriter, r *http.Request)
 		writeError(w, http.StatusInternalServerError, "QUERY_FAILED", err.Error())
 		return
 	}
-	defer rows.Close()
 	type opt struct {
 		ID        string  `json:"id"`
 		Setting   string  `json:"setting"`
@@ -196,12 +204,14 @@ func (s *Server) handleListOptimizations(w http.ResponseWriter, r *http.Request)
 		AppliedAt string  `json:"applied_at"`
 	}
 	var out []opt
-	for rows.Next() {
+	scanAll(rows, "optimizations", func() error {
 		var o opt
-		if err := rows.Scan(&o.ID, &o.Setting, &o.OldValue, &o.NewValue, &o.Rationale, &o.AppliedAt); err == nil {
-			out = append(out, o)
+		if err := rows.Scan(&o.ID, &o.Setting, &o.OldValue, &o.NewValue, &o.Rationale, &o.AppliedAt); err != nil {
+			return err
 		}
-	}
+		out = append(out, o)
+		return nil
+	})
 	writeJSON(w, out)
 }
 
@@ -229,7 +239,6 @@ func (s *Server) handleListAudit(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "QUERY_FAILED", err.Error())
 		return
 	}
-	defer rows.Close()
 	type entry struct {
 		ID        int64  `json:"id"`
 		Action    string `json:"action"`
@@ -239,12 +248,14 @@ func (s *Server) handleListAudit(w http.ResponseWriter, r *http.Request) {
 		CreatedAt string `json:"created_at"`
 	}
 	var out []entry
-	for rows.Next() {
+	scanAll(rows, "audit_log", func() error {
 		var e entry
-		if err := rows.Scan(&e.ID, &e.Action, &e.Actor, &e.Resource, &e.Detail, &e.CreatedAt); err == nil {
-			out = append(out, e)
+		if err := rows.Scan(&e.ID, &e.Action, &e.Actor, &e.Resource, &e.Detail, &e.CreatedAt); err != nil {
+			return err
 		}
-	}
+		out = append(out, e)
+		return nil
+	})
 	writeJSON(w, out)
 }
 
@@ -271,14 +282,17 @@ func (s *Server) handleListTenants(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "QUERY_FAILED", err.Error())
 		return
 	}
-	defer rows.Close()
 	var out []string
-	for rows.Next() {
+	scanAll(rows, "tenants", func() error {
 		var id string
-		if err := rows.Scan(&id); err == nil && id != "" {
+		if err := rows.Scan(&id); err != nil {
+			return err
+		}
+		if id != "" {
 			out = append(out, id)
 		}
-	}
+		return nil
+	})
 	writeJSON(w, out)
 }
 
@@ -293,7 +307,6 @@ func (s *Server) handleListCluster(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "QUERY_FAILED", err.Error())
 		return
 	}
-	defer rows.Close()
 	type member struct {
 		NodeID        string `json:"node_id"`
 		Hostname      string `json:"hostname"`
@@ -302,12 +315,14 @@ func (s *Server) handleListCluster(w http.ResponseWriter, r *http.Request) {
 		LastHeartbeat string `json:"last_heartbeat"`
 	}
 	var out []member
-	for rows.Next() {
+	scanAll(rows, "cluster_members", func() error {
 		var m member
-		if err := rows.Scan(&m.NodeID, &m.Hostname, &m.Address, &m.Status, &m.LastHeartbeat); err == nil {
-			out = append(out, m)
+		if err := rows.Scan(&m.NodeID, &m.Hostname, &m.Address, &m.Status, &m.LastHeartbeat); err != nil {
+			return err
 		}
-	}
+		out = append(out, m)
+		return nil
+	})
 	writeJSON(w, out)
 }
 
@@ -322,7 +337,6 @@ func (s *Server) handleListTrustHistory(w http.ResponseWriter, r *http.Request) 
 		writeError(w, http.StatusInternalServerError, "QUERY_FAILED", err.Error())
 		return
 	}
-	defer rows.Close()
 	type entry struct {
 		ID        string `json:"id"`
 		Agent     string `json:"agent"`
@@ -333,12 +347,13 @@ func (s *Server) handleListTrustHistory(w http.ResponseWriter, r *http.Request) 
 		CreatedAt string `json:"created_at"`
 	}
 	var out []entry
-	for rows.Next() {
+	scanAll(rows, "trust_history", func() error {
 		var e entry
-		if err := rows.Scan(&e.ID, &e.Agent, &e.OldLevel, &e.NewLevel, &e.Reason, &e.Criteria, &e.CreatedAt); err == nil {
-			out = append(out, e)
+		if err := rows.Scan(&e.ID, &e.Agent, &e.OldLevel, &e.NewLevel, &e.Reason, &e.Criteria, &e.CreatedAt); err != nil {
+			return err
 		}
-	}
+		out = append(out, e)
+		return nil
+	})
 	writeJSON(w, out)
 }
-

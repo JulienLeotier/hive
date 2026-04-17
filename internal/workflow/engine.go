@@ -349,7 +349,7 @@ func (e *Engine) executeLevel(ctx context.Context, workflowID string, level []Ta
 			result.mu.Lock()
 			defer result.mu.Unlock()
 
-			if taskResult.Status == "completed" {
+			if taskResult.Status == task.StatusCompleted {
 				outputJSON, _ := json.Marshal(taskResult.Output)
 				e.taskStore.Complete(ctx, p.taskID, string(outputJSON))
 				completed, _ := e.taskStore.GetByID(ctx, p.taskID)
