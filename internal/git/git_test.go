@@ -232,6 +232,66 @@ func TestEnsureInitialCommitCreatesOne(t *testing.T) {
 	}
 }
 
+func TestValidateWorkdirRejectsPersonalDirs(t *testing.T) {
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		t.Skip("no home")
+	}
+	for _, sub := range []string{"Documents", "Downloads", "Desktop", "Pictures", "Music", "Movies", "Library", ".config", ".ssh"} {
+		p := filepath.Join(home, sub)
+		if err := validateWorkdir(p); err == nil {
+			t.Errorf("validateWorkdir(%q) accepted — attendu un refus (dossier personnel)", p)
+		}
+	}
+}
+
+func TestValidateWorkdirAcceptsSubdirOfPersonal(t *testing.T) {
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		t.Skip("no home")
+	}
+	// ~/Documents/mon-app doit être ACCEPTÉ (sous-dossier dédié).
+	p := filepath.Join(home, "Documents", "mon-app")
+	if err := validateWorkdir(p); err != nil {
+		t.Errorf("validateWorkdir(%q) a refusé un sous-dossier dédié : %v", p, err)
+	}
+}
+
+func TestAssertSafeForGitInitRejectsDirtyDir(t *testing.T) {
+	dir := t.TempDir()
+	// Simule un dossier perso avec des fichiers non-Hive.
+	for _, f := range []string{"photo.jpg", "resume.pdf", "random.txt"} {
+		if err := os.WriteFile(filepath.Join(dir, f), []byte("x"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	err := assertSafeForGitInit(dir)
+	if err == nil {
+		t.Fatal("assertSafeForGitInit a accepté un dossier avec photo.jpg — attendu refus")
+	}
+	if !strings.Contains(err.Error(), "photo.jpg") && !strings.Contains(err.Error(), "resume.pdf") && !strings.Contains(err.Error(), "random.txt") {
+		t.Errorf("message d'erreur ne nomme pas le fichier fautif : %v", err)
+	}
+}
+
+func TestAssertSafeForGitInitAllowsScaffold(t *testing.T) {
+	dir := t.TempDir()
+	// Empty dir
+	if err := assertSafeForGitInit(dir); err != nil {
+		t.Errorf("empty dir refusé: %v", err)
+	}
+	// Scaffold-only
+	if err := os.WriteFile(filepath.Join(dir, "README.md"), []byte("# hello"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(dir, "_bmad-output"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := assertSafeForGitInit(dir); err != nil {
+		t.Errorf("scaffold-only refusé: %v", err)
+	}
+}
+
 func TestEnsureInitialCommitIdempotent(t *testing.T) {
 	dir := t.TempDir()
 	if err := runIn(context.Background(), dir, "git", "init", "-b", "main"); err != nil {

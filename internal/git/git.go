@@ -116,6 +116,12 @@ func CreateRepo(ctx context.Context, name, workdir, visibility string) (string, 
 	}
 	// Init local si pas déjà un repo.
 	if _, err := os.Stat(filepath.Join(workdir, ".git")); err != nil {
+		// Avant d'init + add -A, on vérifie que le dossier est soit vide
+		// soit ne contient QUE notre scaffold (README + .bmad-output).
+		// Sinon on pourrait committer des fichiers personnels sans rapport.
+		if err := assertSafeForGitInit(workdir); err != nil {
+			return "", err
+		}
 		if err := runIn(ctx, workdir, "git", "init", "-b", "main"); err != nil {
 			return "", err
 		}
@@ -508,10 +514,15 @@ func EnsureStoryPushed(ctx context.Context, workdir, branch, storyTitle string) 
 }
 
 // validateWorkdir refuse les workdir qui sont manifestement dangereux :
-// le home de l'user, les racines systèmes, les chemins trop courts.
-// Hive init + commit dans le home d'un user effacerait toute sa
-// config locale si le user continue à bosser ailleurs. Mieux vaut
-// lever une erreur claire tôt.
+// le home de l'user, les racines systèmes, les dossiers "personnels"
+// usuels (Documents, Downloads, Desktop, Pictures...) où l'user a
+// probablement plein de fichiers sans rapport que Hive n'a aucune
+// raison de `git add -A`.
+//
+// Incident qui a motivé ces garde-fous : un workdir=/Users/X/Documents
+// a causé un git init + commit de 86 fichiers personnels (photos,
+// PDFs, .DS_Store) et un push sur GitHub via gh repo create --push.
+// Le repo était privé — mais le risque est sérieux et irréversible.
 func validateWorkdir(workdir string) error {
 	clean := filepath.Clean(workdir)
 	if !filepath.IsAbs(clean) {
@@ -524,10 +535,55 @@ func validateWorkdir(workdir string) error {
 	if home != "" && clean == home {
 		return fmt.Errorf("git: workdir %q est ton home directory — crée un sous-dossier dédié au projet (ex. %s/projets/<nom>)", clean, home)
 	}
+	// Sous-dossiers personnels macOS/Linux : on refuse le dossier lui-
+	// même mais on accepte un sous-dossier dédié (ex. ~/Documents/my-app).
+	if home != "" {
+		for _, personalDir := range []string{"Documents", "Downloads", "Desktop", "Pictures", "Music", "Movies", "Videos", "Library", ".config", ".local", ".ssh", ".gnupg"} {
+			full := filepath.Join(home, personalDir)
+			if clean == full {
+				return fmt.Errorf("git: workdir %q contient probablement des fichiers personnels — crée un sous-dossier dédié (ex. %s/<nom-du-projet>)", clean, full)
+			}
+		}
+	}
 	// Racines / arborescences systèmes à bannir explicitement.
 	for _, forbidden := range []string{"/", "/Users", "/home", "/etc", "/var", "/tmp", "/usr", "/bin", "/sbin", "/opt", "/private", "/System", "/Library", "/Applications"} {
 		if clean == forbidden {
 			return fmt.Errorf("git: workdir %q est une racine système, choisis un sous-dossier dédié", clean)
+		}
+	}
+	return nil
+}
+
+// assertSafeForGitInit refuse de git init sur un workdir qui contient
+// des fichiers qui n'ont manifestement pas été créés par Hive. Un dossier
+// vide est OK. Un dossier qui ne contient que README.md / _bmad-output
+// est OK (scaffold Hive légitime). Tout le reste déclenche un refus.
+//
+// Prévient le scénario où l'operateur saisit un path pointant sur un
+// dossier personnel (Documents, Desktop) qui aurait passé l'allowlist
+// ; le check contenu est un garde-fou de secours.
+func assertSafeForGitInit(workdir string) error {
+	entries, err := os.ReadDir(workdir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil // sera créé par os.MkdirAll plus haut
+		}
+		return fmt.Errorf("git: lecture workdir: %w", err)
+	}
+	safe := map[string]bool{
+		"README.md":      true,
+		"_bmad-output":   true,
+		"_bmad":          true,
+		".claude":        true,
+		".bmad":          true,
+		".git":           true,
+		".gitignore":     true,
+		"LICENSE":        true,
+		".DS_Store":      true, // tolérance macOS
+	}
+	for _, e := range entries {
+		if !safe[e.Name()] {
+			return fmt.Errorf("git: workdir %q contient %q qui n'est pas un artefact Hive — probablement un dossier personnel, refus du git init pour éviter de committer des fichiers sans rapport. Crée un sous-dossier vide dédié au projet", workdir, e.Name())
 		}
 	}
 	return nil
