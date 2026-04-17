@@ -225,6 +225,18 @@ func (s *Server) routes() {
 	// connectivity/capabilities after registration.
 	s.mux.Handle("POST /api/v1/agents/{name}/invoke", auth.RBACMiddleware("agents", "write")(http.HandlerFunc(s.handleInvokeAgent)))
 
+	// User directory writes — admin-only. Tenants are implicit: they come
+	// into existence when a user/agent/task references a new tenant_id, so
+	// there's no separate POST /tenants endpoint — just pick the tenant
+	// when creating the user.
+	s.mux.Handle("POST /api/v1/users", auth.RBACMiddleware("system", "write")(http.HandlerFunc(s.handleCreateUser)))
+	s.mux.Handle("DELETE /api/v1/users/{subject}", auth.RBACMiddleware("system", "write")(http.HandlerFunc(s.handleDeleteUser)))
+
+	// Workflow management: create from YAML, delete by name. GET already
+	// exists for read. Used by the dashboard YAML editor.
+	s.mux.Handle("POST /api/v1/workflows", auth.RBACMiddleware("workflows", "write")(http.HandlerFunc(s.handleCreateWorkflow)))
+	s.mux.Handle("DELETE /api/v1/workflows/{name}", auth.RBACMiddleware("workflows", "write")(http.HandlerFunc(s.handleDeleteWorkflow)))
+
 	// First-run setup. Two unauthenticated endpoints that let a brand-new
 	// deployment bootstrap an admin user + API key before any OIDC/RBAC
 	// gating can be exercised. Both reject themselves once the hive has
@@ -303,6 +315,132 @@ func (s *Server) handleSetupBootstrap(w http.ResponseWriter, r *http.Request) {
 		"role":    string(auth.RoleAdmin),
 		"api_key": rawKey,
 	})
+}
+
+// handleCreateUser adds a user to the RBAC directory. Body: {subject, role,
+// tenant_id}. Existing subjects are updated (Upsert semantics).
+func (s *Server) handleCreateUser(w http.ResponseWriter, r *http.Request) {
+	if s.users == nil {
+		writeError(w, http.StatusServiceUnavailable, "NO_USER_STORE",
+			"user directory is not configured on this node")
+		return
+	}
+	var body struct {
+		Subject  string `json:"subject"`
+		Role     string `json:"role"`
+		TenantID string `json:"tenant_id"`
+	}
+	if err := json.NewDecoder(io.LimitReader(r.Body, 1<<14)).Decode(&body); err != nil {
+		writeError(w, http.StatusBadRequest, "BAD_REQUEST", err.Error())
+		return
+	}
+	if body.Subject == "" || body.Role == "" {
+		writeError(w, http.StatusBadRequest, "MISSING_FIELDS",
+			"subject and role are required")
+		return
+	}
+	if !auth.IsValidRole(body.Role) {
+		writeError(w, http.StatusBadRequest, "INVALID_ROLE",
+			"role must be one of admin, operator, viewer")
+		return
+	}
+	if err := s.users.Upsert(r.Context(), auth.UserRecord{
+		Subject:  body.Subject,
+		Role:     auth.Role(body.Role),
+		TenantID: body.TenantID,
+	}); err != nil {
+		writeError(w, http.StatusInternalServerError, "UPSERT_FAILED", err.Error())
+		return
+	}
+	w.WriteHeader(http.StatusCreated)
+	writeJSON(w, map[string]string{
+		"subject": body.Subject, "role": body.Role, "tenant_id": body.TenantID,
+	})
+}
+
+// handleDeleteUser removes a user from the RBAC directory. API keys minted
+// for that subject remain — they just resolve to no role (viewer fallback).
+// Callers who want to fully revoke access should also drop the API key.
+func (s *Server) handleDeleteUser(w http.ResponseWriter, r *http.Request) {
+	if s.users == nil {
+		writeError(w, http.StatusServiceUnavailable, "NO_USER_STORE",
+			"user directory is not configured on this node")
+		return
+	}
+	subject := r.PathValue("subject")
+	if subject == "" {
+		writeError(w, http.StatusBadRequest, "MISSING_SUBJECT", "subject is required")
+		return
+	}
+	if err := s.users.Delete(r.Context(), subject); err != nil {
+		writeError(w, http.StatusInternalServerError, "DELETE_FAILED", err.Error())
+		return
+	}
+	writeJSON(w, map[string]string{"status": "removed", "subject": subject})
+}
+
+// handleCreateWorkflow accepts a YAML body and persists the workflow record.
+// The workflow starts in the "idle" state — callers still need to fire it
+// via POST /workflows/{name}/runs. Re-submitting the same name updates the
+// stored config.
+func (s *Server) handleCreateWorkflow(w http.ResponseWriter, r *http.Request) {
+	body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "READ_BODY", err.Error())
+		return
+	}
+	if len(body) == 0 {
+		writeError(w, http.StatusBadRequest, "EMPTY_BODY", "workflow YAML body is required")
+		return
+	}
+	cfg, err := workflow.Parse(body)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "PARSE_FAILED", err.Error())
+		return
+	}
+	// Re-submitting the same name should replace, not duplicate. workflow.Store
+	// doesn't have an upsert method, so we delete-then-create — acceptable
+	// here because workflow rows are append-only run records; dropping the
+	// existing row just clears the "idle" placeholder if one exists.
+	_, _ = s.db().ExecContext(r.Context(),
+		`DELETE FROM workflows WHERE name = ? AND status = 'idle'`, cfg.Name)
+	wfStore := workflow.NewStore(s.db(), s.eventBus)
+	wf, err := wfStore.Create(r.Context(), cfg.Name, cfg)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "CREATE_FAILED", err.Error())
+		return
+	}
+	// If a trigger manager is wired and the workflow declares a schedule or
+	// webhook trigger, register it live — otherwise the config sits in the
+	// DB and only runs when someone POSTs to /runs.
+	if s.triggerMgr != nil && cfg.Trigger != nil {
+		if err := s.triggerMgr.Register(r.Context(), cfg); err != nil {
+			slog.Warn("workflow trigger register failed", "name", cfg.Name, "error", err)
+		}
+	}
+	w.WriteHeader(http.StatusCreated)
+	writeJSON(w, wf)
+}
+
+// handleDeleteWorkflow removes a workflow by name. Does NOT cancel in-flight
+// runs — those carry on to completion so their task history stays intact.
+func (s *Server) handleDeleteWorkflow(w http.ResponseWriter, r *http.Request) {
+	name := r.PathValue("name")
+	if name == "" {
+		writeError(w, http.StatusBadRequest, "MISSING_NAME", "workflow name is required")
+		return
+	}
+	res, err := s.db().ExecContext(r.Context(), `DELETE FROM workflows WHERE name = ?`, name)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "DELETE_FAILED", err.Error())
+		return
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		writeError(w, http.StatusNotFound, "NOT_FOUND", "workflow not found")
+		return
+	}
+	writeJSON(w, map[string]any{"status": "removed", "name": name, "rows": n})
 }
 
 // handleListWebhooks returns every configured webhook. URLs are decrypted on
