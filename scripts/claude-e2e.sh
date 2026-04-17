@@ -15,7 +15,11 @@
 #   - Test parallel projects (BMAD is single-project-at-a-time)
 #
 # Env:
-#   HIVE_E2E_TIMEOUT  — max seconds to wait for the build (default 1200)
+#   HIVE_E2E_TIMEOUT  — max seconds to wait for the build (default 7200 = 2h).
+#                       Real BMAD with real Claude takes ~45-90min for
+#                       planning (13 skills × 3-10min each) + 20-60min
+#                       per story in dev/review. 2h is the minimum
+#                       realistic ceiling for a mini project to ship.
 #   HIVE_E2E_PORT     — port to bind hive to (default 18233, random-ish)
 #   HIVE_E2E_KEEP     — 1 to keep the temp hive binary + workdir after exit
 #
@@ -28,7 +32,7 @@ set -euo pipefail
 
 HERE="$(cd "$(dirname "$0")/.." && pwd)"
 PORT="${HIVE_E2E_PORT:-18233}"
-TIMEOUT="${HIVE_E2E_TIMEOUT:-1200}"
+TIMEOUT="${HIVE_E2E_TIMEOUT:-7200}"
 TMP="$(mktemp -d -t hive-e2e-XXXXXX)"
 WORKDIR="$TMP/workdir"
 STATE="$TMP/state"
