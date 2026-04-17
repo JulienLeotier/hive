@@ -7,33 +7,26 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
-	"path/filepath"
 	"syscall"
 	"time"
 
-	"github.com/JulienLeotier/hive/internal/adapter"
-	"github.com/JulienLeotier/hive/internal/agent"
 	"github.com/JulienLeotier/hive/internal/api"
-	"github.com/JulienLeotier/hive/internal/auth"
-	"github.com/JulienLeotier/hive/internal/autonomy"
 	"github.com/JulienLeotier/hive/internal/config"
-	"github.com/JulienLeotier/hive/internal/cost"
 	"github.com/JulienLeotier/hive/internal/dashboard"
 	"github.com/JulienLeotier/hive/internal/devloop"
 	"github.com/JulienLeotier/hive/internal/event"
 	"github.com/JulienLeotier/hive/internal/intake"
-	"github.com/JulienLeotier/hive/internal/knowledge"
 	"github.com/JulienLeotier/hive/internal/project"
-	"github.com/JulienLeotier/hive/internal/resilience"
 	"github.com/JulienLeotier/hive/internal/storage"
-	"github.com/JulienLeotier/hive/internal/task"
 	"github.com/JulienLeotier/hive/internal/tracing"
-	"github.com/JulienLeotier/hive/internal/workflow"
 	"github.com/JulienLeotier/hive/internal/ws"
 	"github.com/spf13/cobra"
 	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 )
 
+// serveCmd starts the BMAD product factory: storage, event bus, devloop
+// supervisor, HTTP API + dashboard, WebSocket hub. Single binary, single
+// process, single user — no auth, no cluster, no federation.
 var serveCmd = &cobra.Command{
 	Use:   "serve",
 	Short: "Start the Hive API server and dashboard",
@@ -43,21 +36,8 @@ var serveCmd = &cobra.Command{
 			return err
 		}
 
-		// Story 22.3: apply cluster routing config.
-		if cfg.Cluster != nil {
-			if cfg.Cluster.NodeID != "" {
-				task.LocalNodeID = cfg.Cluster.NodeID
-				agent.LocalNodeID = cfg.Cluster.NodeID
-			}
-			if cfg.Cluster.Routing != "" {
-				task.RoutingMode = cfg.Cluster.Routing
-			}
-		}
-
-		// OpenTelemetry: initialise before anything else so HTTP/adapter
-		// instrumentation has a TracerProvider to register with. No-op when
-		// observability.traces is absent and OTEL_EXPORTER_OTLP_ENDPOINT is
-		// unset, so dev deployments pay nothing.
+		// OpenTelemetry: initialise before the HTTP handler so otelhttp
+		// has a TracerProvider to register with. No-op when unconfigured.
 		traceShutdown, err := tracing.Setup(context.Background(), buildTracingConfig(cfg.Observability))
 		if err != nil {
 			slog.Warn("tracing setup failed — continuing without traces", "error", err)
@@ -69,7 +49,6 @@ var serveCmd = &cobra.Command{
 			_ = traceShutdown(ctx)
 		}()
 
-		// Story 22.1: dispatch storage backend from config.
 		store, err := storage.Open2(storage.Backend{
 			Type:        cfg.Storage,
 			DataDir:     cfg.DataDir,
@@ -80,103 +59,27 @@ var serveCmd = &cobra.Command{
 		}
 		defer store.Close()
 
-		// Story 15.2/22.2: switch to NATS-bridged bus when configured. Local
-		// SQLite bus remains the source of truth for durable query while NATS
-		// carries the real-time fan-out for peer nodes.
-		var bus *event.Bus
-		if cfg.EventBus != nil && cfg.EventBus.Backend == "nats" && cfg.EventBus.NATSURL != "" {
-			nc, err := event.NewNATSConnFromURL(cfg.EventBus.NATSURL)
-			if err != nil {
-				return fmt.Errorf("connecting to nats: %w", err)
-			}
-			subject := cfg.EventBus.Subject
-			if subject == "" {
-				subject = "hive.events"
-			}
-			natsBus, err := event.NewNATSBus(nc, event.NATSConfig{Subject: subject, MaxHistory: 1000})
-			if err != nil {
-				return fmt.Errorf("initialising nats bus: %w", err)
-			}
-			bus = event.NewBus(store.DB)
-			bus.Subscribe("*", func(e event.Event) {
-				_, _ = natsBus.Publish(context.Background(), e.Type, e.Source, e.Payload)
-			})
-			slog.Info("event bus: nats bridged", "url", cfg.EventBus.NATSURL, "subject", subject)
-		} else {
-			bus = event.NewBus(store.DB)
-		}
+		bus := event.NewBus(store.DB)
 
-		// Story 22.2: wire agent manager to publish lifecycle events. When a
-		// NATS bus is configured this fan-out reaches peer nodes automatically.
-		mgr := agent.NewManager(store.DB).WithPublisher(bus.PublishErr)
-
-		// Story 5.1 AC: breaker threshold + reset are configurable.
-		breakerCfg := resilience.DefaultBreakerConfig()
-		if cfg.Breaker != nil {
-			if cfg.Breaker.Threshold > 0 {
-				breakerCfg.Threshold = cfg.Breaker.Threshold
-			}
-			if cfg.Breaker.ResetTimeoutSeconds > 0 {
-				breakerCfg.ResetTimeout = time.Duration(cfg.Breaker.ResetTimeoutSeconds) * time.Second
-			}
-		}
-		breakers := resilience.NewBreakerRegistry(breakerCfg)
-
-		// Local agent router — BMAD fleet resolves task types to the agents
-		// running on this machine. The federation-backed fallback was
-		// removed in the BMAD cleanup; single-user local deployments don't
-		// need cross-hive routing.
-		router := task.NewRouter(store.DB).WithBus(bus)
-
-		// Auto-isolate agents and failover their tasks when the breaker opens.
-		watcher := agent.NewHealthWatcher(mgr, router, bus)
-		breakers.OnStateChange(watcher.Hook())
-
-		// Periodic checkpoint supervisor — reassigns tasks whose checkpoint has gone stale.
-		// Story 2.6 AC: interval is configurable.
-		taskStore := task.NewStore(store.DB, bus)
+		// Background retention sweeps (events, audit) keep the DB bounded.
 		supervisorCtx, supervisorCancel := context.WithCancel(context.Background())
 		defer supervisorCancel()
-		interval := 30 * time.Second
-		maxAge := 5 * time.Minute
-		if cfg.Checkpoint != nil {
-			if cfg.Checkpoint.IntervalSeconds > 0 {
-				interval = time.Duration(cfg.Checkpoint.IntervalSeconds) * time.Second
-			}
-			if cfg.Checkpoint.MaxAgeSeconds > 0 {
-				maxAge = time.Duration(cfg.Checkpoint.MaxAgeSeconds) * time.Second
-			}
-		}
-		supervisor := task.NewCheckpointSupervisor(taskStore, router, interval, maxAge)
-		supervisor.Start(supervisorCtx)
-		defer supervisor.Stop()
-
-		// Retention janitor — deletes old rows from append-only tables on a
-		// timer. Safe to always start; tables stay within bounds even on
-		// fresh deployments, and config.retention can tune or disable each
-		// window. Uses supervisorCtx so it stops with the server.
 		{
 			r := storage.RetentionConfig{Interval: time.Hour}
 			if cfg.Retention != nil {
 				r = storage.RetentionConfig{
-					EventsDays:         cfg.Retention.EventsMaxAgeDays,
-					CompletedTasksDays: cfg.Retention.CompletedTasksMaxAgeDays,
-					CostsDays:          cfg.Retention.CostsMaxAgeDays,
-					AuditDays:          cfg.Retention.AuditMaxAgeDays,
-					Interval:           time.Duration(cfg.Retention.IntervalMinutes) * time.Minute,
+					EventsDays: cfg.Retention.EventsMaxAgeDays,
+					AuditDays:  cfg.Retention.AuditMaxAgeDays,
+					Interval:   time.Duration(cfg.Retention.IntervalMinutes) * time.Minute,
 				}
 			}
 			storage.RunRetention(supervisorCtx, store.DB, r)
 		}
 
-		// Cost tracker — keeps per-project/per-agent token spend visible.
-		_ = cost.NewTracker(store.DB).WithBus(bus.PublishErr)
-
-		// BMAD dev/review loop. Polls for `building` projects and advances
-		// one story per project per tick until every AC passes. Honours
-		// HIVE_DEVLOOP_INTERVAL=<duration> if ops wants a faster cadence
-		// for CI / demos; HIVE_DEV_AGENT=scripted forces the deterministic
-		// backend.
+		// BMAD dev/review loop. Polls for `building` projects and
+		// advances one story per tick until every AC passes. Honours:
+		//   HIVE_DEV_AGENT=scripted        — force scripted agents
+		//   HIVE_DEVLOOP_INTERVAL=<dur>    — override default 10s tick
 		devAgent := devloop.NewClaudeCodeDev()
 		reviewerAgent := devloop.NewClaudeCodeReviewer()
 		if os.Getenv("HIVE_DEV_AGENT") == "scripted" {
@@ -195,184 +98,41 @@ var serveCmd = &cobra.Command{
 		slog.Info("devloop supervisor armed",
 			"dev", devAgent.Name(), "reviewer", reviewerAgent.Name(), "interval", loopInterval)
 
-		// Story 10.1 + 10.3: auto-record knowledge, configurable max-age.
-		// Story 16.2: opt-in OpenAI embeddings when knowledge.embedding is set,
-		// with HashingEmbedder as the always-present fallback.
-		kStore := knowledge.NewStore(store.DB).WithEmbedder(buildEmbedder(cfg.Knowledge))
-		if cfg.Knowledge != nil && cfg.Knowledge.MaxAgeDays > 0 {
-			kStore.WithMaxAge(time.Duration(cfg.Knowledge.MaxAgeDays) * 24 * time.Hour)
-		}
-		knowledge.NewAutoRecorder(store.DB, kStore).Attach(bus)
-
-
-		// Epic 4: autonomy. Wake-up cycles drive agent self-assignment of
-		// pending tasks, busywork suppression, and decision logging.
-		// Without this block, configured agents never pick up pending
-		// tasks on their own — they only run when explicitly invoked by a
-		// workflow.
-		observer := autonomy.NewObserver(store.DB)
-		idleTracker := autonomy.NewIdleTracker(3)
-		wakeupHandler := autonomy.NewDefaultHandler(observer, router, idleTracker, bus)
-		scheduler := autonomy.NewScheduler(wakeupHandler.Handle)
-		// Register every currently healthy agent. Future agents added via
-		// CLI during runtime will pick up wake-up cycles on the next
-		// server restart (a future story can add live subscription).
-		{
-			agents, err := mgr.List(supervisorCtx)
-			if err != nil {
-				slog.Warn("autonomy: listing agents for scheduler failed", "error", err)
-			} else {
-				interval := 30 * time.Second
-				if cfg.Autonomy != nil && cfg.Autonomy.HeartbeatSeconds > 0 {
-					interval = time.Duration(cfg.Autonomy.HeartbeatSeconds) * time.Second
-				}
-				for _, a := range agents {
-					if a.HealthStatus == healthyStatus {
-						scheduler.Register(a.Name, interval)
-					}
-				}
-			}
-		}
-		// Story 4.2 AC: "heartbeats can also be triggered by events".
-		// Trigger an immediate wake-up when an agent event arrives so the
-		// system reacts faster than the polling interval.
-		bus.Subscribe("agent.registered", func(e event.Event) {
-			scheduler.TriggerWakeUp(e.Source)
-		})
-		bus.Subscribe("task.unroutable", func(e event.Event) {
-			// Best-effort: nudge every healthy agent to re-evaluate, since
-			// we don't know which one might now be capable.
-			agents, _ := mgr.List(supervisorCtx)
-			for _, a := range agents {
-				if a.HealthStatus == healthyStatus {
-					scheduler.TriggerWakeUp(a.Name)
-				}
-			}
-		})
-		defer scheduler.StopAll()
-
-		// YAML workflow triggers kept for dev-mode batch jobs — BMAD itself
-		// doesn't use them, but the code stays because the scheduler +
-		// webhook-intake plumbing are reused by Phase 3's story worker.
-		wfStore := workflow.NewStore(store.DB, bus)
-		triggerMgr := workflow.NewTriggerManager(func(ctx context.Context, wfCfg *workflow.Config, payload workflow.TriggerPayload) error {
-			engine := workflow.NewEngine(wfStore, taskStore, router, bus)
-			engine.WithAgentLookup(buildAgentLookup(mgr))
-			_, err := engine.Run(ctx, wfCfg)
-			return err
-		})
-		defer triggerMgr.Stop()
-		workflowsDir := filepath.Join(cfg.DataDir, "workflows")
-		if entries, err := os.ReadDir(workflowsDir); err == nil {
-			registered := 0
-			for _, e := range entries {
-				if e.IsDir() || (filepath.Ext(e.Name()) != ".yaml" && filepath.Ext(e.Name()) != ".yml") {
-					continue
-				}
-				wfPath := filepath.Join(workflowsDir, e.Name())
-				wfCfg, err := workflow.ParseFile(wfPath)
-				if err != nil {
-					slog.Warn("workflow parse failed", "file", wfPath, "error", err)
-					continue
-				}
-				if err := triggerMgr.Register(supervisorCtx, wfCfg); err != nil {
-					slog.Warn("workflow trigger register failed", "file", wfPath, "error", err)
-					continue
-				}
-				registered++
-			}
-			if registered > 0 {
-				slog.Info("workflow triggers armed", "dir", workflowsDir, "count", registered)
-			}
-		}
-
-		keyMgr := api.NewKeyManager(store.DB)
-		users := auth.NewUserStore(store.DB)
-
-		apiSrv := api.NewServer(mgr, bus, breakers, keyMgr).
-			WithUsers(users).
-			WithTriggerManager(triggerMgr).
+		apiSrv := api.NewServer(bus).
 			WithProjectStore(project.NewStore(store.DB)).
 			WithIntakeStore(intake.NewStore(store.DB))
 
 		// Pick up any projects that were mid-architect when the previous
-		// server process died. See Server.RecoverStuckPlanning — runs the
-		// Architect again in a detached goroutine so the UI unblocks.
+		// server process died. Re-runs runArchitectAsync in a detached
+		// goroutine so the UI unblocks without operator intervention.
 		if err := apiSrv.RecoverStuckPlanning(supervisorCtx); err != nil {
 			slog.Warn("architect crash-recovery sweep failed", "error", err)
 		}
 
-		// Story 21.1: wire OIDC provider if configured.
-		if cfg.OIDC != nil && cfg.OIDC.Issuer != "" {
-			provider, err := auth.NewOIDCProvider(context.Background(), auth.OIDCConfig{
-				Issuer:       cfg.OIDC.Issuer,
-				ClientID:     cfg.OIDC.ClientID,
-				ClientSecret: cfg.OIDC.ClientSecret,
-				RedirectURL:  cfg.OIDC.RedirectURL,
-				Scopes:       cfg.OIDC.Scopes,
-			})
-			if err != nil {
-				slog.Warn("oidc disabled — discovery failed", "error", err)
-			} else {
-				apiSrv.WithOIDC(provider)
-				slog.Info("oidc enabled", "issuer", cfg.OIDC.Issuer)
-			}
-		}
-
-		// WebSocket hub — broadcast events to dashboard clients
 		hub := ws.NewHub()
 		bus.Subscribe("*", func(e event.Event) {
 			hub.Broadcast(e)
 		})
 
 		mux := http.NewServeMux()
-
-		// Health endpoints — unauthenticated, container-probe shaped.
-		// /healthz: liveness, /readyz: DB reachable within 2s.
 		mux.Handle("/healthz", api.HealthHandler())
 		mux.Handle("/readyz", api.ReadyHandler(store.DB))
-
-		// Prometheus scrape endpoint — unauthenticated (standard scraper
-		// convention). Emits gauges + request counters + latency histogram.
-		// If you need auth, terminate TLS at an ingress and restrict by IP.
-		mux.Handle("/metrics", apiSrv.PromHandler())
-
-		// WebSocket endpoint — gated by the same auth policy as the REST API
-		// (API key or OIDC JWT). Token may ride in the Authorization header or
-		// as ?token= query param since browsers can't send headers on upgrade.
-		mux.Handle("/ws", api.Instrument("/ws", apiSrv.WSHandler(http.HandlerFunc(hub.HandleWS))))
-
-		// API routes (authenticated). Instrument at the /api/ prefix so every
-		// REST call counts without wiring each handler individually.
-		mux.Handle("/api/", api.Instrument("/api/", apiSrv.Handler()))
-
-		// Webhook triggers — unauthenticated by design (each workflow declares
-		// its own HMAC secret via trigger.secret). Path must match the
-		// `webhook:` field of a registered workflow trigger.
-		mux.Handle("/hooks/", api.Instrument("/hooks/", workflow.WebhookHandler(triggerMgr)))
-
-		// Dashboard (static, no auth)
+		mux.Handle("/ws", apiSrv.WSHandler(http.HandlerFunc(hub.HandleWS)))
+		mux.Handle("/api/", apiSrv.Handler())
 		mux.Handle("/", dashboard.Handler())
 
 		addr := fmt.Sprintf(":%d", cfg.Port)
-		// otelhttp.NewHandler creates a span per incoming request carrying
-		// method/route/status so a trace backend can stitch a customer's
-		// journey across every Hive call without additional glue.
 		tracedMux := otelhttp.NewHandler(mux, "hive.http",
 			otelhttp.WithSpanNameFormatter(func(_ string, r *http.Request) string {
 				return r.Method + " " + r.URL.Path
 			}))
 
 		httpSrv := &http.Server{
-			Addr:    addr,
-			Handler: api.SecurityHeaders(tracedMux),
-			// Slowloris guard: cap how long a client has to send its request
-			// headers. Without this, an attacker can hold a connection open
-			// indefinitely by dribbling out bytes and exhaust the listener.
+			Addr:              addr,
+			Handler:           api.SecurityHeaders(tracedMux),
 			ReadHeaderTimeout: 15 * time.Second,
 		}
 
-		// Graceful shutdown
 		done := make(chan os.Signal, 1)
 		signal.Notify(done, os.Interrupt, syscall.SIGTERM)
 
@@ -381,24 +141,11 @@ var serveCmd = &cobra.Command{
 			scheme = "https"
 		}
 
-		// A7: SQLite serializes writers, so concurrent supervisor + scheduler +
-		// API writes contend for the same lock. This is fine for dev and small
-		// single-node deployments; it will fall over under prod load. Surface
-		// a loud startup warning so operators see it in the first log line.
-		if cfg.Storage != "postgres" {
-			if env := os.Getenv("HIVE_ENV"); env == "prod" || env == "production" {
-				slog.Warn("SQLite storage in production — concurrent writers will block on SQLITE_BUSY. Set storage=postgres for multi-writer workloads.")
-			} else {
-				slog.Info("storage backend: sqlite (single-writer, suitable for dev and small single-node deployments)")
-			}
-		}
-
 		go func() {
 			slog.Info("hive server started",
 				"addr", addr,
 				"dashboard", fmt.Sprintf("%s://localhost:%d", scheme, cfg.Port),
-				"storage", storageLabel(cfg),
-				"tls", cfg.TLS.Enabled())
+				"storage", storageLabel(cfg))
 			var err error
 			if cfg.TLS.Enabled() {
 				err = httpSrv.ListenAndServeTLS(cfg.TLS.CertFile, cfg.TLS.KeyFile)
@@ -430,26 +177,8 @@ func init() {
 	rootCmd.AddCommand(serveCmd)
 }
 
-// buildEmbedder picks the knowledge embedder based on config. Default is
-// HashingEmbedder (no external dependency). When knowledge.embedding is set
-// with provider=openai and an API key, switches to OpenAIEmbedder with
-// HashingEmbedder as the fallback for transient API failures.
-func buildEmbedder(cfg *config.KnowledgeBlock) knowledge.Embedder {
-	hashing := knowledge.NewHashingEmbedder(128)
-	if cfg == nil || cfg.Embedding == nil {
-		return hashing
-	}
-	emb := cfg.Embedding
-	if emb.Provider == "openai" && emb.APIKey != "" {
-		slog.Info("knowledge embedder: openai", "model", emb.Model)
-		return knowledge.NewOpenAIEmbedder(emb.APIKey, emb.Model, hashing)
-	}
-	return hashing
-}
-
-// buildTracingConfig resolves the YAML observability.traces block into the
-// shape tracing.Setup expects. Returns a zero Config when the block is
-// missing, which makes tracing.Setup a no-op.
+// buildTracingConfig resolves the YAML observability.traces block into
+// the shape tracing.Setup expects. Zero Config when unset.
 func buildTracingConfig(cfg *config.ObservabilityBlock) tracing.Config {
 	if cfg == nil || cfg.Traces == nil {
 		return tracing.Config{}
@@ -461,24 +190,5 @@ func buildTracingConfig(cfg *config.ObservabilityBlock) tracing.Config {
 		Protocol:       t.Protocol,
 		SampleRatio:    t.SampleRatio,
 		ServiceVersion: t.Version,
-	}
-}
-
-// buildAgentLookup wraps the agent manager so the workflow engine can resolve
-// agent ID → AgentSpec at dispatch time. Same shape as the inline closure in
-// `hive run`, factored out because `hive serve` also needs it for triggered
-// workflow runs.
-func buildAgentLookup(mgr *agent.Manager) workflow.AgentLookup {
-	return func(ctx context.Context, agentID string) (adapter.AgentSpec, error) {
-		a, err := mgr.GetByID(ctx, agentID)
-		if err != nil {
-			return adapter.AgentSpec{}, err
-		}
-		return adapter.AgentSpec{
-			Name:         a.Name,
-			Type:         a.Type,
-			Config:       a.Config,
-			Capabilities: a.Capabilities,
-		}, nil
 	}
 }
