@@ -51,15 +51,20 @@ const MaxIterations = 3
 
 // Story is the minimal story shape devloop needs. Mirror of the stories
 // table (+ ACs eagerly loaded) so agents don't have to poke at SQL.
+// Branch/PRURL are populated when a prior iteration of the same story
+// already opened a PR — the dev skill uses that to push follow-up
+// commits onto the existing branch instead of opening a second PR.
 type Story struct {
-	ID                 string
-	EpicID             string
-	ProjectID          string
-	Title              string
-	Description        string
-	Iterations         int
-	Status             string
-	ACs                []AcceptanceCriterion
+	ID          string
+	EpicID      string
+	ProjectID   string
+	Title       string
+	Description string
+	Iterations  int
+	Status      string
+	Branch      string
+	PRURL       string
+	ACs         []AcceptanceCriterion
 }
 
 // AcceptanceCriterion is one verifiable requirement.
@@ -85,6 +90,12 @@ type DevOutput struct {
 	Details      string   // full explanation for the reviewer to check against ACs
 	Diff         string   // unified diff when code was modified (optional)
 	FilesTouched []string // paths the agent touched (optional)
+	// Branch + PRURL are populated when the BMAD dev skill opened a
+	// feature branch / pull-request during the iteration. Hive tracks
+	// both so the dashboard can link out to the PR and the reviewer
+	// can focus on the diff.
+	Branch string
+	PRURL  string
 }
 
 // DevAgent implementations produce code / artefacts for a story.
@@ -287,6 +298,26 @@ func (s *Supervisor) advance(ctx context.Context, proj ProjectContext) error {
 		return fmt.Errorf("dev: %w", err)
 	}
 
+	// Si BMAD a ouvert une branche / PR pendant l'itération, on les
+	// persiste sur la story pour que le dashboard puisse les afficher
+	// et que l'itération suivante voie qu'une PR existe déjà.
+	if output.Branch != "" || output.PRURL != "" {
+		_, _ = s.db.ExecContext(ctx,
+			`UPDATE stories SET branch = COALESCE(NULLIF(?, ''), branch),
+			                     pr_url = COALESCE(NULLIF(?, ''), pr_url),
+			                     updated_at = datetime('now')
+			 WHERE id = ?`,
+			output.Branch, output.PRURL, story.ID)
+		if output.PRURL != "" {
+			s.emit(ctx, "story.pr_created", map[string]any{
+				"project_id": proj.ID,
+				"story_id":   story.ID,
+				"story":      story.Title,
+				"pr_url":     output.PRURL,
+			})
+		}
+	}
+
 	_, err = s.db.ExecContext(ctx,
 		`UPDATE stories SET status = ? WHERE id = ?`,
 		storyStatusReview, story.ID,
@@ -420,7 +451,7 @@ func (s *Supervisor) nextStory(ctx context.Context, projectID string) (*Story, e
 	var story Story
 	err := s.db.QueryRowContext(ctx,
 		`SELECT s.id, s.epic_id, e.project_id, s.title, COALESCE(s.description, ''),
-		        s.iterations, s.status
+		        s.iterations, s.status, COALESCE(s.branch, ''), COALESCE(s.pr_url, '')
 		 FROM stories s
 		 JOIN epics e ON e.id = s.epic_id
 		 WHERE e.project_id = ? AND s.status IN (?, ?, ?)
@@ -428,7 +459,8 @@ func (s *Supervisor) nextStory(ctx context.Context, projectID string) (*Story, e
 		 LIMIT 1`,
 		projectID, storyStatusPending, storyStatusDev, storyStatusReview,
 	).Scan(&story.ID, &story.EpicID, &story.ProjectID, &story.Title,
-		&story.Description, &story.Iterations, &story.Status)
+		&story.Description, &story.Iterations, &story.Status,
+		&story.Branch, &story.PRURL)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}

@@ -137,6 +137,46 @@ type Result struct {
 	Outputs []string
 }
 
+// PhaseStep représente une skill exécutée pendant RunPhase : la
+// slash-command BMAD invoquée + la réponse texte que Claude a
+// retournée. Utile pour logger la séquence choisie par le dispatcher.
+type PhaseStep struct {
+	Command string
+	Reply   string
+}
+
+// RunPhase fait tourner un dispatcher entre skills BMAD jusqu'à ce
+// que le petit LLM d'aiguillage (voir dispatcher.go) dise `done` ou
+// qu'on atteigne MaxSteps. Renvoie l'historique des étapes exécutées.
+func (r *Runner) RunPhase(ctx context.Context, workdir string, phase Phase) ([]PhaseStep, error) {
+	if r == nil {
+		return nil, fmt.Errorf("bmad: runner indisponible")
+	}
+	max := phase.MaxSteps
+	if max <= 0 {
+		max = 8
+	}
+	var history []PhaseStep
+	lastCmd, lastReply := "", ""
+	for i := 0; i < max; i++ {
+		next, err := r.NextStep(ctx, workdir, phase, lastCmd, lastReply)
+		if err != nil {
+			return history, fmt.Errorf("dispatch step %d: %w", i, err)
+		}
+		if next == "" {
+			return history, nil
+		}
+		res, err := r.Invoke(ctx, workdir, next, nil)
+		history = append(history, PhaseStep{Command: next, Reply: res.Text})
+		if err != nil {
+			return history, fmt.Errorf("exec %s: %w", next, err)
+		}
+		lastCmd = next
+		lastReply = res.Text
+	}
+	return history, nil
+}
+
 // Invoke runs a BMAD skill end-to-end in non-interactive mode. `goal`
 // is the natural-language task description; we wrap it with a
 // standard non-interactive contract that tells Claude to auto-continue

@@ -19,7 +19,9 @@ linters:
     - sqlclosecheck  # unclosed sql.Rows
     # Code smells (curated — skip the noisy ones)
     - unused         # dead code
-    - misspell       # typos in comments and strings
+    # misspell disabled — les commentaires sont en français (outil local
+    # francophone) et le dictionnaire misspell ne connaît que l'anglais, ce
+    # qui produit des faux positifs sur "tournes", "statuts", etc.
     - unconvert      # redundant conversions
     - dogsled        # too many blank identifiers
     - prealloc       # preallocate slices in loops

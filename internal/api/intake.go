@@ -262,18 +262,21 @@ func (s *Server) runArchitectAsync(projectID, idea, seedDoc string) {
 		return
 	}
 
-	// Phase 2 — Planning: bmad-create-prd.
-	prdGoal := fmt.Sprintf(
-		"Invoke the bmad-create-prd skill. Treat %s/_intake.md as the product brief "+
-			"(it contains the user's idea + PM Q&A). Auto-continue every menu and "+
-			"complete the full PRD workflow in one pass. The PRD must end up at "+
-			"%s (or %s).",
-		bmad.PlanningDir, bmad.PRDFile, bmad.PRDFileLower)
-	if _, err := runner.Invoke(ctx, workdir, prdGoal,
-		[]string{bmad.PRDFile, bmad.PRDFileLower}); err != nil {
-		fail("create-prd", err)
+	// Planning : on laisse un petit dispatcher Haiku décider de la
+	// séquence de slash-commands (/bmad-create-prd →
+	// /bmad-create-architecture → /bmad-create-epics-and-stories, etc.)
+	// Hive ne préjuge pas de l'ordre — c'est BMAD + l'aiguilleur qui
+	// mènent.
+	if _, err := runner.RunPhase(ctx, workdir, bmad.Phase{
+		Name:     "planning",
+		Goal:     "Produire un PRD complet + un arbre epics/stories prêt pour le dev. Terminer (`done`) quand l'arbre et le PRD sont sur disque.",
+		MaxSteps: 6,
+	}); err != nil {
+		fail("planning-dispatcher", err)
 		return
 	}
+
+	// Lire le PRD qu'une des skills a écrit.
 	prdText, err := readFirst(workdir, bmad.PRDFile, bmad.PRDFileLower)
 	if err != nil {
 		fail("read-prd", err)
@@ -287,21 +290,20 @@ func (s *Server) runArchitectAsync(projectID, idea, seedDoc string) {
 		return
 	}
 
-	// Phase 3 — Solutioning: bmad-create-epics-and-stories.
-	// We ask Claude to emit a JSON mirror of the tree so we don't need
-	// a second parse pass over BMAD's markdown output.
-	epicsGoal := "Invoke the bmad-create-epics-and-stories skill. Auto-continue every menu. " +
-		"After the skill finishes its normal markdown output, append ONE fenced code " +
-		"block with language `json-hive` at the very end of your reply. The block " +
-		"must contain valid JSON matching exactly this shape:\n" +
-		"[{\"title\":\"Epic Title\",\"description\":\"1-2 sentences\",\"stories\":" +
-		"[{\"title\":\"Story Title\",\"description\":\"1-2 sentences\"," +
-		"\"acceptance_criteria\":[\"AC text\",\"AC text\"]}]}]\n" +
-		"Use the same epics/stories the skill just generated. Keep AC strings under 150 chars. " +
-		"No prose after the json-hive block."
-	res, err := runner.Invoke(ctx, workdir, epicsGoal, nil)
+	// Une seconde passe courte pour demander à Claude de cracher
+	// l'arbre epics/stories dans un format que Hive peut ingérer
+	// (json-hive). Pas de skill BMAD — juste une lecture + formatage
+	// des artefacts que le dispatcher a déjà produits.
+	ingestGoal := "Lis les artefacts BMAD sous `_bmad-output/planning-artifacts/` " +
+		"(epics.md, stories/, etc.) et émets UN bloc fencé `json-hive` à la fin, " +
+		"contenant TOUS les epics et stories dans cet exact schéma :\n" +
+		"```json-hive\n" +
+		"[{\"title\":\"Epic\",\"description\":\"\",\"stories\":" +
+		"[{\"title\":\"Story\",\"description\":\"\",\"acceptance_criteria\":[\"AC\"]}]}]\n" +
+		"```\nAucune prose après le bloc."
+	res, err := runner.Invoke(ctx, workdir, ingestGoal, nil)
 	if err != nil {
-		fail("create-epics", err)
+		fail("ingest-json", err)
 		return
 	}
 	tree, err := parseBMADTree(res.Text)
