@@ -49,22 +49,3 @@ func TestAdapterEventPush(t *testing.T) {
 	assert.Len(t, evts, 1)
 }
 
-func TestAdapterEventPushRejectedForViewer(t *testing.T) {
-	srv := setupServer(t)
-	keyMgr := srv.keyMgr
-	users := auth.NewUserStore(srv.eventBus.DB())
-	viewer, err := keyMgr.Generate(context.Background(), "viewer-adapter")
-	require.NoError(t, err)
-	require.NoError(t, users.Upsert(context.Background(), auth.UserRecord{
-		Subject: "viewer-adapter", Role: auth.RoleViewer,
-	}))
-	srv.WithUsers(users)
-
-	body, _ := json.Marshal(map[string]any{"type": "custom.signal"})
-	req := httptest.NewRequest("POST", "/api/v1/events", bytes.NewReader(body))
-	req.Header.Set("Authorization", "Bearer "+viewer)
-	w := httptest.NewRecorder()
-	srv.Handler().ServeHTTP(w, req)
-
-	assert.Equal(t, http.StatusForbidden, w.Code, "viewers must not be able to push events")
-}

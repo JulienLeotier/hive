@@ -1,41 +1,11 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
-	import { goto } from '$app/navigation';
 	import favicon from '$lib/assets/favicon.svg';
 	import { page } from '$app/stores';
 	import { theme, toggleTheme, applyStoredTheme } from '$lib/theme';
-	import { apiError, getStoredKey, clearStoredKey } from '$lib/api';
+	import { apiError } from '$lib/api';
 
 	let { children } = $props();
-
-	// On a fresh deployment, redirect to /setup before showing any page so
-	// the user can't land on an empty dashboard and wonder why nothing
-	// loads. Once setup is done and no key is stored, send the user to
-	// /login instead — otherwise every page would immediately 401-loop.
-	async function gateAccess() {
-		const path = $page.url.pathname;
-		try {
-			const r = await fetch('/api/v1/setup/status');
-			if (!r.ok) return;
-			const json = await r.json();
-			const needsSetup = json?.data?.needs_setup === true;
-
-			if (needsSetup && path !== '/setup') {
-				goto('/setup');
-				return;
-			}
-			if (!needsSetup && !getStoredKey() && path !== '/login' && path !== '/setup') {
-				goto('/login');
-			}
-		} catch {
-			/* network down — the global banner will flag it */
-		}
-	}
-
-	function signOut() {
-		clearStoredKey();
-		goto('/login');
-	}
 
 	// BMAD-mode nav. The product is a local, single-user product factory:
 	// one idea in, one shipped product out. Everything in Build drives a
@@ -63,7 +33,6 @@
 
 	onMount(() => {
 		applyStoredTheme();
-		gateAccess();
 	});
 </script>
 
@@ -71,11 +40,6 @@
 	<link rel="icon" href={favicon} />
 </svelte:head>
 
-{#if $page.url.pathname === '/setup' || $page.url.pathname === '/login'}
-	<!-- Pre-auth wizard / login: no sidebar, no nav — just the form so
-	     the user isn't distracted by 16 empty pages. -->
-	{@render children()}
-{:else}
 <div class="app">
 	<aside class="sidebar">
 		<a href="/" class="brand">
@@ -98,9 +62,6 @@
 			<button class="theme-toggle" onclick={toggleTheme} title="Toggle dark mode">
 				{$theme === 'dark' ? '☀' : '☾'}
 			</button>
-			<button class="sign-out" onclick={signOut} title="Sign out">
-				⎋
-			</button>
 		</div>
 	</aside>
 	<main class="content">
@@ -114,7 +75,6 @@
 		{@render children()}
 	</main>
 </div>
-{/if}
 
 <style>
 	:global(:root) {
@@ -277,8 +237,7 @@
 		display: flex;
 		gap: 0.5rem;
 	}
-	.theme-toggle,
-	.sign-out {
+	.theme-toggle {
 		background: transparent;
 		border: 1px solid var(--border);
 		color: var(--text);
@@ -287,13 +246,8 @@
 		cursor: pointer;
 		font-size: 1rem;
 	}
-	.theme-toggle:hover,
-	.sign-out:hover {
+	.theme-toggle:hover {
 		background: var(--bg-hover);
-	}
-	.sign-out:hover {
-		color: var(--err);
-		border-color: var(--err);
 	}
 	.content {
 		padding: 2rem 2.5rem;

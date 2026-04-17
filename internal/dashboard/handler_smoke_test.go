@@ -9,7 +9,7 @@ import (
 
 func TestHandler_ServesPrerenderedRoute(t *testing.T) {
 	h := Handler()
-	for _, p := range []string{"/agents", "/projects", "/playground"} {
+	for _, p := range []string{"/projects", "/events", "/audit"} {
 		rr := httptest.NewRecorder()
 		req := httptest.NewRequest(http.MethodGet, p, nil)
 		h.ServeHTTP(rr, req)

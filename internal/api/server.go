@@ -483,31 +483,31 @@ func (s *Server) handleRetryTask(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, map[string]string{"new_task_id": newID, "original_task_id": id})
 }
 
-// Handler returns the HTTP handler with auth + role-resolver middleware chained.
-// The role resolver looks up the API key name → role mapping so downstream
-// RBACMiddleware can enforce per-resource rules. If no user store is attached,
-// every authenticated request is treated as an admin (dev mode compatibility).
+// Handler returns the HTTP handler. Local-mode hive: no auth, no RBAC
+// enforcement at the middleware layer — every request runs as admin of
+// the "default" tenant. The authentication packages still exist (a lot
+// of tests depend on their types), but they're not wired into the HTTP
+// chain. If we ever need a multi-user mode again, flip the constant
+// below and restore the AuthMiddleware + roleResolver chain.
 func (s *Server) Handler() http.Handler {
-	authed := AuthMiddlewareWithJWT(s.keyMgr, s.jwtValidator())(s.roleResolver(s.mux))
-	// Setup endpoints must stay reachable on a fresh deployment that has no
-	// API keys yet, so we short-circuit them before the auth middleware
-	// runs. The handlers themselves fail closed with 409 once the hive has
-	// users configured.
+	return localAdminContext(s.mux)
+}
+
+// localAdminContext injects the admin role + default tenant into every
+// request context so downstream RBACMiddleware + tenantFilter helpers
+// still compile without refactoring every call site.
+func localAdminContext(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if strings.HasPrefix(r.URL.Path, "/api/v1/setup/") {
-			s.mux.ServeHTTP(w, r)
-			return
-		}
-		authed.ServeHTTP(w, r)
+		ctx := r.Context()
+		ctx = auth.WithRole(ctx, auth.RoleAdmin)
+		ctx = auth.WithTenant(ctx, "default")
+		next.ServeHTTP(w, r.WithContext(ctx))
 	})
 }
 
-// WSHandler wraps a WebSocket upgrade handler with the same auth policy as
-// the REST API, but accepts the token via ?token= query param in addition
-// to the Authorization header (browsers can't send headers on WS upgrade).
-// Dev mode (no API keys, no OIDC) bypasses auth to keep the local loop easy.
+// WSHandler wraps a WebSocket upgrade handler. Local mode: no auth.
 func (s *Server) WSHandler(next http.Handler) http.Handler {
-	return WSAuthMiddleware(s.keyMgr, s.jwtValidator())(next)
+	return localAdminContext(next)
 }
 
 func (s *Server) jwtValidator() JWTValidator {
