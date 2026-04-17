@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { goto } from '$app/navigation';
-	import { apiPost } from '$lib/api';
+	import { apiPost, setStoredKey } from '$lib/api';
 
 	let subject = $state('');
 	let tenant = $state('default');
@@ -17,6 +17,10 @@
 				subject,
 				tenant_id: tenant
 			})) as { subject: string; api_key: string };
+			// Persist so the dashboard can immediately issue authenticated
+			// requests without the user re-typing the key. They still see it
+			// once for their password manager.
+			setStoredKey(result.api_key);
 		} catch (e) {
 			error = e instanceof Error ? e.message : String(e);
 		} finally {
