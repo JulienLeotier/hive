@@ -156,6 +156,56 @@ func RemoteURL(ctx context.Context, workdir string) (string, error) {
 	return getRemoteURL(ctx, workdir)
 }
 
+// LoginWithToken authentifie la CLI `gh` avec un personal access
+// token via `gh auth login --with-token` (stdin). Le token est écrit
+// dans ~/.config/gh/hosts.yml par gh — on ne le stocke pas dans
+// Hive. Errors remontent verbose pour que l'UI puisse diagnostiquer
+// (token manquant de scope `repo`, etc.).
+func LoginWithToken(ctx context.Context, token string) error {
+	token = strings.TrimSpace(token)
+	if token == "" {
+		return errors.New("token GitHub vide")
+	}
+	if _, err := exec.LookPath("gh"); err != nil {
+		return fmt.Errorf("gh non installé — https://cli.github.com")
+	}
+	callCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(callCtx, "gh", "auth", "login",
+		"--hostname", "github.com", "--git-protocol", "https", "--with-token")
+	cmd.Stdin = strings.NewReader(token + "\n")
+	var combined bytes.Buffer
+	cmd.Stdout = &combined
+	cmd.Stderr = &combined
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("gh auth login: %w — %s", err, truncate(combined.String(), 300))
+	}
+	// Sanity-check : on doit pouvoir hit /user maintenant.
+	if _, err := ghLogin(ctx); err != nil {
+		return fmt.Errorf("login accepté mais /user inaccessible — vérifie les scopes du token (repo, workflow): %w", err)
+	}
+	return nil
+}
+
+// Logout supprime l'auth gh locale (`gh auth logout --hostname github.com`).
+func Logout(ctx context.Context) error {
+	if _, err := exec.LookPath("gh"); err != nil {
+		return nil
+	}
+	callCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(callCtx, "gh", "auth", "logout",
+		"--hostname", "github.com")
+	// `--hostname` seul déconnecte sans prompt sur les versions récentes.
+	var combined bytes.Buffer
+	cmd.Stdout = &combined
+	cmd.Stderr = &combined
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("gh auth logout: %w — %s", err, truncate(combined.String(), 200))
+	}
+	return nil
+}
+
 func getRemoteURL(ctx context.Context, workdir string) (string, error) {
 	callCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()

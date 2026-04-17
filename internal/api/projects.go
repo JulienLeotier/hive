@@ -146,6 +146,43 @@ func (s *Server) handleGhStatus(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, git.CheckGh(r.Context()))
 }
 
+// handleGhLogin authentifie `gh` avec un personal access token
+// fourni par l'UI. Le token transite UNE SEULE FOIS — il est
+// immédiatement piped dans `gh auth login --with-token` qui le
+// stocke dans ~/.config/gh. Hive ne persiste pas le PAT.
+//
+// Scopes minimaux attendus sur le token : `repo` (read/write des
+// repos), `workflow` (pour CI), `read:org` (pour cloner des repos
+// d'organisation).
+func (s *Server) handleGhLogin(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Token string `json:"token"`
+	}
+	if err := json.NewDecoder(io.LimitReader(r.Body, 1<<14)).Decode(&body); err != nil {
+		writeError(w, http.StatusBadRequest, "BAD_REQUEST", err.Error())
+		return
+	}
+	if strings.TrimSpace(body.Token) == "" {
+		writeError(w, http.StatusBadRequest, "MISSING_TOKEN",
+			"token GitHub requis — génère-en un sur https://github.com/settings/tokens/new")
+		return
+	}
+	if err := git.LoginWithToken(r.Context(), body.Token); err != nil {
+		writeError(w, http.StatusBadRequest, "GH_LOGIN_FAILED", err.Error())
+		return
+	}
+	writeJSON(w, git.CheckGh(r.Context()))
+}
+
+// handleGhLogout supprime l'auth gh locale.
+func (s *Server) handleGhLogout(w http.ResponseWriter, r *http.Request) {
+	if err := git.Logout(r.Context()); err != nil {
+		writeError(w, http.StatusInternalServerError, "GH_LOGOUT_FAILED", err.Error())
+		return
+	}
+	writeJSON(w, git.CheckGh(r.Context()))
+}
+
 // handleUpdatePRD lets the operator tweak the saved PRD text. Allowed
 // in any lifecycle state except `shipped` (which is frozen by design).
 // The PRD is the input to the Architect; editing it alone doesn't

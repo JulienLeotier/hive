@@ -44,6 +44,34 @@
 		}
 	}
 
+	// Login GitHub par PAT depuis l'UI.
+	let ghToken = $state('');
+	let ghLoggingIn = $state(false);
+	let ghLoginError = $state('');
+
+	async function ghLogin() {
+		if (!ghToken.trim()) return;
+		ghLoggingIn = true;
+		ghLoginError = '';
+		try {
+			ghStatus = (await apiPost('/api/v1/gh/login', { token: ghToken })) as GhStatus;
+			ghToken = '';
+		} catch (e) {
+			ghLoginError = e instanceof Error ? e.message : String(e);
+		} finally {
+			ghLoggingIn = false;
+		}
+	}
+
+	async function ghLogout() {
+		try {
+			ghStatus = (await apiPost('/api/v1/gh/logout', {})) as GhStatus;
+		} catch {
+			/* on rafraîchit quand même pour voir l'état réel */
+			await loadGhStatus();
+		}
+	}
+
 	async function load() {
 		try {
 			projects = (await apiGet<Project[]>('/api/v1/projects')) ?? [];
@@ -190,14 +218,40 @@
 					Intégration GitHub
 					{#if ghStatus?.authenticated}
 						<span class="gh-pill ok" title="Authentifié via gh">✓ {ghStatus.login}</span>
+						<button type="button" class="link" onclick={ghLogout}>Se déconnecter</button>
 					{:else if ghStatus?.installed}
-						<span class="gh-pill warn" title={ghStatus.error}>
-							⚠ Lance <code>gh auth login</code>
-						</span>
+						<span class="gh-pill warn">⚠ non connecté</span>
 					{:else if ghStatus}
 						<span class="gh-pill warn" title={ghStatus.error}>gh non installé</span>
 					{/if}
 				</legend>
+
+				{#if ghStatus?.installed && !ghStatus?.authenticated}
+					<div class="gh-login">
+						<p class="gh-hint">
+							Colle un personal access token GitHub pour connecter Hive.
+							<a href="https://github.com/settings/tokens/new?scopes=repo,workflow,read:org&description=Hive%20BMAD"
+								target="_blank" rel="noopener">
+								Créer un token
+							</a>
+							(scopes requis : <code>repo</code>, <code>workflow</code>, <code>read:org</code>).
+						</p>
+						<div class="gh-login-row">
+							<input type="password"
+								placeholder="ghp_..."
+								bind:value={ghToken}
+								autocomplete="off" />
+							<button type="button"
+								onclick={ghLogin}
+								disabled={ghLoggingIn || !ghToken.trim()}>
+								{ghLoggingIn ? 'Connexion…' : 'Se connecter'}
+							</button>
+						</div>
+						{#if ghLoginError}
+							<div class="err">{ghLoginError}</div>
+						{/if}
+					</div>
+				{/if}
 
 				<label class="radio">
 					<input type="radio" name="ghmode" value="none" bind:group={githubMode} />
@@ -395,7 +449,42 @@
 	}
 	.gh-create { display: flex; gap: 0.5rem; }
 	.gh-create input { flex: 1; }
-	.gh-hint { color: var(--warn); }
+	.gh-hint { color: var(--muted); font-size: 0.78rem; line-height: 1.4; }
+	.gh-hint a { color: var(--accent); }
+	.gh-login {
+		display: flex;
+		flex-direction: column;
+		gap: 0.5rem;
+		padding: 0.6rem;
+		background: var(--bg-alt);
+		border: 1px dashed var(--border);
+		border-radius: 4px;
+	}
+	.gh-login-row {
+		display: flex;
+		gap: 0.5rem;
+	}
+	.gh-login-row input { flex: 1; font-family: ui-monospace, monospace; font-size: 0.8rem; padding: 0.4rem 0.6rem; border: 1px solid var(--border); border-radius: 4px; background: var(--bg); color: inherit; }
+	.gh-login-row button { padding: 0.4rem 0.9rem; background: var(--accent); color: white; border: none; border-radius: 4px; cursor: pointer; font-weight: 600; }
+	.gh-login-row button:disabled { opacity: 0.5; cursor: not-allowed; }
+	.link {
+		background: none;
+		border: none;
+		color: var(--muted);
+		font-size: 0.7rem;
+		cursor: pointer;
+		text-decoration: underline;
+		padding: 0 0.25rem;
+	}
+	.link:hover { color: var(--err); }
+	.err {
+		padding: 0.4rem 0.6rem;
+		background: rgba(240, 80, 80, 0.15);
+		border-left: 3px solid var(--err);
+		border-radius: 3px;
+		color: var(--err);
+		font-size: 0.78rem;
+	}
 	.form-error {
 		padding: 0.5rem 0.75rem;
 		background: rgba(240, 80, 80, 0.15);
