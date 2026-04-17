@@ -1,11 +1,13 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"io"
 	"log/slog"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/JulienLeotier/hive/internal/architect"
 	"github.com/JulienLeotier/hive/internal/intake"
@@ -114,36 +116,62 @@ func (s *Server) handleIntakeFinalize(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Run the Architect synchronously. When this succeeds the project
-	// flips to `building` with its epic/story/AC tree populated. If the
-	// architect fails, the project stays in `planning` so the operator
-	// can retry (future endpoint) — the PRD is already saved either way.
-	arch := s.architectAgent()
-	epics, stories, err := architect.NewDispatcher(s.db(), arch).Run(r.Context(), p.ID, p.Idea, prd)
-	if err != nil {
-		slog.Warn("architect run failed — project left in planning", "project", p.ID, "error", err)
-		writeJSON(w, map[string]any{
-			"project_id":       p.ID,
-			"status":           project.StatusPlanning,
-			"prd_length":       len(prd),
-			"architect_error":  err.Error(),
-		})
-		return
-	}
-	if _, err := s.db().ExecContext(r.Context(),
-		`UPDATE projects SET status = ?, updated_at = datetime('now') WHERE id = ?`,
-		project.StatusBuilding, p.ID,
-	); err != nil {
-		writeError(w, http.StatusInternalServerError, "PROJECT_UPDATE_FAILED", err.Error())
-		return
-	}
+	// Architect is the slow path — Claude Code can take minutes to emit
+	// the epic/story/AC tree. Blocking the HTTP request would mean the
+	// dashboard sits on a spinner until then, which also exceeds any
+	// reasonable HTTP timeout. Kick the Architect off in the background
+	// and return the updated project immediately. The frontend reacts to
+	// project.architect_started / project.architect_done / project.architect_failed
+	// events and polls the project tree when one arrives.
+	go s.runArchitectAsync(p.ID, p.Idea, prd)
+
 	writeJSON(w, map[string]any{
 		"project_id": p.ID,
-		"status":     project.StatusBuilding,
+		"status":     project.StatusPlanning,
 		"prd_length": len(prd),
-		"epics":      epics,
-		"stories":    stories,
 	})
+}
+
+// runArchitectAsync executes Architect.Run detached from the caller and
+// emits dashboard events so the UI can track progress. It uses a fresh
+// 10-minute background context — the request context is already gone by
+// the time this runs, and the caller has returned to the browser.
+func (s *Server) runArchitectAsync(projectID, idea, prd string) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+	defer cancel()
+
+	if s.eventBus != nil {
+		_, _ = s.eventBus.Publish(ctx, "project.architect_started", "api",
+			map[string]string{"project_id": projectID})
+	}
+
+	arch := s.architectAgent()
+	epics, stories, err := architect.NewDispatcher(s.db(), arch).Run(ctx, projectID, idea, prd)
+	if err != nil {
+		slog.Warn("architect run failed — project left in planning", "project", projectID, "error", err)
+		if s.eventBus != nil {
+			_, _ = s.eventBus.Publish(ctx, "project.architect_failed", "api", map[string]any{
+				"project_id": projectID,
+				"error":      err.Error(),
+			})
+		}
+		return
+	}
+	if _, err := s.db().ExecContext(ctx,
+		`UPDATE projects SET status = ?, updated_at = datetime('now') WHERE id = ?`,
+		project.StatusBuilding, projectID,
+	); err != nil {
+		slog.Warn("architect done but project update failed", "project", projectID, "error", err)
+		return
+	}
+	slog.Info("architect done", "project", projectID, "epics", epics, "stories", stories)
+	if s.eventBus != nil {
+		_, _ = s.eventBus.Publish(ctx, "project.architect_done", "api", map[string]any{
+			"project_id": projectID,
+			"epics":      epics,
+			"stories":    stories,
+		})
+	}
 }
 
 // architectAgent returns the architect driver, honouring HIVE_ARCHITECT=scripted.

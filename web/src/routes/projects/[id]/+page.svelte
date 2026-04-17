@@ -196,7 +196,12 @@
 					// Prepend to activity feed, dedupe by id, cap at 200.
 					activity = [evt, ...activity.filter((x) => x.id !== evt.id)].slice(0, 200);
 					// Story/project status changes should also re-fetch the tree.
-					if (evt.type.startsWith('story.') || evt.type === 'project.shipped') load();
+					if (
+						evt.type.startsWith('story.') ||
+						evt.type === 'project.shipped' ||
+						evt.type === 'project.architect_done' ||
+						evt.type === 'project.architect_failed'
+					) load();
 				} catch {
 					/* ignore non-JSON frames */
 				}
@@ -426,7 +431,14 @@
 		<section class="tree">
 			<h2>Work breakdown</h2>
 			{#if !project.epics || project.epics.length === 0}
-				<p class="empty">No epics yet. The Architect agent will emit them once the PRD is locked.</p>
+				{#if project.status === 'planning'}
+					<p class="planning">
+						<span class="spinner"></span>
+						Architect is decomposing the PRD into epics and stories… this can take a minute.
+					</p>
+				{:else}
+					<p class="empty">No epics yet. The Architect agent will emit them once the PRD is locked.</p>
+				{/if}
 			{:else}
 				{#each project.epics as epic (epic.id)}
 					<div class="epic">
@@ -533,6 +545,27 @@
 		color: var(--muted);
 		font-style: italic;
 	}
+	.planning {
+		display: flex;
+		gap: 0.5rem;
+		align-items: center;
+		padding: 0.75rem 1rem;
+		background: color-mix(in srgb, var(--accent) 12%, var(--bg-alt));
+		border-left: 3px solid var(--accent);
+		border-radius: 4px;
+		color: var(--text);
+		font-size: 0.9rem;
+	}
+	.spinner {
+		display: inline-block;
+		width: 14px;
+		height: 14px;
+		border: 2px solid var(--accent);
+		border-top-color: transparent;
+		border-radius: 50%;
+		animation: spin 0.8s linear infinite;
+	}
+	@keyframes spin { to { transform: rotate(360deg); } }
 	.bar {
 		position: relative;
 		height: 18px;
