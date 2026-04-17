@@ -189,7 +189,9 @@ var serveCmd = &cobra.Command{
 				loopInterval = d
 			}
 		}
-		devloop.NewSupervisor(store.DB, devAgent, reviewerAgent, loopInterval).Start(supervisorCtx)
+		devloop.NewSupervisor(store.DB, devAgent, reviewerAgent, loopInterval).
+			WithPublisher(devloop.Publisher(bus.PublishErr)).
+			Start(supervisorCtx)
 		slog.Info("devloop supervisor armed",
 			"dev", devAgent.Name(), "reviewer", reviewerAgent.Name(), "interval", loopInterval)
 

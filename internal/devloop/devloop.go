@@ -113,6 +113,11 @@ type ReviewerAgent interface {
 	Review(ctx context.Context, proj ProjectContext, story Story, output DevOutput) (ReviewVerdict, error)
 }
 
+// Publisher is the minimum event-bus surface the supervisor needs to
+// broadcast state transitions. Matches event.Bus.PublishErr. Kept as a
+// callback so this package doesn't import event and avoids cycle risk.
+type Publisher func(ctx context.Context, eventType, source string, payload any) error
+
 // Supervisor drives the dev→review loop. Kept simple: one goroutine,
 // polls on a tick, advances one story per project per tick. Parallelism
 // across projects is fine (independent state) but stories within a
@@ -122,17 +127,48 @@ type Supervisor struct {
 	db       *sql.DB
 	dev      DevAgent
 	reviewer ReviewerAgent
+	git      *GitCommitter
+	publish  Publisher
 	interval time.Duration
 }
 
 // NewSupervisor builds a supervisor. Pass the deterministic Scripted
 // agents in tests and the Claude-backed ones in production. interval=0
-// defaults to 10s.
+// defaults to 10s. Git committer auto-detected from PATH.
 func NewSupervisor(db *sql.DB, dev DevAgent, reviewer ReviewerAgent, interval time.Duration) *Supervisor {
 	if interval <= 0 {
 		interval = 10 * time.Second
 	}
-	return &Supervisor{db: db, dev: dev, reviewer: reviewer, interval: interval}
+	return &Supervisor{
+		db: db, dev: dev, reviewer: reviewer,
+		git:      NewGitCommitter(),
+		interval: interval,
+	}
+}
+
+// WithPublisher wires an event-bus publisher so the supervisor broadcasts
+// story.dev_started, story.reviewed, story.blocked, and project.shipped
+// events. Without it, the supervisor still runs but the dashboard
+// WebSocket won't light up in real time.
+func (s *Supervisor) WithPublisher(p Publisher) *Supervisor {
+	s.publish = p
+	return s
+}
+
+// WithGit overrides the auto-detected git committer. Pass nil in tests
+// that don't want to touch the filesystem with real git state.
+func (s *Supervisor) WithGit(g *GitCommitter) *Supervisor {
+	s.git = g
+	return s
+}
+
+// emit publishes an event if a bus is wired. Silently drops errors —
+// event delivery is nice-to-have, not essential.
+func (s *Supervisor) emit(ctx context.Context, eventType string, payload any) {
+	if s.publish == nil {
+		return
+	}
+	_ = s.publish(ctx, eventType, "devloop", payload)
 }
 
 // Start runs the supervisor loop until ctx is cancelled. Non-blocking on
@@ -181,7 +217,7 @@ func (s *Supervisor) advance(ctx context.Context, proj ProjectContext) error {
 	}
 	if story == nil {
 		// No unfinished story → the project is complete. Flip it once.
-		_, err := s.db.ExecContext(ctx,
+		res, err := s.db.ExecContext(ctx,
 			`UPDATE projects SET status = ?, updated_at = datetime('now')
 			 WHERE id = ? AND status = ?`,
 			projectStatusShipped, proj.ID, projectStatusBuilding,
@@ -189,7 +225,10 @@ func (s *Supervisor) advance(ctx context.Context, proj ProjectContext) error {
 		if err != nil {
 			return fmt.Errorf("marking project shipped: %w", err)
 		}
-		slog.Info("devloop: project shipped", "project", proj.ID)
+		if n, _ := res.RowsAffected(); n > 0 {
+			slog.Info("devloop: project shipped", "project", proj.ID)
+			s.emit(ctx, "project.shipped", map[string]string{"project_id": proj.ID})
+		}
 		return nil
 	}
 
@@ -202,6 +241,25 @@ func (s *Supervisor) advance(ctx context.Context, proj ProjectContext) error {
 	)
 	if err != nil {
 		return fmt.Errorf("marking story dev: %w", err)
+	}
+	s.emit(ctx, "story.dev_started", map[string]any{
+		"project_id": proj.ID,
+		"story_id":   story.ID,
+		"story":      story.Title,
+		"iteration":  newIteration,
+	})
+
+	// Ensure the workdir is a git repo before the dev touches it so the
+	// story commit has a place to land.
+	workdir := proj.Workdir
+	if workdir == "" {
+		workdir = proj.RepoPath
+	}
+	if workdir != "" && s.git != nil {
+		if err := s.git.EnsureRepo(ctx, workdir); err != nil {
+			slog.Warn("devloop: git init failed — continuing without version control",
+				"project", proj.ID, "error", err)
+		}
 	}
 
 	feedback := s.previousFeedback(ctx, story.ID)
@@ -280,9 +338,36 @@ func (s *Supervisor) advance(ctx context.Context, proj ProjectContext) error {
 	if err := tx.Commit(); err != nil {
 		return err
 	}
+
+	// On a passing iteration, persist the change set as a git commit so
+	// the build history is inspectable after the fact. Failure paths
+	// leave uncommitted changes for the next dev iteration to overwrite.
+	if verdict.Pass && workdir != "" && s.git != nil {
+		if err := s.git.CommitStory(ctx, workdir, story.Title, newIteration); err != nil {
+			slog.Warn("devloop: git commit failed",
+				"project", proj.ID, "story", story.ID, "error", err)
+		}
+	}
+
 	slog.Info("devloop: iteration done",
 		"project", proj.ID, "story", story.ID, "iteration", newIteration,
 		"pass", verdict.Pass)
+
+	evtPayload := map[string]any{
+		"project_id": proj.ID,
+		"story_id":   story.ID,
+		"story":      story.Title,
+		"iteration":  newIteration,
+		"pass":       verdict.Pass,
+		"feedback":   verdict.Feedback,
+	}
+	if verdict.Pass {
+		s.emit(ctx, "story.reviewed", evtPayload)
+	} else if newIteration >= MaxIterations {
+		s.emit(ctx, "story.blocked", evtPayload)
+	} else {
+		s.emit(ctx, "story.review_failed", evtPayload)
+	}
 	return nil
 }
 
