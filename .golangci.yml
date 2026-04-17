@@ -1,0 +1,98 @@
+version: "2"
+
+run:
+  timeout: 5m
+  tests: true
+
+linters:
+  default: none
+  enable:
+    # Bugs
+    - govet          # stdlib vet checks
+    - staticcheck    # includes honnef.co/go/tools
+    - errcheck       # unchecked errors
+    - ineffassign    # ineffective assignments
+    - copyloopvar    # Go 1.22 loop var capture
+    - nilerr         # return nil after err != nil
+    - bodyclose      # unclosed HTTP response bodies
+    - rowserrcheck   # unchecked sql.Rows.Err()
+    - sqlclosecheck  # unclosed sql.Rows
+    # Code smells (curated — skip the noisy ones)
+    - unused         # dead code
+    - misspell       # typos in comments and strings
+    - unconvert      # redundant conversions
+    - dogsled        # too many blank identifiers
+    - prealloc       # preallocate slices in loops
+    # Security
+    - gosec          # static security scanner
+
+  settings:
+    staticcheck:
+      checks:
+        - all
+        - -ST1000  # package comment (noisy on internal/)
+        - -ST1003  # naming convention (too opinionated)
+    gosec:
+      excludes:
+        - G104  # ignored errors — covered by errcheck
+        - G115  # integer overflow conversion — too noisy
+        - G404  # math/rand usage — we only use it for jitter/sampling, not crypto
+        - G706  # slog structured logging is safe from log-injection by design
+        - G304  # file inclusion: CLI opens user-specified config/workflow files by design
+        - G306  # WriteFile 0644: non-secret artefacts (hive.yaml scaffolds, docs)
+        - G301  # Mkdir perms: same rationale as G306
+        - G204  # subprocess from variable: adapters intentionally exec user-configured CLIs
+        - G202  # SQL concat: we build WHERE clauses from hard-coded fragments, args are ?-placeholders
+        - G201  # same — SQL format string is from a controlled template
+        - G704  # SSRF: federation proxy is the designed behaviour
+        - G703  # path traversal on user-supplied CLI paths — same rationale as G304
+        - G122  # filepath.Walk TOCTOU — would need Go 1.24 os.Root to mitigate
+    errcheck:
+      exclude-functions:
+        - (net/http.ResponseWriter).Write  # writing to response, errors rare and unactionable
+        - fmt.Fprintf
+        - fmt.Fprintln
+        - fmt.Fprint
+        - fmt.Sscanf
+        - fmt.Scanln
+        - (io.Closer).Close               # resp.Body.Close, file.Close — never actionable
+        - (*database/sql.Rows).Close      # same
+        - (*database/sql.DB).Close        # same
+        - (*net/http.Response).Body.Close # common deferred close
+        - (net.Conn).Close                # ws upgrader closes on handler exit
+        - (*encoding/json.Encoder).Encode # encoding to a bytes.Buffer cannot fail
+        - (*github.com/JulienLeotier/hive/internal/storage.Store).Close  # test cleanup
+        - (*database/sql.Tx).Rollback     # standard "rollback on error" pattern
+        - (*os.File).Close                # deferred file close
+
+  exclusions:
+    generated: lax
+    rules:
+      # Tests can be looser on error-checking and magic numbers. Dogsled
+      # is noisy on test helpers that return 5+ values where each test only
+      # cares about one — refactoring those to a struct is a separate effort.
+      - path: _test\.go
+        linters:
+          - errcheck
+          - gosec
+          - bodyclose
+          - dogsled
+          - prealloc
+      # Template files shipped for `hive init` — they're exemplars, not production.
+      - path: internal/cli/templates/
+        linters:
+          - errcheck
+          - unused
+          - gosec
+      # Adapters intentionally swallow transport errors and return either
+      # a fallback capability set (on Declare failure) or a TaskResult
+      # with Status="failed" and Error set. Returning (result, nil) here
+      # is the contract — a misbehaving peer must not cascade up to the
+      # orchestrator. SafeInvoke wraps the callsite for panic recovery.
+      - path: internal/adapter/
+        linters:
+          - nilerr
+
+issues:
+  max-issues-per-linter: 0
+  max-same-issues: 0

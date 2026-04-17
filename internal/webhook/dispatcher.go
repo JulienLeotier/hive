@@ -161,7 +161,7 @@ func matchesFilter(eventType, filter string) bool {
 		return true // no filter = match all
 	}
 	var types []string
-	json.Unmarshal([]byte(filter), &types)
+	_ = json.Unmarshal([]byte(filter), &types)
 	if len(types) == 0 {
 		// Try comma-separated fallback
 		for _, t := range splitComma(filter) {

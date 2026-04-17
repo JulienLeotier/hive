@@ -62,6 +62,9 @@ func (e *Engine) pickAgent(ctx context.Context, taskType, strategy string) (stri
 		}
 		bids = append(bids, bid{id: id, name: name, cost: cost})
 	}
+	if err := rows.Err(); err != nil {
+		return "", "", err
+	}
 	if len(bids) == 0 {
 		return "", "", nil
 	}
@@ -157,7 +160,7 @@ func (e *Engine) Run(ctx context.Context, cfg *Config) (*RunResult, error) {
 	}
 
 	// 2. Mark as running
-	e.workflowStore.UpdateStatus(ctx, wf.ID, StatusRunning)
+	_ = e.workflowStore.UpdateStatus(ctx, wf.ID, StatusRunning)
 
 	result := &RunResult{
 		WorkflowID:  wf.ID,
@@ -167,7 +170,7 @@ func (e *Engine) Run(ctx context.Context, cfg *Config) (*RunResult, error) {
 	// 3. Topological sort for execution levels
 	levels, err := TopologicalSort(cfg.Tasks)
 	if err != nil {
-		e.workflowStore.UpdateStatus(ctx, wf.ID, StatusFailed)
+		_ = e.workflowStore.UpdateStatus(ctx, wf.ID, StatusFailed)
 		return nil, fmt.Errorf("sorting tasks: %w", err)
 	}
 
@@ -178,7 +181,7 @@ func (e *Engine) Run(ctx context.Context, cfg *Config) (*RunResult, error) {
 		slog.Info("executing level", "workflow", wf.ID, "level", levelIdx+1, "tasks", len(level))
 
 		if err := e.executeLevel(ctx, wf.ID, level, result); err != nil {
-			e.workflowStore.UpdateStatus(ctx, wf.ID, StatusFailed)
+			_ = e.workflowStore.UpdateStatus(ctx, wf.ID, StatusFailed)
 			result.Status = "failed"
 			result.Error = err.Error()
 			return result, err
@@ -186,7 +189,7 @@ func (e *Engine) Run(ctx context.Context, cfg *Config) (*RunResult, error) {
 	}
 
 	// 5. Mark completed
-	e.workflowStore.UpdateStatus(ctx, wf.ID, StatusCompleted)
+	_ = e.workflowStore.UpdateStatus(ctx, wf.ID, StatusCompleted)
 	result.Status = "completed"
 
 	slog.Info("workflow execution completed", "workflow", cfg.Name, "id", wf.ID, "tasks_completed", len(result.TaskResults))
@@ -284,8 +287,8 @@ func (e *Engine) executeLevel(ctx context.Context, workflowID string, level []Ta
 			return fmt.Errorf("no agent available for task type %s (task %s left pending)", td.Type, t.ID)
 		}
 
-		e.taskStore.Assign(ctx, t.ID, agentID)
-		e.taskStore.Start(ctx, t.ID)
+		_ = e.taskStore.Assign(ctx, t.ID, agentID)
+		_ = e.taskStore.Start(ctx, t.ID)
 
 		e.mu.Lock()
 		a, ok := e.adapters[agentID]
@@ -351,12 +354,12 @@ func (e *Engine) executeLevel(ctx context.Context, workflowID string, level []Ta
 
 			if taskResult.Status == task.StatusCompleted {
 				outputJSON, _ := json.Marshal(taskResult.Output)
-				e.taskStore.Complete(ctx, p.taskID, string(outputJSON))
+				_ = e.taskStore.Complete(ctx, p.taskID, string(outputJSON))
 				completed, _ := e.taskStore.GetByID(ctx, p.taskID)
 				result.TaskResults[p.taskDef.Name] = completed
 				slog.Info("task completed", "task", p.taskDef.Name, "agent", p.agentName)
 			} else {
-				e.taskStore.Fail(ctx, p.taskID, taskResult.Error)
+				_ = e.taskStore.Fail(ctx, p.taskID, taskResult.Error)
 				errCh <- fmt.Errorf("task %s failed: %s", p.taskDef.Name, taskResult.Error)
 			}
 		}(pt)
@@ -394,14 +397,5 @@ func (e *Engine) buildInput(taskDef TaskDef, result *RunResult) string {
 
 	data, _ := json.Marshal(input)
 	return string(data)
-}
-
-func (e *Engine) getAgentURL(ctx context.Context, agentID string) string {
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	if url, ok := e.agentConfigs[agentID]; ok {
-		return url
-	}
-	return ""
 }
 

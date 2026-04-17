@@ -591,13 +591,14 @@ func (s *Server) handleCosts(w http.ResponseWriter, r *http.Request) {
 			slog.Warn("costs: summaries query failed", "error", err)
 			return
 		}
-		defer rows.Close()
-		for rows.Next() {
+		scanAll(rows, "costs.summaries", func() error {
 			var x summary
-			if err := rows.Scan(&x.AgentName, &x.TotalCost, &x.TaskCount); err == nil {
-				summaries = append(summaries, x)
+			if err := rows.Scan(&x.AgentName, &x.TotalCost, &x.TaskCount); err != nil {
+				return err
 			}
-		}
+			summaries = append(summaries, x)
+			return nil
+		})
 	})
 
 	run(func() {
@@ -615,14 +616,15 @@ func (s *Server) handleCosts(w http.ResponseWriter, r *http.Request) {
 			slog.Warn("costs: alerts query failed", "error", err)
 			return
 		}
-		defer rows.Close()
-		for rows.Next() {
+		scanAll(rows, "budget_alerts", func() error {
 			var a alert
-			if err := rows.Scan(&a.AgentName, &a.DailyLimit, &a.Spend); err == nil {
-				a.Breached = a.Spend >= a.DailyLimit
-				alerts = append(alerts, a)
+			if err := rows.Scan(&a.AgentName, &a.DailyLimit, &a.Spend); err != nil {
+				return err
 			}
-		}
+			a.Breached = a.Spend >= a.DailyLimit
+			alerts = append(alerts, a)
+			return nil
+		})
 	})
 
 	run(func() {
@@ -634,13 +636,14 @@ func (s *Server) handleCosts(w http.ResponseWriter, r *http.Request) {
 			slog.Warn("costs: per-workflow query failed", "error", err)
 			return
 		}
-		defer rows.Close()
-		for rows.Next() {
+		scanAll(rows, "costs.per_workflow", func() error {
 			var x wfSummary
-			if err := rows.Scan(&x.WorkflowID, &x.TotalCost, &x.TaskCount); err == nil {
-				perWorkflow = append(perWorkflow, x)
+			if err := rows.Scan(&x.WorkflowID, &x.TotalCost, &x.TaskCount); err != nil {
+				return err
 			}
-		}
+			perWorkflow = append(perWorkflow, x)
+			return nil
+		})
 	})
 
 	run(func() {
@@ -652,13 +655,14 @@ func (s *Server) handleCosts(w http.ResponseWriter, r *http.Request) {
 			slog.Warn("costs: trend query failed", "error", err)
 			return
 		}
-		defer rows.Close()
-		for rows.Next() {
+		scanAll(rows, "costs.trend", func() error {
 			var p dailyPoint
-			if err := rows.Scan(&p.Day, &p.TotalCost); err == nil {
-				trend = append(trend, p)
+			if err := rows.Scan(&p.Day, &p.TotalCost); err != nil {
+				return err
 			}
-		}
+			trend = append(trend, p)
+			return nil
+		})
 	})
 
 	wg.Wait()
@@ -798,21 +802,22 @@ func (s *Server) countEventsSince(ctx context.Context, t time.Time) int {
 }
 
 func countRowsByStatus(ctx context.Context, db *sql.DB, table string) map[string]int {
-	rows, err := db.QueryContext(ctx,
+	rows, err := db.QueryContext(ctx, //nolint:sqlclosecheck // rows.Close deferred below; scanAll indirection confuses the linter
 		fmt.Sprintf(`SELECT status, COUNT(*) FROM %s GROUP BY status`, table))
 	if err != nil {
 		return map[string]int{}
 	}
 	defer rows.Close()
 	out := map[string]int{}
-	for rows.Next() {
+	scanAll(rows, table+".status", func() error {
 		var s string
 		var n int
 		if err := rows.Scan(&s, &n); err != nil {
-			continue
+			return err
 		}
 		out[s] = n
-	}
+		return nil
+	})
 	return out
 }
 
@@ -827,24 +832,3 @@ func writeError(w http.ResponseWriter, status int, code, msg string) {
 	json.NewEncoder(w).Encode(Response{Error: &Error{Code: code, Message: msg}})
 }
 
-// Serve starts the API server in the background. Returns a shutdown function.
-func Serve(ctx context.Context, addr string, handler http.Handler) (shutdown func(), err error) {
-	srv := &http.Server{Addr: addr, Handler: handler}
-
-	go func() {
-		if err := srv.ListenAndServe(); err != http.ErrServerClosed {
-			slog.Error("API server error", "error", err)
-		}
-	}()
-
-	return func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		srv.Shutdown(ctx)
-	}, nil
-}
-
-func init() {
-	// Suppress unused import
-	_ = fmt.Sprintf
-}

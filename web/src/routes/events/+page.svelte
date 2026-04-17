@@ -84,5 +84,4 @@
 	.source { color: #666; min-width: 100px; }
 	.payload { font-size: 0.7rem; color: #888; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 300px; }
 	.empty { color: #666; font-style: italic; }
-	a { color: #333; }
 </style>

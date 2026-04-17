@@ -44,13 +44,6 @@ func tenantFilter(ctx context.Context, alias string) (string, []any) {
 	return " AND 1=0", nil // fail closed
 }
 
-// tenantFromCtx returns the tenant; empty string means "not scoped" (either
-// admin cross-tenant or a misconfigured non-admin — callers should decide).
-func tenantFromCtx(ctx context.Context) string {
-	t, _ := auth.TenantFromContext(ctx)
-	return t
-}
-
 // requireTenantScope returns the tenant + ok=true for scoped callers, or
 // empty+true for admins (opted-in cross-tenant view). Non-admins with no
 // tenant get ok=false so the handler can reject with 403. Use this for

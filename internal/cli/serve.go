@@ -238,6 +238,10 @@ var serveCmd = &cobra.Command{
 		httpSrv := &http.Server{
 			Addr:    addr,
 			Handler: api.SecurityHeaders(mux),
+			// Slowloris guard: cap how long a client has to send its request
+			// headers. Without this, an attacker can hold a connection open
+			// indefinitely by dribbling out bytes and exhaust the listener.
+			ReadHeaderTimeout: 15 * time.Second,
 		}
 
 		// Graceful shutdown

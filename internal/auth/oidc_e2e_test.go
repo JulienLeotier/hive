@@ -63,7 +63,7 @@ func newMockIdP(t *testing.T) *mockIdP {
 		})
 	})
 	mux.HandleFunc("/jwks", func(w http.ResponseWriter, r *http.Request) {
-		nBytes := key.PublicKey.N.Bytes()
+		nBytes := key.N.Bytes()
 		// RSA exponent 65537 = 0x010001 → base64url(AQAB)
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"keys": []map[string]any{{

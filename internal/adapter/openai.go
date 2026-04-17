@@ -167,7 +167,7 @@ func (a *OpenAIAdapter) getLastMessage(ctx context.Context, threadID string) (st
 			} `json:"content"`
 		} `json:"data"`
 	}
-	json.Unmarshal(data, &msgs)
+	_ = json.Unmarshal(data, &msgs)
 	if len(msgs.Data) > 0 && len(msgs.Data[0].Content) > 0 {
 		return msgs.Data[0].Content[0].Text.Value, nil
 	}

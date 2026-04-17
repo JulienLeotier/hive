@@ -92,5 +92,6 @@ func IsValidRole(r string) bool {
 	return false
 }
 
-// contextKey exported so middleware can store/retrieve the resolved tenant.
+// TenantContextKey is the typed context key middleware use to store and
+// retrieve the resolved tenant ID on a request.
 type TenantContextKey struct{}

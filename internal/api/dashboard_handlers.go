@@ -27,6 +27,7 @@ func (s *Server) handleListWorkflows(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "QUERY_FAILED", err.Error())
 		return
 	}
+	defer rows.Close()
 	type row struct {
 		ID        string `json:"id"`
 		Name      string `json:"name"`
@@ -64,6 +65,7 @@ func (s *Server) handleListKnowledge(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "QUERY_FAILED", err.Error())
 		return
 	}
+	defer rows.Close()
 	type entry struct {
 		ID        int64  `json:"id"`
 		TaskType  string `json:"task_type"`
@@ -96,6 +98,7 @@ func (s *Server) handleListDialogs(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "QUERY_FAILED", err.Error())
 		return
 	}
+	defer rows.Close()
 	type thread struct {
 		ID           string `json:"id"`
 		Initiator    string `json:"initiator"`
@@ -125,6 +128,7 @@ func (s *Server) handleListFederation(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "QUERY_FAILED", err.Error())
 		return
 	}
+	defer rows.Close()
 	type link struct {
 		Name          string `json:"name"`
 		URL           string `json:"url"`
@@ -164,6 +168,7 @@ func (s *Server) handleListAuctions(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "QUERY_FAILED", err.Error())
 		return
 	}
+	defer rows.Close()
 	type auction struct {
 		ID       string `json:"id"`
 		TaskID   string `json:"task_id"`
@@ -195,6 +200,7 @@ func (s *Server) handleListOptimizations(w http.ResponseWriter, r *http.Request)
 		writeError(w, http.StatusInternalServerError, "QUERY_FAILED", err.Error())
 		return
 	}
+	defer rows.Close()
 	type opt struct {
 		ID        string  `json:"id"`
 		Setting   string  `json:"setting"`
@@ -239,6 +245,7 @@ func (s *Server) handleListAudit(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "QUERY_FAILED", err.Error())
 		return
 	}
+	defer rows.Close()
 	type entry struct {
 		ID        int64  `json:"id"`
 		Action    string `json:"action"`
@@ -274,7 +281,7 @@ func (s *Server) handleListUsers(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleListTenants(w http.ResponseWriter, r *http.Request) {
 	// Tenants are the distinct tenant_ids across core tables.
-	rows, err := s.db().QueryContext(r.Context(),
+	rows, err := s.db().QueryContext(r.Context(), //nolint:sqlclosecheck // rows.Close deferred below; scanAll indirection confuses the linter
 		`SELECT DISTINCT tenant_id FROM agents
 		 UNION SELECT DISTINCT tenant_id FROM tasks
 		 UNION SELECT DISTINCT tenant_id FROM workflows`)
@@ -282,6 +289,7 @@ func (s *Server) handleListTenants(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "QUERY_FAILED", err.Error())
 		return
 	}
+	defer rows.Close()
 	var out []string
 	scanAll(rows, "tenants", func() error {
 		var id string
@@ -307,6 +315,7 @@ func (s *Server) handleListCluster(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "QUERY_FAILED", err.Error())
 		return
 	}
+	defer rows.Close()
 	type member struct {
 		NodeID        string `json:"node_id"`
 		Hostname      string `json:"hostname"`
@@ -337,6 +346,7 @@ func (s *Server) handleListTrustHistory(w http.ResponseWriter, r *http.Request) 
 		writeError(w, http.StatusInternalServerError, "QUERY_FAILED", err.Error())
 		return
 	}
+	defer rows.Close()
 	type entry struct {
 		ID        string `json:"id"`
 		Agent     string `json:"agent"`

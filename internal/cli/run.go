@@ -95,7 +95,7 @@ var runCmd = &cobra.Command{
 
 		for _, a := range agents {
 			var agentConfig map[string]string
-			json.Unmarshal([]byte(a.Config), &agentConfig)
+			_ = json.Unmarshal([]byte(a.Config), &agentConfig)
 			baseURL := agentConfig["base_url"]
 			if baseURL != "" {
 				engine.RegisterAdapter(a.ID, baseURL, nil) // nil adapter = will create HTTPAdapter on-the-fly

@@ -126,6 +126,9 @@ func (e *Engine) GetStats(ctx context.Context, agentID string) (AgentStats, erro
 				break
 			}
 		}
+		if rerr := rows.Err(); rerr != nil {
+			slog.Warn("trust: streak query iteration failed", "error", rerr)
+		}
 		stats.ConsecutiveSuccesses = streak
 	}
 

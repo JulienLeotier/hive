@@ -24,11 +24,11 @@ func (r ComplianceResult) Summary() string {
 	return fmt.Sprintf("FAIL — %d passed, %d failed, %d skipped", len(r.Passed), len(r.Failed), len(r.Skipped))
 }
 
-// RunCompliance exercises the Agent Adapter Protocol against any Adapter.
+// ComplianceOptions configures the Agent Adapter Protocol compliance suite.
 // Story 7.4 AC: "a protocol compliance test suite validates any adapter
 // implementation". Story 1.2 references the same suite.
 //
-// Checks exercised:
+// Checks exercised by RunCompliance:
 //   1. Declare returns a non-empty Name.
 //   2. Declare returns at least one TaskType.
 //   3. Health returns a status string.

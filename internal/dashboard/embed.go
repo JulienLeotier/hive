@@ -37,7 +37,7 @@ func Handler() http.Handler {
 		trimmed := strings.TrimPrefix(path, "/")
 		f, err := sub.Open(trimmed)
 		if err == nil {
-			f.Close()
+			_ = f.Close()
 			fileServer.ServeHTTP(w, r)
 			return
 		}
@@ -49,7 +49,7 @@ func Handler() http.Handler {
 		if !strings.Contains(trimmed, ".") {
 			htmlPath := trimmed + ".html"
 			if f, err := sub.Open(htmlPath); err == nil {
-				f.Close()
+				_ = f.Close()
 				r.URL.Path = "/" + htmlPath
 				fileServer.ServeHTTP(w, r)
 				return

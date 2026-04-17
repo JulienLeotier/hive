@@ -136,6 +136,9 @@ func (s *CheckpointSupervisor) Poll(ctx context.Context) error {
 			running = append(running, r)
 		}
 	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
 
 	for _, r := range running {
 		a := s.resolver(r.agentID)

@@ -86,7 +86,7 @@ func (s *Store) UpdateStatus(ctx context.Context, id, status string) error {
 		evtType = event.WorkflowFailed
 	}
 	if evtType != "" {
-		s.bus.Publish(ctx, evtType, "system", map[string]string{"workflow_id": id})
+		_, _ = s.bus.Publish(ctx, evtType, "system", map[string]string{"workflow_id": id})
 	}
 	return nil
 }

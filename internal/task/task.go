@@ -76,7 +76,7 @@ func (s *Store) Create(ctx context.Context, workflowID, taskType, input string, 
 		DependsOn:  string(depsJSON),
 	}
 
-	s.bus.Publish(ctx, event.TaskCreated, "system", map[string]string{
+	_, _ = s.bus.Publish(ctx, event.TaskCreated, "system", map[string]string{
 		"task_id": t.ID, "type": t.Type, "workflow_id": workflowID,
 	})
 
@@ -99,7 +99,7 @@ func (s *Store) Assign(ctx context.Context, taskID, agentID string) error {
 		return fmt.Errorf("task %s not in pending state", taskID)
 	}
 
-	s.bus.Publish(ctx, event.TaskAssigned, "system", map[string]string{
+	_, _ = s.bus.Publish(ctx, event.TaskAssigned, "system", map[string]string{
 		"task_id": taskID, "agent_id": agentID,
 	})
 	return nil
@@ -118,7 +118,7 @@ func (s *Store) Start(ctx context.Context, taskID string) error {
 		return fmt.Errorf("task %s not in assigned state", taskID)
 	}
 
-	s.bus.Publish(ctx, event.TaskStarted, "system", map[string]string{"task_id": taskID})
+	_, _ = s.bus.Publish(ctx, event.TaskStarted, "system", map[string]string{"task_id": taskID})
 	return nil
 }
 
@@ -154,7 +154,7 @@ func (s *Store) Complete(ctx context.Context, taskID, output string) error {
 	if len(summary) > 256 {
 		summary = summary[:256] + "…"
 	}
-	s.bus.Publish(ctx, event.TaskCompleted, "system", map[string]any{
+	_, _ = s.bus.Publish(ctx, event.TaskCompleted, "system", map[string]any{
 		"task_id":     taskID,
 		"duration_ms": durationMs,
 		"summary":     summary,
@@ -175,7 +175,7 @@ func (s *Store) Fail(ctx context.Context, taskID, errMsg string) error {
 		return fmt.Errorf("task %s not in running state", taskID)
 	}
 
-	s.bus.Publish(ctx, event.TaskFailed, "system", map[string]string{
+	_, _ = s.bus.Publish(ctx, event.TaskFailed, "system", map[string]string{
 		"task_id": taskID, "error": errMsg,
 	})
 	return nil

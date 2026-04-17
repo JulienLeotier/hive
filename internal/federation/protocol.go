@@ -133,6 +133,6 @@ func (m *Manager) discoverCapabilities(ctx context.Context, baseURL string) ([]s
 	var result struct {
 		Data []string `json:"data"`
 	}
-	json.Unmarshal(data, &result)
+	_ = json.Unmarshal(data, &result)
 	return result.Data, nil
 }

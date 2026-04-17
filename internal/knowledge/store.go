@@ -128,6 +128,9 @@ func (s *Store) VectorSearch(ctx context.Context, query string, limit int) ([]En
 		recencyBoost := 1.0 - ageRatio*0.5
 		ranked = append(ranked, scored{entry: e, score: simScore * recencyBoost})
 	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterating knowledge rows: %w", err)
+	}
 
 	// Sort descending by similarity+recency blend.
 	for i := 1; i < len(ranked); i++ {
@@ -174,6 +177,9 @@ func (s *Store) Search(ctx context.Context, query string, limit int) ([]Entry, e
 		}
 		e.CreatedAt, _ = time.Parse("2006-01-02 15:04:05", created)
 		entries = append(entries, e)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterating knowledge rows: %w", err)
 	}
 
 	// Score by keyword similarity + recency

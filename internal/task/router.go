@@ -16,6 +16,29 @@ import (
 // peer; the router then emits task.federated for the caller to proxy.
 type FederationResolver func(ctx context.Context, taskType string) (hiveName, hiveURL string, ok bool)
 
+// collectCandidateIDs pulls a single-column id list from a query. Extracted
+// so the Close can be deferred cleanly (the old inline version passed
+// sqlclosecheck only via a tricky pattern of reading Err() then manually
+// closing — harder to read).
+func collectCandidateIDs(ctx context.Context, db *sql.DB, query string, args ...any) ([]string, error) {
+	rows, err := db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("finding claimable task: %w", err)
+	}
+	defer rows.Close()
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err == nil {
+			ids = append(ids, id)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterating candidate tasks: %w", err)
+	}
+	return ids, nil
+}
+
 // Router matches tasks to capable agents based on declared capabilities.
 type Router struct {
 	db         *sql.DB
@@ -85,6 +108,9 @@ func (r *Router) FindCapableAgent(ctx context.Context, taskType string) (agentID
 			continue
 		}
 		candidates = append(candidates, candidate{id, name, capsJSON})
+	}
+	if err := rows.Err(); err != nil {
+		return "", "", fmt.Errorf("iterating agents: %w", err)
 	}
 
 	for _, c := range candidates {
@@ -194,18 +220,10 @@ func (r *Router) ClaimPendingForAgent(ctx context.Context, agentName string) (st
 		`SELECT id FROM tasks WHERE status = 'pending' AND type IN (%s)
 		 ORDER BY created_at LIMIT 16`, string(placeholders))
 
-	candidateRows, err := r.db.QueryContext(ctx, query, args...)
+	candidateIDs, err := collectCandidateIDs(ctx, r.db, query, args...)
 	if err != nil {
-		return "", fmt.Errorf("finding claimable task: %w", err)
+		return "", err
 	}
-	var candidateIDs []string
-	for candidateRows.Next() {
-		var id string
-		if err := candidateRows.Scan(&id); err == nil {
-			candidateIDs = append(candidateIDs, id)
-		}
-	}
-	candidateRows.Close()
 
 	if len(candidateIDs) == 0 {
 		return "", nil
@@ -287,6 +305,9 @@ func (r *Router) ReassignAgentTasks(ctx context.Context, agentName, reason strin
 		if err := rows.Scan(&id); err == nil {
 			ids = append(ids, id)
 		}
+	}
+	if err := rows.Err(); err != nil {
+		return 0, fmt.Errorf("iterating agent tasks: %w", err)
 	}
 
 	count := 0

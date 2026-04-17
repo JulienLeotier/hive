@@ -239,6 +239,9 @@ func (a *Analyzer) findComparativeSlowdowns(ctx context.Context) ([]Recommendati
 			perType[tType] = append(perType[tType], row{agent: agent, duration: dur})
 		}
 	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
 
 	var recs []Recommendation
 	for tType, agents := range perType {
@@ -289,7 +292,9 @@ func (a *Analyzer) findSlowAgents(ctx context.Context) ([]Recommendation, error)
 	for rows.Next() {
 		var agentID, taskType string
 		var avgDuration float64
-		rows.Scan(&agentID, &taskType, &avgDuration)
+		if err := rows.Scan(&agentID, &taskType, &avgDuration); err != nil {
+			continue
+		}
 
 		if avgDuration > 30 { // > 30 seconds average
 			recs = append(recs, Recommendation{
@@ -299,6 +304,9 @@ func (a *Analyzer) findSlowAgents(ctx context.Context) ([]Recommendation, error)
 				Confidence:  0.7,
 			})
 		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
 	}
 	return recs, nil
 }
@@ -321,13 +329,18 @@ func (a *Analyzer) findIdleAgents(ctx context.Context) ([]Recommendation, error)
 	for rows.Next() {
 		var name string
 		var count int
-		rows.Scan(&name, &count)
+		if err := rows.Scan(&name, &count); err != nil {
+			continue
+		}
 		recs = append(recs, Recommendation{
 			Type:        "idle-agent",
 			Description: fmt.Sprintf("Agent %s had only %d tasks in the last 7 days — consider increasing heartbeat interval or removing", name, count),
 			Impact:      "Reduce idle compute costs",
 			Confidence:  0.6,
 		})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
 	}
 	return recs, nil
 }
@@ -352,13 +365,18 @@ func (a *Analyzer) findParallelOpportunities(ctx context.Context) ([]Recommendat
 	for rows.Next() {
 		var wfID string
 		var count int
-		rows.Scan(&wfID, &count)
+		if err := rows.Scan(&wfID, &count); err != nil {
+			continue
+		}
 		recs = append(recs, Recommendation{
 			Type:        "parallelize",
 			Description: fmt.Sprintf("Workflow %s has %d independent tasks — consider running them in parallel", wfID, count),
 			Impact:      fmt.Sprintf("Could reduce workflow time by ~%dx", count),
 			Confidence:  0.5,
 		})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
 	}
 	return recs, nil
 }

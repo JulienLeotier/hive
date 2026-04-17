@@ -113,7 +113,7 @@ func (h *Hub) HandleWS(w http.ResponseWriter, r *http.Request) {
 		ticker := time.NewTicker(PingPeriod)
 		defer func() {
 			ticker.Stop()
-			conn.Close()
+			_ = conn.Close()
 			close(c.done)
 		}()
 		for {
