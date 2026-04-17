@@ -1,9 +1,13 @@
--- Migration 025 : drop les tables pre-pivot jamais lues ni ecrites.
--- Ces tables ont ete creees par les migrations 001-016 pour la
--- plateforme multi-agents remplacee par le produit BMAD single-user.
--- Le code a ete supprime en P43, les tables restaient car dropper
--- est irreversible. Apres verif aucun handler ne les reference.
--- Idempotent via DROP TABLE IF EXISTS.
+-- Migration 025 — drop les tables pré-pivot jamais lues ni écrites.
+--
+-- Ces tables ont été créées par les migrations 001-016 pour la
+-- plateforme multi-agents ; elles ont été remplacées par le produit
+-- BMAD single-user. Le code qui s'y appuyait a été supprimé en P43 ;
+-- les tables restaient car dropper est irréversible. Aucun handler
+-- ne les référence plus (vérifié par grep).
+--
+-- Idempotent via DROP TABLE IF EXISTS : safe sur DB fraîche où la
+-- table n'existe pas (cas d'un `hive init` après cette migration).
 
 DROP TABLE IF EXISTS agent_tokens;
 DROP TABLE IF EXISTS agent_trust_overrides;

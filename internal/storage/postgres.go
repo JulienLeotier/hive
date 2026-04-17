@@ -79,7 +79,7 @@ func migratePostgres(s *Store) error {
 		if err != nil {
 			return err
 		}
-		for _, stmt := range strings.Split(string(data), ";") {
+		for _, stmt := range splitSQLStatements(string(data)) {
 			stmt = strings.TrimSpace(stmt)
 			if stmt == "" {
 				continue

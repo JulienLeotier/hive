@@ -109,7 +109,7 @@ func (s *Store) migrate() error {
 			return fmt.Errorf("beginning transaction for migration %d: %w", version, err)
 		}
 
-		statements := strings.Split(string(data), ";")
+		statements := splitSQLStatements(string(data))
 		for _, stmt := range statements {
 			stmt = strings.TrimSpace(stmt)
 			if stmt == "" {
