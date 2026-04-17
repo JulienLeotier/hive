@@ -91,6 +91,117 @@ func (s *Server) handleCreateProject(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, p)
 }
 
+// handleUpdatePRD lets the operator tweak the saved PRD text. Allowed
+// in any lifecycle state except `shipped` (which is frozen by design).
+// The PRD is the input to the Architect; editing it alone doesn't
+// rebuild the plan — the operator has to call regenerate-plan for that.
+func (s *Server) handleUpdatePRD(w http.ResponseWriter, r *http.Request) {
+	if s.projectStore == nil {
+		writeError(w, http.StatusServiceUnavailable, "NO_PROJECT_STORE",
+			"project subsystem is not configured on this node")
+		return
+	}
+	id := r.PathValue("id")
+	p, err := s.projectStore.GetByID(r.Context(), id)
+	if err != nil {
+		if strings.Contains(err.Error(), "not found") {
+			writeError(w, http.StatusNotFound, "NOT_FOUND", err.Error())
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "QUERY_FAILED", err.Error())
+		return
+	}
+	if p.Status == project.StatusShipped {
+		writeError(w, http.StatusConflict, "PROJECT_SHIPPED",
+			"cannot edit the PRD of a shipped project")
+		return
+	}
+	var body struct {
+		PRD string `json:"prd"`
+	}
+	if err := json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(&body); err != nil {
+		writeError(w, http.StatusBadRequest, "BAD_REQUEST", err.Error())
+		return
+	}
+	if strings.TrimSpace(body.PRD) == "" {
+		writeError(w, http.StatusBadRequest, "EMPTY_PRD",
+			"prd cannot be empty — use regenerate-plan to restart from scratch")
+		return
+	}
+	if _, err := s.db().ExecContext(r.Context(),
+		`UPDATE projects SET prd = ?, updated_at = datetime('now') WHERE id = ?`,
+		body.PRD, id,
+	); err != nil {
+		writeError(w, http.StatusInternalServerError, "UPDATE_FAILED", err.Error())
+		return
+	}
+	writeJSON(w, map[string]any{"project_id": id, "prd_length": len(body.PRD)})
+}
+
+// handleRegeneratePlan wipes the current epic/story/AC tree and re-runs
+// the Architect on the saved PRD. Guarded so it can't clobber work in
+// progress: rejects if any story has iterations > 0 (meaning the dev
+// loop has already touched it). On success the project is left in
+// `planning` while the Architect runs in the background; a new
+// project.architect_* event cycle drives the UI.
+func (s *Server) handleRegeneratePlan(w http.ResponseWriter, r *http.Request) {
+	if s.projectStore == nil {
+		writeError(w, http.StatusServiceUnavailable, "NO_PROJECT_STORE",
+			"project subsystem is not configured on this node")
+		return
+	}
+	id := r.PathValue("id")
+	p, err := s.projectStore.GetByID(r.Context(), id)
+	if err != nil {
+		if strings.Contains(err.Error(), "not found") {
+			writeError(w, http.StatusNotFound, "NOT_FOUND", err.Error())
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "QUERY_FAILED", err.Error())
+		return
+	}
+	if strings.TrimSpace(p.PRD) == "" {
+		writeError(w, http.StatusBadRequest, "NO_PRD",
+			"project has no PRD yet — finalise the intake first")
+		return
+	}
+	// Refuse if the dev loop has already started doing work anywhere in
+	// the tree. Iteration 1 means dev+review ran, even if it failed —
+	// that's committed effort we don't want to silently discard.
+	var busy int
+	if err := s.db().QueryRowContext(r.Context(),
+		`SELECT COUNT(*) FROM stories s
+		 JOIN epics e ON e.id = s.epic_id
+		 WHERE e.project_id = ? AND s.iterations > 0`, id,
+	).Scan(&busy); err != nil {
+		writeError(w, http.StatusInternalServerError, "QUERY_FAILED", err.Error())
+		return
+	}
+	if busy > 0 {
+		writeError(w, http.StatusConflict, "BUILD_STARTED",
+			"cannot regenerate the plan — at least one story has iterations; delete the project instead")
+		return
+	}
+	// Cascade delete the tree. epics.ON DELETE CASCADE takes out stories
+	// and ACs; reviews also cascade off stories.
+	if _, err := s.db().ExecContext(r.Context(),
+		`DELETE FROM epics WHERE project_id = ?`, id); err != nil {
+		writeError(w, http.StatusInternalServerError, "DELETE_FAILED", err.Error())
+		return
+	}
+	// Flip the project back to planning so the UI shows the spinner and
+	// the supervisor won't pick it up mid-regeneration.
+	if _, err := s.db().ExecContext(r.Context(),
+		`UPDATE projects SET status = ?, updated_at = datetime('now') WHERE id = ?`,
+		project.StatusPlanning, id,
+	); err != nil {
+		writeError(w, http.StatusInternalServerError, "UPDATE_FAILED", err.Error())
+		return
+	}
+	go s.runArchitectAsync(p.ID, p.Idea, p.PRD)
+	writeJSON(w, map[string]any{"project_id": id, "status": project.StatusPlanning})
+}
+
 // handleRetryStory clears a blocked story's iteration counter so the
 // devloop picks it back up on the next tick. Without this endpoint, a
 // story that exhausts MaxIterations leaves the whole project wedged —

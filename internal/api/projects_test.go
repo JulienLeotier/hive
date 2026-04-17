@@ -224,6 +224,130 @@ tests pass
 	assert.Greater(t, epicCount, 0, "architect must have emitted at least one epic")
 }
 
+func TestUpdatePRDSavesText(t *testing.T) {
+	srv := setupServer(t)
+	store := project.NewStore(srv.db())
+	srv.WithProjectStore(store)
+
+	p, err := store.Create(context.Background(), "default", "idea", project.CreateOpts{Name: "x"})
+	require.NoError(t, err)
+	req := httptest.NewRequest("PATCH", "/api/v1/projects/"+p.ID+"/prd",
+		strings.NewReader(`{"prd":"new prd text"}`))
+	w := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, req)
+
+	require.Equal(t, http.StatusOK, w.Code, "body=%s", w.Body.String())
+	var saved string
+	require.NoError(t, srv.db().QueryRow(`SELECT prd FROM projects WHERE id = ?`, p.ID).Scan(&saved))
+	assert.Equal(t, "new prd text", saved)
+}
+
+func TestUpdatePRDRejectsEmpty(t *testing.T) {
+	srv := setupServer(t)
+	store := project.NewStore(srv.db())
+	srv.WithProjectStore(store)
+
+	p, err := store.Create(context.Background(), "default", "idea", project.CreateOpts{Name: "x"})
+	require.NoError(t, err)
+
+	req := httptest.NewRequest("PATCH", "/api/v1/projects/"+p.ID+"/prd",
+		strings.NewReader(`{"prd":"   "}`))
+	w := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, req)
+	assert.Equal(t, http.StatusBadRequest, w.Code)
+}
+
+func TestRegeneratePlanClearsTree(t *testing.T) {
+	srv := setupServer(t)
+	store := project.NewStore(srv.db())
+	srv.WithProjectStore(store).architectAgentOverride = architect.NewScripted()
+
+	const prd = `# PRD
+
+## Summary
+
+idea
+
+## Audience & problem
+
+people
+
+## Core flows
+
+use it
+
+## Constraints & non-goals
+
+none
+
+## Tech notes
+
+Go
+
+## Definition of done
+
+it works
+`
+	p, err := store.Create(context.Background(), "default", "app idea", project.CreateOpts{Name: "x"})
+	require.NoError(t, err)
+	_, err = srv.db().Exec(`UPDATE projects SET prd = ?, status = 'building' WHERE id = ?`, prd, p.ID)
+	require.NoError(t, err)
+	// Seed a pre-existing epic tree that regenerate should nuke.
+	_, err = srv.db().Exec(
+		`INSERT INTO epics (id, project_id, title, ordering, status) VALUES ('old_e', ?, 'old', 0, 'pending')`,
+		p.ID)
+	require.NoError(t, err)
+	_, err = srv.db().Exec(
+		`INSERT INTO stories (id, epic_id, title, ordering, status, iterations) VALUES ('old_s', 'old_e', 't', 0, 'pending', 0)`)
+	require.NoError(t, err)
+
+	req := httptest.NewRequest("POST", "/api/v1/projects/"+p.ID+"/regenerate-plan", nil)
+	w := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, req)
+	require.Equal(t, http.StatusOK, w.Code, "body=%s", w.Body.String())
+
+	// Wait for the async architect goroutine (scripted agent) to land the
+	// new tree.
+	deadline := time.Now().Add(5 * time.Second)
+	var epicCount int
+	for time.Now().Before(deadline) {
+		require.NoError(t, srv.db().QueryRow(
+			`SELECT COUNT(*) FROM epics WHERE project_id = ?`, p.ID).Scan(&epicCount))
+		if epicCount > 0 {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	assert.Greater(t, epicCount, 0, "architect must have re-populated epics")
+
+	var oldStoryCount int
+	require.NoError(t, srv.db().QueryRow(
+		`SELECT COUNT(*) FROM stories WHERE id = 'old_s'`).Scan(&oldStoryCount))
+	assert.Equal(t, 0, oldStoryCount, "old story must be wiped by the cascade")
+}
+
+func TestRegeneratePlanRefusesWhenDevStarted(t *testing.T) {
+	srv := setupServer(t)
+	store := project.NewStore(srv.db())
+	srv.WithProjectStore(store)
+
+	p, err := store.Create(context.Background(), "default", "idea", project.CreateOpts{Name: "x"})
+	require.NoError(t, err)
+	_, err = srv.db().Exec(`UPDATE projects SET prd = 'x' WHERE id = ?`, p.ID)
+	require.NoError(t, err)
+	_, err = srv.db().Exec(
+		`INSERT INTO epics (id, project_id, title, ordering, status) VALUES ('e', ?, 'E', 0, 'in_progress')`, p.ID)
+	require.NoError(t, err)
+	_, err = srv.db().Exec(
+		`INSERT INTO stories (id, epic_id, title, ordering, status, iterations) VALUES ('s', 'e', 'S', 0, 'dev', 2)`)
+	require.NoError(t, err)
+
+	req := httptest.NewRequest("POST", "/api/v1/projects/"+p.ID+"/regenerate-plan", nil)
+	w := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, req)
+	assert.Equal(t, http.StatusConflict, w.Code, "must not clobber a build in progress")
+}
+
 func TestGetProjectNotFoundReturns404(t *testing.T) {
 	srv := setupServer(t)
 	srv.WithProjectStore(project.NewStore(srv.db()))

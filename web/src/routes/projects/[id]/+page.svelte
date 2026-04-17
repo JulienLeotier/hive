@@ -225,6 +225,56 @@
 
 	let retrying = $state<Record<string, boolean>>({});
 
+	let editingPRD = $state(false);
+	let prdDraft = $state('');
+	let savingPRD = $state(false);
+	let regenerating = $state(false);
+	let prdError = $state('');
+
+	function startEditPRD() {
+		prdDraft = project?.prd ?? '';
+		editingPRD = true;
+		prdError = '';
+	}
+
+	async function savePRD() {
+		const id = $page.params.id ?? '';
+		if (!id) return;
+		savingPRD = true;
+		prdError = '';
+		try {
+			await fetch(`/api/v1/projects/${encodeURIComponent(id)}/prd`, {
+				method: 'PATCH',
+				headers: { 'content-type': 'application/json' },
+				body: JSON.stringify({ prd: prdDraft })
+			}).then(async (r) => {
+				if (!r.ok) throw new Error((await r.json()).error?.message ?? r.statusText);
+			});
+			editingPRD = false;
+			await load();
+		} catch (e) {
+			prdError = e instanceof Error ? e.message : String(e);
+		} finally {
+			savingPRD = false;
+		}
+	}
+
+	async function regeneratePlan() {
+		const id = $page.params.id ?? '';
+		if (!id) return;
+		if (!confirm('Regenerate the plan? The current epic/story tree will be cleared and the Architect will rebuild it from the PRD. This is only allowed before any dev work has started.')) return;
+		regenerating = true;
+		prdError = '';
+		try {
+			await apiPost(`/api/v1/projects/${encodeURIComponent(id)}/regenerate-plan`, {});
+			await load();
+		} catch (e) {
+			prdError = e instanceof Error ? e.message : String(e);
+		} finally {
+			regenerating = false;
+		}
+	}
+
 	async function retryStory(storyID: string) {
 		const id = $page.params.id ?? '';
 		if (!id) return;
@@ -404,8 +454,38 @@
 			</section>
 		{:else if project.prd}
 			<section class="panel">
-				<h3>PRD</h3>
-				<pre class="prd">{project.prd}</pre>
+				<div class="prd-head">
+					<h3>PRD</h3>
+					<div class="prd-actions">
+						{#if editingPRD}
+							<button type="button" onclick={savePRD} disabled={savingPRD || !prdDraft.trim()}>
+								{savingPRD ? 'Saving…' : 'Save PRD'}
+							</button>
+							<button type="button" onclick={() => (editingPRD = false)} disabled={savingPRD}>
+								Cancel
+							</button>
+						{:else}
+							<button type="button" onclick={startEditPRD}>✎ Edit</button>
+							{#if project.status !== 'shipped'}
+								<button
+									type="button"
+									class="warn"
+									onclick={regeneratePlan}
+									disabled={regenerating}
+									title="Wipe the current plan and ask the Architect to rebuild from the PRD. Only allowed before any dev work has started."
+								>
+									{regenerating ? 'Regenerating…' : '↻ Regenerate plan'}
+								</button>
+							{/if}
+						{/if}
+					</div>
+				</div>
+				{#if prdError}<div class="err">{prdError}</div>{/if}
+				{#if editingPRD}
+					<textarea class="prd-editor" rows="18" bind:value={prdDraft}></textarea>
+				{:else}
+					<pre class="prd">{project.prd}</pre>
+				{/if}
 			</section>
 		{/if}
 
@@ -641,6 +721,44 @@
 		padding: 0.75rem;
 		font-size: 0.85rem;
 		overflow-x: auto;
+	}
+	.prd-head {
+		display: flex;
+		justify-content: space-between;
+		align-items: center;
+		margin-bottom: 0.5rem;
+	}
+	.prd-head h3 { margin: 0; }
+	.prd-actions {
+		display: flex;
+		gap: 0.4rem;
+	}
+	.prd-actions button {
+		padding: 0.3rem 0.7rem;
+		background: var(--bg);
+		border: 1px solid var(--border);
+		border-radius: 4px;
+		color: inherit;
+		font-size: 0.8rem;
+		cursor: pointer;
+	}
+	.prd-actions button.warn {
+		border-color: var(--warn);
+		color: var(--warn);
+	}
+	.prd-actions button.warn:hover { background: color-mix(in srgb, var(--warn) 15%, var(--bg)); }
+	.prd-actions button:disabled { opacity: 0.5; cursor: not-allowed; }
+	.prd-editor {
+		width: 100%;
+		padding: 0.75rem;
+		background: var(--bg);
+		border: 1px solid var(--border);
+		border-radius: 4px;
+		color: inherit;
+		font: inherit;
+		font-family: ui-monospace, monospace;
+		font-size: 0.85rem;
+		resize: vertical;
 	}
 	.intake {
 		display: flex;

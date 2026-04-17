@@ -234,6 +234,8 @@ func (s *Server) routes() {
 	s.mux.Handle("POST /api/v1/projects/{id}/intake/messages", auth.RBACMiddleware("system", "write")(http.HandlerFunc(s.handleIntakeMessage)))
 	s.mux.Handle("POST /api/v1/projects/{id}/intake/finalize", auth.RBACMiddleware("system", "write")(http.HandlerFunc(s.handleIntakeFinalize)))
 	s.mux.Handle("POST /api/v1/projects/{id}/stories/{story_id}/retry", auth.RBACMiddleware("system", "write")(http.HandlerFunc(s.handleRetryStory)))
+	s.mux.Handle("PATCH /api/v1/projects/{id}/prd", auth.RBACMiddleware("system", "write")(http.HandlerFunc(s.handleUpdatePRD)))
+	s.mux.Handle("POST /api/v1/projects/{id}/regenerate-plan", auth.RBACMiddleware("system", "write")(http.HandlerFunc(s.handleRegeneratePlan)))
 
 	// Agent playground. Lets an operator send an ad-hoc task to a registered
 	// agent without going through a workflow. Handy for verifying
