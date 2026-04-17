@@ -19,6 +19,7 @@ import (
 	"github.com/JulienLeotier/hive/internal/config"
 	"github.com/JulienLeotier/hive/internal/cost"
 	"github.com/JulienLeotier/hive/internal/dashboard"
+	"github.com/JulienLeotier/hive/internal/devloop"
 	"github.com/JulienLeotier/hive/internal/event"
 	"github.com/JulienLeotier/hive/internal/intake"
 	"github.com/JulienLeotier/hive/internal/knowledge"
@@ -170,6 +171,27 @@ var serveCmd = &cobra.Command{
 
 		// Cost tracker — keeps per-project/per-agent token spend visible.
 		_ = cost.NewTracker(store.DB).WithBus(bus.PublishErr)
+
+		// BMAD dev/review loop. Polls for `building` projects and advances
+		// one story per project per tick until every AC passes. Honours
+		// HIVE_DEVLOOP_INTERVAL=<duration> if ops wants a faster cadence
+		// for CI / demos; HIVE_DEV_AGENT=scripted forces the deterministic
+		// backend.
+		devAgent := devloop.NewClaudeCodeDev()
+		reviewerAgent := devloop.NewClaudeCodeReviewer()
+		if os.Getenv("HIVE_DEV_AGENT") == "scripted" {
+			devAgent = devloop.NewScriptedDev()
+			reviewerAgent = devloop.NewScriptedReviewer()
+		}
+		loopInterval := 10 * time.Second
+		if v := os.Getenv("HIVE_DEVLOOP_INTERVAL"); v != "" {
+			if d, err := time.ParseDuration(v); err == nil && d > 0 {
+				loopInterval = d
+			}
+		}
+		devloop.NewSupervisor(store.DB, devAgent, reviewerAgent, loopInterval).Start(supervisorCtx)
+		slog.Info("devloop supervisor armed",
+			"dev", devAgent.Name(), "reviewer", reviewerAgent.Name(), "interval", loopInterval)
 
 		// Story 10.1 + 10.3: auto-record knowledge, configurable max-age.
 		// Story 16.2: opt-in OpenAI embeddings when knowledge.embedding is set,
