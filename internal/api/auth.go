@@ -148,9 +148,63 @@ func AuthMiddleware(km *KeyManager) func(http.Handler) http.Handler {
 	return AuthMiddlewareWithJWT(km, nil)
 }
 
+// WSAuthMiddleware is the WebSocket-flavoured auth wrapper. Browsers cannot
+// set Authorization headers on a WebSocket upgrade, so we additionally accept
+// the bearer token as a `?token=<value>` query parameter. Behaviour otherwise
+// matches AuthMiddlewareWithJWT: dev mode (no keys, no JWT) allows through.
+func WSAuthMiddleware(km *KeyManager, jwtValidator JWTValidator) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			ctx := r.Context()
+
+			if !km.HasKeys(ctx) && jwtValidator == nil {
+				next.ServeHTTP(w, r)
+				return
+			}
+
+			token := bearerToken(r)
+			if token == "" {
+				http.Error(w, "unauthorized", http.StatusUnauthorized)
+				return
+			}
+
+			if jwtValidator != nil && strings.Count(token, ".") == 2 {
+				if subject, err := jwtValidator(ctx, token); err == nil {
+					ctx = context.WithValue(ctx, ctxKeyName, subject)
+					next.ServeHTTP(w, r.WithContext(ctx))
+					return
+				}
+			}
+
+			if keyName, valid := km.Validate(ctx, token); valid {
+				ctx = context.WithValue(ctx, ctxKeyName, keyName)
+				next.ServeHTTP(w, r.WithContext(ctx))
+				return
+			}
+
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+		})
+	}
+}
+
+// bearerToken extracts the token from the Authorization header first, then
+// falls back to the ?token= query parameter (needed for browser WebSocket
+// upgrades which cannot carry custom headers).
+func bearerToken(r *http.Request) string {
+	if h := r.Header.Get("Authorization"); strings.HasPrefix(h, "Bearer ") {
+		return strings.TrimPrefix(h, "Bearer ")
+	}
+	return r.URL.Query().Get("token")
+}
+
 // AuthMiddlewareWithJWT is the JWT-aware variant. Pass nil for dev /
 // API-key-only deployments.
 func AuthMiddlewareWithJWT(km *KeyManager, jwtValidator JWTValidator) func(http.Handler) http.Handler {
+	// Auth-failure rate limiter: 20 failures burst, 60/min refill, per client IP.
+	// The middleware short-circuits before the expensive bcrypt path when a
+	// single IP has blown its budget, which is the realistic brute-force vector
+	// (scripted token enumeration against /api/v1/*).
+	authFailures := NewRateLimiter(20, 60)
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			ctx := r.Context()
@@ -163,7 +217,7 @@ func AuthMiddlewareWithJWT(km *KeyManager, jwtValidator JWTValidator) func(http.
 
 			auth := r.Header.Get("Authorization")
 			if auth == "" || !strings.HasPrefix(auth, "Bearer ") {
-				http.Error(w, `{"data":null,"error":{"code":"UNAUTHORIZED","message":"Missing or invalid Authorization header. Use: Bearer <api-key|jwt>"}}`, http.StatusUnauthorized)
+				recordAuthFailure(w, r, authFailures, "Missing or invalid Authorization header. Use: Bearer <api-key|jwt>")
 				return
 			}
 
@@ -183,7 +237,7 @@ func AuthMiddlewareWithJWT(km *KeyManager, jwtValidator JWTValidator) func(http.
 
 			keyName, valid := km.Validate(ctx, token)
 			if !valid {
-				http.Error(w, `{"data":null,"error":{"code":"UNAUTHORIZED","message":"Invalid API key or JWT"}}`, http.StatusUnauthorized)
+				recordAuthFailure(w, r, authFailures, "Invalid API key or JWT")
 				return
 			}
 
@@ -192,6 +246,19 @@ func AuthMiddlewareWithJWT(km *KeyManager, jwtValidator JWTValidator) func(http.
 			next.ServeHTTP(w, r.WithContext(ctx))
 		})
 	}
+}
+
+// recordAuthFailure returns 429 if the caller IP has already burned its
+// failure budget, otherwise returns the normal 401. Debits one token per call,
+// so legitimate typos cost the same as a brute-force attempt — fine, because
+// 20 bursts / 60 per minute is loose enough for humans.
+func recordAuthFailure(w http.ResponseWriter, r *http.Request, rl *RateLimiter, msg string) {
+	if !rl.allow(clientIP(r)) {
+		w.Header().Set("Retry-After", "60")
+		http.Error(w, `{"data":null,"error":{"code":"RATE_LIMITED","message":"Too many failed auth attempts"}}`, http.StatusTooManyRequests)
+		return
+	}
+	http.Error(w, `{"data":null,"error":{"code":"UNAUTHORIZED","message":"`+msg+`"}}`, http.StatusUnauthorized)
 }
 
 type contextKey string

@@ -134,6 +134,24 @@ var serveCmd = &cobra.Command{
 		supervisor.Start(supervisorCtx)
 		defer supervisor.Stop()
 
+		// Retention janitor — deletes old rows from append-only tables on a
+		// timer. Safe to always start; tables stay within bounds even on
+		// fresh deployments, and config.retention can tune or disable each
+		// window. Uses supervisorCtx so it stops with the server.
+		{
+			r := storage.RetentionConfig{Interval: time.Hour}
+			if cfg.Retention != nil {
+				r = storage.RetentionConfig{
+					EventsDays:         cfg.Retention.EventsMaxAgeDays,
+					CompletedTasksDays: cfg.Retention.CompletedTasksMaxAgeDays,
+					CostsDays:          cfg.Retention.CostsMaxAgeDays,
+					AuditDays:          cfg.Retention.AuditMaxAgeDays,
+					Interval:           time.Duration(cfg.Retention.IntervalMinutes) * time.Minute,
+				}
+			}
+			storage.RunRetention(supervisorCtx, store.DB, r)
+		}
+
 		// Cost tracker with bus so budget breaches emit cost.alert events.
 		_ = cost.NewTracker(store.DB).WithBus(bus.PublishErr)
 
@@ -184,28 +202,68 @@ var serveCmd = &cobra.Command{
 
 		mux := http.NewServeMux()
 
-		// WebSocket endpoint
-		mux.HandleFunc("/ws", hub.HandleWS)
+		// Health endpoints — unauthenticated, container-probe shaped.
+		// /healthz: liveness, /readyz: DB reachable within 2s.
+		mux.Handle("/healthz", api.HealthHandler())
+		mux.Handle("/readyz", api.ReadyHandler(store.DB))
 
-		// API routes (authenticated)
-		mux.Handle("/api/", apiSrv.Handler())
+		// Prometheus scrape endpoint — unauthenticated (standard scraper
+		// convention). Emits gauges + request counters + latency histogram.
+		// If you need auth, terminate TLS at an ingress and restrict by IP.
+		mux.Handle("/metrics", apiSrv.PromHandler())
+
+		// WebSocket endpoint — gated by the same auth policy as the REST API
+		// (API key or OIDC JWT). Token may ride in the Authorization header or
+		// as ?token= query param since browsers can't send headers on upgrade.
+		mux.Handle("/ws", api.Instrument("/ws", apiSrv.WSHandler(http.HandlerFunc(hub.HandleWS))))
+
+		// API routes (authenticated). Instrument at the /api/ prefix so every
+		// REST call counts without wiring each handler individually.
+		mux.Handle("/api/", api.Instrument("/api/", apiSrv.Handler()))
 
 		// Dashboard (static, no auth)
 		mux.Handle("/", dashboard.Handler())
 
 		addr := fmt.Sprintf(":%d", cfg.Port)
-		httpSrv := &http.Server{Addr: addr, Handler: mux}
+		httpSrv := &http.Server{
+			Addr:    addr,
+			Handler: api.SecurityHeaders(mux),
+		}
 
 		// Graceful shutdown
 		done := make(chan os.Signal, 1)
 		signal.Notify(done, os.Interrupt, syscall.SIGTERM)
 
+		scheme := "http"
+		if cfg.TLS.Enabled() {
+			scheme = "https"
+		}
+
+		// A7: SQLite serializes writers, so concurrent supervisor + scheduler +
+		// API writes contend for the same lock. This is fine for dev and small
+		// single-node deployments; it will fall over under prod load. Surface
+		// a loud startup warning so operators see it in the first log line.
+		if cfg.Storage != "postgres" {
+			if env := os.Getenv("HIVE_ENV"); env == "prod" || env == "production" {
+				slog.Warn("SQLite storage in production — concurrent writers will block on SQLITE_BUSY. Set storage=postgres for multi-writer workloads.")
+			} else {
+				slog.Info("storage backend: sqlite (single-writer, suitable for dev and small single-node deployments)")
+			}
+		}
+
 		go func() {
 			slog.Info("hive server started",
 				"addr", addr,
-				"dashboard", fmt.Sprintf("http://localhost:%d", cfg.Port),
-				"storage", storageLabel(cfg))
-			if err := httpSrv.ListenAndServe(); err != http.ErrServerClosed {
+				"dashboard", fmt.Sprintf("%s://localhost:%d", scheme, cfg.Port),
+				"storage", storageLabel(cfg),
+				"tls", cfg.TLS.Enabled())
+			var err error
+			if cfg.TLS.Enabled() {
+				err = httpSrv.ListenAndServeTLS(cfg.TLS.CertFile, cfg.TLS.KeyFile)
+			} else {
+				err = httpSrv.ListenAndServe()
+			}
+			if err != http.ErrServerClosed {
 				slog.Error("server error", "error", err)
 			}
 		}()

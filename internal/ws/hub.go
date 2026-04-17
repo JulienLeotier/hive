@@ -15,9 +15,15 @@ import (
 // client that doesn't pong within PongTimeout is evicted. Tuned to be
 // responsive without hammering healthy clients.
 const (
-	PingPeriod  = 30 * time.Second
-	PongTimeout = 60 * time.Second
+	PingPeriod   = 30 * time.Second
+	PongTimeout  = 60 * time.Second
 	WriteTimeout = 10 * time.Second
+
+	// sendBuffer caps queued broadcasts per client. A client that can't
+	// keep up within this window is evicted rather than blocking the hub.
+	// Rationale: 64 events covers a short network stall (~a few seconds of
+	// backlog at typical rates) without letting one slow client bloat memory.
+	sendBuffer = 64
 )
 
 // Hub manages WebSocket connections and broadcasts events to all clients.
@@ -26,15 +32,27 @@ type Hub struct {
 	clients map[*client]bool
 }
 
-// client wraps a websocket.Conn with a write mutex for concurrency safety.
+// client wraps a websocket.Conn with a bounded send channel. The writer
+// goroutine is the only path that calls WriteJSON/WriteControl, so no write
+// mutex is needed — serialisation is structural.
 type client struct {
 	conn *websocket.Conn
-	wmu  sync.Mutex
+	send chan any    // broadcast queue; closed on eviction
+	once sync.Once   // guards close(send) to make eviction idempotent
+	done chan struct{}
 }
 
 // NewHub creates a WebSocket hub.
 func NewHub() *Hub {
 	return &Hub{clients: make(map[*client]bool)}
+}
+
+// evict closes the client's send channel and signals its writer/reader to
+// exit. Safe to call multiple times.
+func (c *client) evict() {
+	c.once.Do(func() {
+		close(c.send)
+	})
 }
 
 // AllowedOrigins configures which origins can connect. Empty means localhost only.
@@ -70,7 +88,11 @@ func (h *Hub) HandleWS(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	c := &client{conn: conn}
+	c := &client{
+		conn: conn,
+		send: make(chan any, sendBuffer),
+		done: make(chan struct{}),
+	}
 
 	h.mu.Lock()
 	h.clients[c] = true
@@ -84,52 +106,61 @@ func (h *Hub) HandleWS(w http.ResponseWriter, r *http.Request) {
 		return conn.SetReadDeadline(time.Now().Add(PongTimeout))
 	})
 
-	done := make(chan struct{})
-
-	// Ping writer — every PingPeriod. If the write fails (TCP dead) we close
-	// the connection which unblocks the read loop and triggers eviction.
+	// Writer goroutine — sole owner of write operations on this conn. Drains
+	// the send channel + interleaves pings. Exits when send is closed (evict)
+	// or the connection errors out.
 	go func() {
 		ticker := time.NewTicker(PingPeriod)
-		defer ticker.Stop()
+		defer func() {
+			ticker.Stop()
+			conn.Close()
+			close(c.done)
+		}()
 		for {
 			select {
-			case <-ticker.C:
-				c.wmu.Lock()
-				err := c.conn.WriteControl(websocket.PingMessage, nil, time.Now().Add(WriteTimeout))
-				c.wmu.Unlock()
-				if err != nil {
-					c.conn.Close()
+			case msg, ok := <-c.send:
+				if !ok {
+					return // evicted
+				}
+				_ = conn.SetWriteDeadline(time.Now().Add(WriteTimeout))
+				if err := conn.WriteJSON(msg); err != nil {
+					slog.Debug("websocket write failed", "error", err)
 					return
 				}
-			case <-done:
-				return
+			case <-ticker.C:
+				if err := conn.WriteControl(
+					websocket.PingMessage, nil, time.Now().Add(WriteTimeout),
+				); err != nil {
+					return
+				}
 			}
 		}
 	}()
 
-	// Read loop — returns when the connection is closed or misses a pong.
+	// Reader goroutine — triggers eviction when the peer closes or misses
+	// a pong. Never writes to conn.
 	go func() {
 		defer func() {
-			close(done)
+			c.evict()
+			<-c.done // wait for writer to exit before unregistering
 			h.mu.Lock()
 			delete(h.clients, c)
 			h.mu.Unlock()
-			conn.Close()
 			slog.Debug("websocket client disconnected", "remote", conn.RemoteAddr())
 		}()
 		for {
 			if _, _, err := conn.ReadMessage(); err != nil {
-				break
+				return
 			}
 		}
 	}()
 }
 
-// Broadcast sends an event to all connected WebSocket clients.
+// Broadcast queues an event for delivery to every connected client. A slow
+// client whose buffer is full is evicted rather than blocking the hub or
+// other clients. The hub lock is held only long enough to snapshot the
+// client set; writes happen after the lock is released.
 func (h *Hub) Broadcast(evt event.Event) {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-
 	msg := map[string]any{
 		"id":         evt.ID,
 		"type":       evt.Type,
@@ -138,19 +169,23 @@ func (h *Hub) Broadcast(evt event.Event) {
 		"created_at": evt.CreatedAt,
 	}
 
-	var failed []*client
+	h.mu.Lock()
+	clients := make([]*client, 0, len(h.clients))
 	for c := range h.clients {
-		c.wmu.Lock()
-		err := c.conn.WriteJSON(msg)
-		c.wmu.Unlock()
-		if err != nil {
-			slog.Debug("websocket write failed", "error", err)
-			c.conn.Close()
-			failed = append(failed, c)
-		}
+		clients = append(clients, c)
 	}
-	for _, c := range failed {
-		delete(h.clients, c)
+	h.mu.Unlock()
+
+	for _, c := range clients {
+		select {
+		case c.send <- msg:
+			// queued
+		default:
+			// Buffer full — slow client. Evict; the reader goroutine will
+			// complete the unregistration once the writer exits.
+			slog.Debug("websocket client buffer full, evicting", "remote", c.conn.RemoteAddr())
+			c.evict()
+		}
 	}
 }
 

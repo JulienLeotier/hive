@@ -105,6 +105,10 @@ func (b *Bus) Query(ctx context.Context, opts QueryOpts) ([]Event, error) {
 		query += ` AND source = ?`
 		args = append(args, opts.Source)
 	}
+	if opts.TenantID != "" {
+		query += ` AND tenant_id = ?`
+		args = append(args, opts.TenantID)
+	}
 	if !opts.Since.IsZero() {
 		query += ` AND created_at >= ?`
 		args = append(args, opts.Since.Format("2006-01-02 15:04:05"))
@@ -137,10 +141,11 @@ func (b *Bus) Query(ctx context.Context, opts QueryOpts) ([]Event, error) {
 
 // QueryOpts filters for event queries.
 type QueryOpts struct {
-	Type   string    // prefix match (e.g., "task" matches "task.created")
-	Source string    // exact match
-	Since  time.Time // events after this time
-	Limit  int       // max results (0 = unlimited)
+	Type     string    // prefix match (e.g., "task" matches "task.created")
+	Source   string    // exact match
+	Since    time.Time // events after this time
+	Limit    int       // max results (0 = unlimited)
+	TenantID string    // restrict to a tenant; empty = cross-tenant (admin only)
 }
 
 func (b *Bus) deliver(evt Event) {

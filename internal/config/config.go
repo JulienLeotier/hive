@@ -17,6 +17,7 @@ type Config struct {
 	Port        int              `yaml:"port"`
 	Storage     string           `yaml:"storage"`      // "sqlite" (default) or "postgres"
 	PostgresURL string           `yaml:"postgres_url"` // used when storage=postgres
+	TLS         *TLSBlock        `yaml:"tls,omitempty"`
 	OIDC        *OIDCBlock       `yaml:"oidc,omitempty"`
 	Federation  *FederationBlock `yaml:"federation,omitempty"`
 	Checkpoint  *CheckpointBlock `yaml:"checkpoint,omitempty"`
@@ -25,6 +26,20 @@ type Config struct {
 	Knowledge   *KnowledgeBlock  `yaml:"knowledge,omitempty"`
 	EventBus    *EventBusBlock   `yaml:"event_bus,omitempty"`
 	Cluster     *ClusterBlock    `yaml:"cluster,omitempty"`
+	Retention   *RetentionBlock  `yaml:"retention,omitempty"`
+}
+
+// TLSBlock enables HTTPS when CertFile + KeyFile are both set. Leaving either
+// empty keeps the server on plaintext HTTP, which is only appropriate behind a
+// TLS-terminating proxy in a trusted network.
+type TLSBlock struct {
+	CertFile string `yaml:"cert_file,omitempty"`
+	KeyFile  string `yaml:"key_file,omitempty"`
+}
+
+// Enabled reports whether TLS is configured with a usable cert/key pair.
+func (t *TLSBlock) Enabled() bool {
+	return t != nil && t.CertFile != "" && t.KeyFile != ""
 }
 
 // CheckpointBlock tunes the background checkpoint supervisor. Story 2.6.
@@ -51,6 +66,18 @@ type RetryBlock struct {
 // KnowledgeBlock tunes knowledge-layer lifecycle. Story 10.3.
 type KnowledgeBlock struct {
 	MaxAgeDays int `yaml:"max_age_days,omitempty"` // default 90
+}
+
+// RetentionBlock caps growth on the big append-only tables. Zero or negative
+// values disable the janitor for that table. Defaults chosen to keep a year
+// of cost data for billing review, a month of completed tasks for debugging,
+// and 90 days of events for audit trails.
+type RetentionBlock struct {
+	EventsMaxAgeDays         int `yaml:"events_max_age_days,omitempty"`          // default 90
+	CompletedTasksMaxAgeDays int `yaml:"completed_tasks_max_age_days,omitempty"` // default 30
+	CostsMaxAgeDays          int `yaml:"costs_max_age_days,omitempty"`           // default 365
+	AuditMaxAgeDays          int `yaml:"audit_max_age_days,omitempty"`           // default 365
+	IntervalMinutes          int `yaml:"interval_minutes,omitempty"`             // default 60
 }
 
 // OIDCBlock holds OIDC SSO settings. Story 21.1.
@@ -138,5 +165,16 @@ func applyEnvOverrides(cfg *Config) {
 	}
 	if v := os.Getenv("HIVE_POSTGRES_URL"); v != "" {
 		cfg.PostgresURL = v
+	}
+	if cert, key := os.Getenv("HIVE_TLS_CERT"), os.Getenv("HIVE_TLS_KEY"); cert != "" || key != "" {
+		if cfg.TLS == nil {
+			cfg.TLS = &TLSBlock{}
+		}
+		if cert != "" {
+			cfg.TLS.CertFile = cert
+		}
+		if key != "" {
+			cfg.TLS.KeyFile = key
+		}
 	}
 }

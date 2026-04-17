@@ -133,16 +133,40 @@ func (m *Manager) RegisterLocal(ctx context.Context, name, agentType, path strin
 }
 
 // List returns registered agents with a default limit of 1000.
+// Cross-tenant: prefer ListByTenant from API handlers. Kept for CLI and
+// infrastructure callers where tenant scoping is not meaningful.
 func (m *Manager) List(ctx context.Context) ([]Agent, error) {
 	return m.ListWithLimit(ctx, 1000)
 }
 
+// ListByTenant returns agents scoped to a single tenant. Pass "" to get
+// cross-tenant results (equivalent to List). API handlers must always
+// supply a tenant; CLI/infra paths may opt out.
+func (m *Manager) ListByTenant(ctx context.Context, tenant string, limit int) ([]Agent, error) {
+	if limit <= 0 {
+		limit = 1000
+	}
+	query := `SELECT id, name, type, config, capabilities, health_status, trust_level, created_at, updated_at
+	          FROM agents WHERE 1=1`
+	args := []any{}
+	if tenant != "" {
+		query += ` AND tenant_id = ?`
+		args = append(args, tenant)
+	}
+	query += ` ORDER BY name LIMIT ?`
+	args = append(args, limit)
+	return m.queryAgents(ctx, query, args...)
+}
+
 // ListWithLimit returns registered agents up to the given limit.
 func (m *Manager) ListWithLimit(ctx context.Context, limit int) ([]Agent, error) {
-	rows, err := m.db.QueryContext(ctx,
+	return m.queryAgents(ctx,
 		`SELECT id, name, type, config, capabilities, health_status, trust_level, created_at, updated_at
-		 FROM agents ORDER BY name LIMIT ?`, limit,
-	)
+		 FROM agents ORDER BY name LIMIT ?`, limit)
+}
+
+func (m *Manager) queryAgents(ctx context.Context, query string, args ...any) ([]Agent, error) {
+	rows, err := m.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("listing agents: %w", err)
 	}

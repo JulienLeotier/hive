@@ -201,21 +201,37 @@ func (s *Server) SetFederationShared(caps []string) {
 // RBACMiddleware can enforce per-resource rules. If no user store is attached,
 // every authenticated request is treated as an admin (dev mode compatibility).
 func (s *Server) Handler() http.Handler {
-	var jwtValidator JWTValidator
-	if s.oidc != nil {
-		jwtValidator = s.oidc.ValidateJWT
+	return AuthMiddlewareWithJWT(s.keyMgr, s.jwtValidator())(s.roleResolver(s.mux))
+}
+
+// WSHandler wraps a WebSocket upgrade handler with the same auth policy as
+// the REST API, but accepts the token via ?token= query param in addition
+// to the Authorization header (browsers can't send headers on WS upgrade).
+// Dev mode (no API keys, no OIDC) bypasses auth to keep the local loop easy.
+func (s *Server) WSHandler(next http.Handler) http.Handler {
+	return WSAuthMiddleware(s.keyMgr, s.jwtValidator())(next)
+}
+
+func (s *Server) jwtValidator() JWTValidator {
+	if s.oidc == nil {
+		return nil
 	}
-	return AuthMiddlewareWithJWT(s.keyMgr, jwtValidator)(s.roleResolver(s.mux))
+	return s.oidc.ValidateJWT
 }
 
 // roleResolver pulls the API key name set by AuthMiddleware and resolves it to
 // a role (+tenant) via the UserStore; stashes them in context for RBACMiddleware.
+//
+// A6 guard: dev-mode callers (no user store, or no API keys configured) are
+// given the admin role with an EMPTY tenant string. Combined with
+// tenantFilter's policy, this yields cross-tenant visibility in dev without
+// requiring a hardcoded tenant name that could collide with a real customer.
 func (s *Server) roleResolver(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		ctx := r.Context()
 		if s.users == nil {
 			ctx = auth.WithRole(ctx, auth.RoleAdmin) // no directory → trust the key
-			ctx = auth.WithTenant(ctx, "default")
+			ctx = auth.WithTenant(ctx, "")           // admin cross-tenant
 			next.ServeHTTP(w, r.WithContext(ctx))
 			return
 		}
@@ -223,15 +239,17 @@ func (s *Server) roleResolver(next http.Handler) http.Handler {
 		if keyName == "" {
 			// AuthMiddleware let a dev-mode request through (no keys configured).
 			ctx = auth.WithRole(ctx, auth.RoleAdmin)
-			ctx = auth.WithTenant(ctx, "default")
+			ctx = auth.WithTenant(ctx, "")
 			next.ServeHTTP(w, r.WithContext(ctx))
 			return
 		}
 		user, err := s.users.Get(ctx, keyName)
 		if err != nil {
-			// Key exists but isn't mapped to an RBAC role → viewer by default.
+			// Key exists but isn't mapped to an RBAC role → viewer + no tenant
+			// (which now fails closed instead of opening up the legacy
+			// "default" tenant to a stranger).
 			ctx = auth.WithRole(ctx, auth.RoleViewer)
-			ctx = auth.WithTenant(ctx, "default")
+			ctx = auth.WithTenant(ctx, "")
 		} else {
 			ctx = auth.WithRole(ctx, user.Role)
 			ctx = auth.WithTenant(ctx, user.TenantID)
@@ -249,8 +267,14 @@ func (s *Server) handleCreateAgent(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleEmitEvent lets an authenticated agent push a custom event. Story 2.1.
-// The request body is {type, source?, payload}. Source defaults to the
-// authenticated key name so events are attributable.
+// The request body is {type, source?, payload}.
+//
+// Source spoofing guard (A5): the `source` field is always overwritten with
+// the caller's authenticated identity, except for admins who may pass an
+// explicit source (bridge/proxy use case — e.g. a gateway emitting on behalf
+// of a backend service it supervises). Without this, any operator could
+// post events claiming to be any other agent, poisoning the audit trail and
+// triggering task.* handlers for tasks they don't own.
 func (s *Server) handleEmitEvent(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		Type    string `json:"type"`
@@ -265,14 +289,22 @@ func (s *Server) handleEmitEvent(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "MISSING_TYPE", "event type is required")
 		return
 	}
-	if body.Source == "" {
-		if keyName, ok := r.Context().Value(ctxKeyName).(string); ok {
-			body.Source = keyName
+	ctx := r.Context()
+	caller, _ := ctx.Value(ctxKeyName).(string)
+	role, _ := auth.RoleFromContext(ctx)
+	switch {
+	case body.Source == "":
+		if caller != "" {
+			body.Source = caller
 		} else {
 			body.Source = "adapter"
 		}
+	case body.Source != caller && role != auth.RoleAdmin:
+		writeError(w, http.StatusForbidden, "SOURCE_FORBIDDEN",
+			"cannot emit events with a source other than the authenticated identity")
+		return
 	}
-	evt, err := s.eventBus.Publish(r.Context(), body.Type, body.Source, body.Payload)
+	evt, err := s.eventBus.Publish(ctx, body.Type, body.Source, body.Payload)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "PUBLISH_FAILED", err.Error())
 		return
@@ -349,7 +381,13 @@ func (s *Server) Start(addr string) error {
 }
 
 func (s *Server) handleListAgents(w http.ResponseWriter, r *http.Request) {
-	agents, err := s.agentMgr.List(r.Context())
+	ctx := r.Context()
+	tenant, ok := requireTenantScope(ctx)
+	if !ok {
+		writeError(w, http.StatusForbidden, "NO_TENANT", "request has no tenant scope")
+		return
+	}
+	agents, err := s.agentMgr.ListByTenant(ctx, tenant, 1000)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "LIST_FAILED", err.Error())
 		return
@@ -358,10 +396,17 @@ func (s *Server) handleListAgents(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleListEvents(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	tenant, ok := requireTenantScope(ctx)
+	if !ok {
+		writeError(w, http.StatusForbidden, "NO_TENANT", "request has no tenant scope")
+		return
+	}
 	opts := event.QueryOpts{
-		Type:   r.URL.Query().Get("type"),
-		Source: r.URL.Query().Get("source"),
-		Limit:  50,
+		Type:     r.URL.Query().Get("type"),
+		Source:   r.URL.Query().Get("source"),
+		TenantID: tenant,
+		Limit:    50,
 	}
 	if since := r.URL.Query().Get("since"); since != "" {
 		if t, err := time.Parse(time.RFC3339, since); err == nil {
@@ -369,7 +414,7 @@ func (s *Server) handleListEvents(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	events, err := s.eventBus.Query(r.Context(), opts)
+	events, err := s.eventBus.Query(ctx, opts)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "QUERY_FAILED", err.Error())
 		return
@@ -384,13 +429,18 @@ func (s *Server) handleListEvents(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleListTasks returns tasks with enough fields for the dashboard grouping.
+// Story 8.3 AC1 requires duration + result summary in addition to status/agent.
 func (s *Server) handleListTasks(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
+	tenantClause, tenantArgs := tenantFilter(ctx, "t")
 	rows, err := s.db().QueryContext(ctx,
 		`SELECT t.id, t.workflow_id, t.type, t.status,
-		        COALESCE(t.agent_id, ''), COALESCE(a.name, ''), t.created_at
+		        COALESCE(t.agent_id, ''), COALESCE(a.name, ''),
+		        t.created_at, COALESCE(t.started_at, ''), COALESCE(t.completed_at, ''),
+		        COALESCE(t.output, '')
 		 FROM tasks t LEFT JOIN agents a ON a.id = t.agent_id
-		 ORDER BY t.created_at DESC LIMIT 500`)
+		 WHERE 1=1`+tenantClause+`
+		 ORDER BY t.created_at DESC LIMIT 500`, tenantArgs...)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "QUERY_FAILED", err.Error())
 		return
@@ -398,28 +448,90 @@ func (s *Server) handleListTasks(w http.ResponseWriter, r *http.Request) {
 	defer rows.Close()
 
 	type taskRow struct {
-		ID         string `json:"id"`
-		WorkflowID string `json:"workflow_id"`
-		Type       string `json:"type"`
-		Status     string `json:"status"`
-		AgentID    string `json:"agent_id"`
-		AgentName  string `json:"agent_name"`
-		CreatedAt  string `json:"created_at"`
+		ID              string   `json:"id"`
+		WorkflowID      string   `json:"workflow_id"`
+		Type            string   `json:"type"`
+		Status          string   `json:"status"`
+		AgentID         string   `json:"agent_id"`
+		AgentName       string   `json:"agent_name"`
+		CreatedAt       string   `json:"created_at"`
+		StartedAt       string   `json:"started_at,omitempty"`
+		CompletedAt     string   `json:"completed_at,omitempty"`
+		DurationSeconds *float64 `json:"duration_seconds,omitempty"`
+		ResultSummary   string   `json:"result_summary,omitempty"`
 	}
 	var tasks []taskRow
 	for rows.Next() {
-		var t taskRow
-		if err := rows.Scan(&t.ID, &t.WorkflowID, &t.Type, &t.Status, &t.AgentID, &t.AgentName, &t.CreatedAt); err == nil {
-			tasks = append(tasks, t)
+		var (
+			t      taskRow
+			output string
+		)
+		if err := rows.Scan(&t.ID, &t.WorkflowID, &t.Type, &t.Status,
+			&t.AgentID, &t.AgentName, &t.CreatedAt,
+			&t.StartedAt, &t.CompletedAt, &output); err != nil {
+			continue
 		}
+		if d, ok := taskDurationSeconds(t.StartedAt, t.CompletedAt); ok {
+			t.DurationSeconds = &d
+		}
+		t.ResultSummary = summariseTaskOutput(output)
+		tasks = append(tasks, t)
 	}
 	writeJSON(w, tasks)
+}
+
+// taskDurationSeconds returns elapsed time between started_at and completed_at.
+// If completed_at is empty but started_at is set, returns elapsed-so-far.
+// Returns (0, false) when started_at is missing or unparseable.
+func taskDurationSeconds(startedAt, completedAt string) (float64, bool) {
+	if startedAt == "" {
+		return 0, false
+	}
+	start, err := parseTaskTime(startedAt)
+	if err != nil {
+		return 0, false
+	}
+	end := time.Now().UTC()
+	if completedAt != "" {
+		if t, err := parseTaskTime(completedAt); err == nil {
+			end = t
+		}
+	}
+	d := end.Sub(start).Seconds()
+	if d < 0 {
+		return 0, false
+	}
+	return d, true
+}
+
+// parseTaskTime accepts both RFC3339 and SQLite's "YYYY-MM-DD HH:MM:SS" format.
+func parseTaskTime(s string) (time.Time, error) {
+	if t, err := time.Parse(time.RFC3339, s); err == nil {
+		return t, nil
+	}
+	return time.Parse("2006-01-02 15:04:05", s)
+}
+
+// summariseTaskOutput returns a short single-line preview of the task output
+// payload for the dashboard. Empty output and unparseable JSON degrade to ''.
+func summariseTaskOutput(raw string) string {
+	if raw == "" {
+		return ""
+	}
+	// Collapse whitespace and cap at 120 chars.
+	const max = 120
+	out := strings.Join(strings.Fields(raw), " ")
+	if len(out) > max {
+		out = out[:max] + "…"
+	}
+	return out
 }
 
 // handleCosts returns per-agent cost summaries and budget alerts.
 func (s *Server) handleCosts(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	db := s.db()
+	tClause, tArgs := tenantFilter(ctx, "")
 
 	type summary struct {
 		AgentName string  `json:"agent_name"`
@@ -427,7 +539,9 @@ func (s *Server) handleCosts(w http.ResponseWriter, r *http.Request) {
 		TaskCount int     `json:"task_count"`
 	}
 	rows, err := db.QueryContext(ctx,
-		`SELECT agent_name, SUM(cost), COUNT(*) FROM costs GROUP BY agent_name ORDER BY SUM(cost) DESC`)
+		`SELECT agent_name, SUM(cost), COUNT(*) FROM costs
+		 WHERE 1=1`+tClause+`
+		 GROUP BY agent_name ORDER BY SUM(cost) DESC`, tArgs...)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "QUERY_FAILED", err.Error())
 		return
@@ -442,7 +556,8 @@ func (s *Server) handleCosts(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Budget alerts
+	// Budget alerts. Migration 010 added tenant_id to budget_alerts so we can
+	// scope both the alert row and the inner cost SUM to the caller's tenant.
 	type alert struct {
 		AgentName  string  `json:"agent_name"`
 		DailyLimit float64 `json:"daily_limit"`
@@ -450,10 +565,16 @@ func (s *Server) handleCosts(w http.ResponseWriter, r *http.Request) {
 		Breached   bool    `json:"breached"`
 	}
 	var alerts []alert
+	innerTClause, innerTArgs := tenantFilter(ctx, "")
+	outerTClause, outerTArgs := tenantFilter(ctx, "b")
+	alertArgs := append([]any{}, innerTArgs...)
+	alertArgs = append(alertArgs, outerTArgs...)
 	if aRows, err := db.QueryContext(ctx,
 		`SELECT b.agent_name, b.daily_limit,
-		        COALESCE((SELECT SUM(cost) FROM costs WHERE agent_name = b.agent_name AND date(created_at) = date('now')), 0)
-		 FROM budget_alerts b WHERE b.enabled = 1`); err == nil {
+		        COALESCE((SELECT SUM(cost) FROM costs
+		                  WHERE agent_name = b.agent_name
+		                    AND date(created_at) = date('now')`+innerTClause+`), 0)
+		 FROM budget_alerts b WHERE b.enabled = 1`+outerTClause, alertArgs...); err == nil {
 		defer aRows.Close()
 		for aRows.Next() {
 			var a alert
@@ -473,7 +594,8 @@ func (s *Server) handleCosts(w http.ResponseWriter, r *http.Request) {
 	var perWorkflow []wfSummary
 	if wfRows, err := db.QueryContext(ctx,
 		`SELECT workflow_id, SUM(cost), COUNT(*) FROM costs
-		 GROUP BY workflow_id ORDER BY SUM(cost) DESC LIMIT 50`); err == nil {
+		 WHERE 1=1`+tClause+`
+		 GROUP BY workflow_id ORDER BY SUM(cost) DESC LIMIT 50`, tArgs...); err == nil {
 		defer wfRows.Close()
 		for wfRows.Next() {
 			var s wfSummary
@@ -491,8 +613,8 @@ func (s *Server) handleCosts(w http.ResponseWriter, r *http.Request) {
 	var trend []dailyPoint
 	if tRows, err := db.QueryContext(ctx,
 		`SELECT date(created_at), SUM(cost) FROM costs
-		 WHERE created_at >= date('now','-14 days')
-		 GROUP BY date(created_at) ORDER BY date(created_at)`); err == nil {
+		 WHERE created_at >= date('now','-14 days')`+tClause+`
+		 GROUP BY date(created_at) ORDER BY date(created_at)`, tArgs...); err == nil {
 		defer tRows.Close()
 		for tRows.Next() {
 			var p dailyPoint

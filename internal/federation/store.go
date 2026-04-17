@@ -20,9 +20,24 @@ type Store struct {
 func NewStore(db *sql.DB) *Store { return &Store{db: db} }
 
 // Add inserts or upserts a federation link, optionally with mTLS material.
+// When HIVE_MASTER_KEY is set the cert/key PEMs are envelope-encrypted at
+// rest (A3 mitigation). Without the env var, values are stored as plaintext
+// for backwards compatibility with existing dev databases.
 func (s *Store) Add(ctx context.Context, link *Link, caCert, clientCert, clientKey string) error {
 	caps, _ := json.Marshal(link.SharedCaps)
-	_, err := s.db.ExecContext(ctx,
+	encCA, err := encrypt(caCert)
+	if err != nil {
+		return fmt.Errorf("encrypting ca_cert: %w", err)
+	}
+	encCert, err := encrypt(clientCert)
+	if err != nil {
+		return fmt.Errorf("encrypting client_cert: %w", err)
+	}
+	encKey, err := encrypt(clientKey)
+	if err != nil {
+		return fmt.Errorf("encrypting client_key: %w", err)
+	}
+	_, err = s.db.ExecContext(ctx,
 		`INSERT INTO federation_links (id, name, url, status, shared_caps, ca_cert, client_cert, client_key, last_heartbeat)
 		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
 		 ON CONFLICT(name) DO UPDATE SET
@@ -32,7 +47,7 @@ func (s *Store) Add(ctx context.Context, link *Link, caCert, clientCert, clientK
 		    ca_cert = excluded.ca_cert,
 		    client_cert = excluded.client_cert,
 		    client_key = excluded.client_key`,
-		link.Name, link.Name, link.URL, link.Status, string(caps), caCert, clientCert, clientKey)
+		link.Name, link.Name, link.URL, link.Status, string(caps), encCA, encCert, encKey)
 	return err
 }
 
@@ -69,13 +84,25 @@ func (s *Store) Remove(ctx context.Context, name string) error {
 
 // TLSConfigFor builds a *tls.Config for a stored link. Story 19.1.
 func (s *Store) TLSConfigFor(ctx context.Context, name string) (*tls.Config, error) {
-	var caPEM, certPEM, keyPEM string
+	var caStored, certStored, keyStored string
 	err := s.db.QueryRowContext(ctx,
 		`SELECT COALESCE(ca_cert,''), COALESCE(client_cert,''), COALESCE(client_key,'')
 		 FROM federation_links WHERE name = ?`, name,
-	).Scan(&caPEM, &certPEM, &keyPEM)
+	).Scan(&caStored, &certStored, &keyStored)
 	if err != nil {
 		return nil, err
+	}
+	caPEM, err := decrypt(caStored)
+	if err != nil {
+		return nil, fmt.Errorf("decrypt ca_cert for %s: %w", name, err)
+	}
+	certPEM, err := decrypt(certStored)
+	if err != nil {
+		return nil, fmt.Errorf("decrypt client_cert for %s: %w", name, err)
+	}
+	keyPEM, err := decrypt(keyStored)
+	if err != nil {
+		return nil, fmt.Errorf("decrypt client_key for %s: %w", name, err)
 	}
 	if caPEM == "" && certPEM == "" {
 		return nil, nil // no mTLS configured

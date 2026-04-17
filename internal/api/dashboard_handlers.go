@@ -1,7 +1,6 @@
 package api
 
 import (
-	"database/sql"
 	"net/http"
 
 	"github.com/JulienLeotier/hive/internal/optimizer"
@@ -12,8 +11,12 @@ import (
 // can render a single fetch per page.
 
 func (s *Server) handleListWorkflows(w http.ResponseWriter, r *http.Request) {
-	rows, err := s.db().QueryContext(r.Context(),
-		`SELECT id, name, status, created_at FROM workflows ORDER BY created_at DESC LIMIT 500`)
+	ctx := r.Context()
+	tClause, tArgs := tenantFilter(ctx, "")
+	rows, err := s.db().QueryContext(ctx,
+		`SELECT id, name, status, created_at FROM workflows
+		 WHERE 1=1`+tClause+`
+		 ORDER BY created_at DESC LIMIT 500`, tArgs...)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "QUERY_FAILED", err.Error())
 		return
@@ -36,18 +39,19 @@ func (s *Server) handleListWorkflows(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleListKnowledge(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
 	taskType := r.URL.Query().Get("type")
-	var rows *sql.Rows
-	var err error
+	tClause, tArgs := tenantFilter(ctx, "")
+	args := append([]any{}, tArgs...)
+	typeClause := ""
 	if taskType != "" {
-		rows, err = s.db().QueryContext(r.Context(),
-			`SELECT id, task_type, approach, outcome, COALESCE(context,''), created_at
-			 FROM knowledge WHERE task_type = ? ORDER BY created_at DESC LIMIT 200`, taskType)
-	} else {
-		rows, err = s.db().QueryContext(r.Context(),
-			`SELECT id, task_type, approach, outcome, COALESCE(context,''), created_at
-			 FROM knowledge ORDER BY created_at DESC LIMIT 200`)
+		typeClause = ` AND task_type = ?`
+		args = append(args, taskType)
 	}
+	rows, err := s.db().QueryContext(ctx,
+		`SELECT id, task_type, approach, outcome, COALESCE(context,''), created_at
+		 FROM knowledge WHERE 1=1`+tClause+typeClause+`
+		 ORDER BY created_at DESC LIMIT 200`, args...)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "QUERY_FAILED", err.Error())
 		return
@@ -130,12 +134,20 @@ func (s *Server) handleListFederation(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleListAuctions(w http.ResponseWriter, r *http.Request) {
+	// Single-pass query: replaces two correlated subqueries per row
+	// (winner lookup + bid count) with a LEFT JOIN on the winner and a
+	// GROUP BY for the count. Cuts query count on the auctions page from
+	// 1+2N down to 1.
 	rows, err := s.db().QueryContext(r.Context(),
 		`SELECT a.id, a.task_id, a.strategy, a.status,
-		        COALESCE((SELECT agent_name FROM bids WHERE id = a.winner_bid_id), ''),
-		        (SELECT COUNT(*) FROM bids WHERE auction_id = a.id),
+		        COALESCE(w.agent_name, ''),
+		        COALESCE(COUNT(b.id), 0),
 		        a.opened_at
-		 FROM auctions a ORDER BY a.opened_at DESC LIMIT 100`)
+		 FROM auctions a
+		 LEFT JOIN bids w ON w.id = a.winner_bid_id
+		 LEFT JOIN bids b ON b.auction_id = a.id
+		 GROUP BY a.id, a.task_id, a.strategy, a.status, w.agent_name, a.opened_at
+		 ORDER BY a.opened_at DESC LIMIT 100`)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "QUERY_FAILED", err.Error())
 		return
@@ -200,9 +212,12 @@ func (s *Server) handleRecommendations(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleListAudit(w http.ResponseWriter, r *http.Request) {
-	rows, err := s.db().QueryContext(r.Context(),
+	ctx := r.Context()
+	tClause, tArgs := tenantFilter(ctx, "")
+	rows, err := s.db().QueryContext(ctx,
 		`SELECT id, action, actor, resource, COALESCE(detail, ''), created_at
-		 FROM audit_log ORDER BY created_at DESC LIMIT 200`)
+		 FROM audit_log WHERE 1=1`+tClause+`
+		 ORDER BY created_at DESC LIMIT 200`, tArgs...)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "QUERY_FAILED", err.Error())
 		return
@@ -261,9 +276,12 @@ func (s *Server) handleListTenants(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleListCluster(w http.ResponseWriter, r *http.Request) {
-	rows, err := s.db().QueryContext(r.Context(),
+	ctx := r.Context()
+	tClause, tArgs := tenantFilter(ctx, "")
+	rows, err := s.db().QueryContext(ctx,
 		`SELECT node_id, hostname, address, status, last_heartbeat
-		 FROM cluster_members ORDER BY last_heartbeat DESC`)
+		 FROM cluster_members WHERE 1=1`+tClause+`
+		 ORDER BY last_heartbeat DESC`, tArgs...)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "QUERY_FAILED", err.Error())
 		return
