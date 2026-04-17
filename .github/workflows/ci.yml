@@ -18,6 +18,20 @@ jobs:
           go-version: '1.26'
           cache: true
 
+      # `go build ./...` fails without this step because internal/dashboard
+      # uses //go:embed dist/* and dist/ is gitignored (generated output).
+      # Build the static bundle first so embed has something to attach to.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - name: Build dashboard bundle
+        working-directory: web
+        run: |
+          npm ci
+          npm run build
+
       - name: Verify go.mod is tidy
         run: |
           go mod tidy
@@ -86,6 +100,18 @@ jobs:
         with:
           go-version: '1.26'
           cache: true
+      # golangci-lint's typecheck runs the same embed directive Go does,
+      # so we need the frontend bundle on disk before invoking it.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - name: Build dashboard bundle
+        working-directory: web
+        run: |
+          npm ci
+          npm run build
       - name: golangci-lint
         # Pinned to the v2.x major matching our .golangci.yml schema.
         # staticcheck is included in the configured linter set, so this
