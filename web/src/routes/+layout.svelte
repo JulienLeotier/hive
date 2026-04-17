@@ -73,6 +73,7 @@
 			items: [
 				{ href: '/cluster', label: 'Cluster' },
 				{ href: '/federation', label: 'Federation' },
+				{ href: '/marketplace', label: 'Marketplace' },
 				{ href: '/webhooks', label: 'Webhooks' }
 			]
 		},

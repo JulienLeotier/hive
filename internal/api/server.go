@@ -185,6 +185,10 @@ func (s *Server) routes() {
 	// discovery, add a dedicated public sub-endpoint with only the capability
 	// names (no counts, no versions).
 	s.mux.Handle("GET /api/v1/capabilities", auth.RBACMiddleware("system", "read")(http.HandlerFunc(s.handleListCapabilities)))
+	// Marketplace: peer-facing catalog of publishable agents, and the
+	// aggregated view that pulls every federated peer's catalog.
+	s.mux.Handle("GET /api/v1/federation/catalog", auth.RBACMiddleware("system", "read")(http.HandlerFunc(s.handleCatalog)))
+	s.mux.Handle("GET /api/v1/marketplace", auth.RBACMiddleware("system", "read")(http.HandlerFunc(s.handleMarketplace)))
 	// Write endpoints: viewers get 403.
 	s.mux.Handle("POST /api/v1/agents", auth.RBACMiddleware("agents", "write")(http.HandlerFunc(s.handleCreateAgent)))
 	s.mux.Handle("DELETE /api/v1/agents/{name}", auth.RBACMiddleware("agents", "write")(http.HandlerFunc(s.handleDeleteAgent)))
@@ -529,6 +533,175 @@ func (s *Server) handleDeleteWorkflow(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, map[string]any{"status": "removed", "name": name, "rows": n})
 }
 
+// CatalogAgent is one row of the federated marketplace catalog. Narrower
+// than the internal Agent type on purpose: peers should see the declared
+// capabilities and cost but NOT the adapter config (which may leak secrets
+// or internal URLs).
+type CatalogAgent struct {
+	Name       string   `json:"name"`
+	Type       string   `json:"type"`
+	Version    string   `json:"version,omitempty"`
+	TaskTypes  []string `json:"task_types"`
+	CostPerRun float64  `json:"cost_per_run,omitempty"`
+}
+
+// handleCatalog returns the list of locally-publishable agents in a shape
+// designed for peer consumption. Only agents with publishable=1 are
+// included — operators opt in per agent so internal/experimental agents
+// stay hidden.
+func (s *Server) handleCatalog(w http.ResponseWriter, r *http.Request) {
+	rows, err := s.db().QueryContext(r.Context(),
+		`SELECT name, type, COALESCE(version, '1.0.0'), capabilities
+		 FROM agents
+		 WHERE publishable = 1 AND health_status = 'healthy'
+		 ORDER BY name`)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "QUERY_FAILED", err.Error())
+		return
+	}
+	defer rows.Close()
+
+	shareFilter := map[string]bool{}
+	for _, c := range s.federationShared {
+		shareFilter[c] = true
+	}
+
+	var out []CatalogAgent
+	for rows.Next() {
+		var a CatalogAgent
+		var capsJSON string
+		if err := rows.Scan(&a.Name, &a.Type, &a.Version, &capsJSON); err != nil {
+			continue
+		}
+		var decl struct {
+			TaskTypes  []string `json:"task_types"`
+			CostPerRun float64  `json:"cost_per_run,omitempty"`
+		}
+		if err := json.Unmarshal([]byte(capsJSON), &decl); err != nil {
+			slog.Warn("catalog: malformed capabilities", "agent", a.Name, "error", err)
+			continue
+		}
+		a.CostPerRun = decl.CostPerRun
+		for _, tt := range decl.TaskTypes {
+			if len(shareFilter) > 0 && !shareFilter[tt] {
+				continue
+			}
+			a.TaskTypes = append(a.TaskTypes, tt)
+		}
+		if len(a.TaskTypes) == 0 {
+			continue
+		}
+		out = append(out, a)
+	}
+	if err := rows.Err(); err != nil {
+		writeError(w, http.StatusInternalServerError, "ROW_ERR", err.Error())
+		return
+	}
+	writeJSON(w, out)
+}
+
+// MarketplacePeer is one peer's slice of the aggregated marketplace view.
+type MarketplacePeer struct {
+	PeerName string         `json:"peer_name"`
+	PeerURL  string         `json:"peer_url"`
+	Status   string         `json:"status"`          // "ok", "unreachable", "error"
+	Error    string         `json:"error,omitempty"` // populated when Status != "ok"
+	Agents   []CatalogAgent `json:"agents,omitempty"`
+}
+
+// handleMarketplace fans out to every federated peer's /federation/catalog
+// endpoint and aggregates the results. Failed peers are reported with a
+// Status="unreachable" entry rather than hidden — operators need the
+// visibility. 10s total deadline; each peer gets up to 3s.
+func (s *Server) handleMarketplace(w http.ResponseWriter, r *http.Request) {
+	rows, err := s.db().QueryContext(r.Context(),
+		`SELECT name, url FROM federation_links WHERE status = 'active' ORDER BY name`)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "QUERY_FAILED", err.Error())
+		return
+	}
+	defer rows.Close()
+
+	type peer struct{ name, url string }
+	var peers []peer
+	for rows.Next() {
+		var p peer
+		if err := rows.Scan(&p.name, &p.url); err != nil {
+			continue
+		}
+		peers = append(peers, p)
+	}
+	if err := rows.Err(); err != nil {
+		writeError(w, http.StatusInternalServerError, "ROW_ERR", err.Error())
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+	defer cancel()
+
+	// Fan out in parallel so a slow peer doesn't gate the whole response.
+	results := make([]MarketplacePeer, len(peers))
+	var wg sync.WaitGroup
+	for i, p := range peers {
+		wg.Add(1)
+		go func(i int, p peer) {
+			defer wg.Done()
+			results[i] = fetchPeerCatalog(ctx, p.name, p.url)
+		}(i, p)
+	}
+	wg.Wait()
+	writeJSON(w, results)
+}
+
+// Marketplace peer slice statuses.
+const (
+	peerStatusOK          = "ok"
+	peerStatusError       = "error"
+	peerStatusUnreachable = "unreachable"
+)
+
+// fetchPeerCatalog performs the per-peer GET /api/v1/federation/catalog
+// call and packages the result (or the failure mode) into a
+// MarketplacePeer. Kept standalone so the fan-out goroutines stay simple.
+func fetchPeerCatalog(ctx context.Context, name, url string) MarketplacePeer {
+	out := MarketplacePeer{PeerName: name, PeerURL: url}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, strings.TrimRight(url, "/")+"/api/v1/federation/catalog", nil)
+	if err != nil {
+		out.Status = peerStatusError
+		out.Error = err.Error()
+		return out
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		out.Status = peerStatusUnreachable
+		out.Error = err.Error()
+		return out
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		out.Status = peerStatusError
+		out.Error = fmt.Sprintf("peer responded %d", resp.StatusCode)
+		return out
+	}
+	var envelope struct {
+		Data  []CatalogAgent `json:"data"`
+		Error *Error         `json:"error"`
+	}
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&envelope); err != nil {
+		out.Status = peerStatusError
+		out.Error = "decode: " + err.Error()
+		return out
+	}
+	if envelope.Error != nil {
+		out.Status = peerStatusError
+		out.Error = envelope.Error.Message
+		return out
+	}
+	out.Status = peerStatusOK
+	out.Agents = envelope.Data
+	return out
+}
+
 // handleListWebhooks returns every configured webhook. URLs are decrypted on
 // the way out.
 func (s *Server) handleListWebhooks(w http.ResponseWriter, r *http.Request) {
@@ -834,6 +1007,7 @@ func (s *Server) handleCreateAgent(w http.ResponseWriter, r *http.Request) {
 		Type          string `json:"type"`
 		URL           string `json:"url"`
 		MaxConcurrent int    `json:"max_concurrent"`
+		Publishable   bool   `json:"publishable"`
 	}
 	if err := json.NewDecoder(io.LimitReader(r.Body, 1<<16)).Decode(&body); err != nil {
 		writeError(w, http.StatusBadRequest, "BAD_REQUEST", err.Error())
@@ -851,12 +1025,18 @@ func (s *Server) handleCreateAgent(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadGateway, "REGISTER_FAILED", err.Error())
 		return
 	}
-	// Apply the per-agent concurrency cap post-registration so the Register
-	// API stays compatible with existing callers.
+	// Apply the per-agent flags post-registration so the Register API stays
+	// compatible with existing callers that only know the name/type/url shape.
 	if body.MaxConcurrent > 0 {
 		if _, err := s.db().ExecContext(r.Context(),
 			`UPDATE agents SET max_concurrent = ? WHERE id = ?`, body.MaxConcurrent, a.ID); err != nil {
 			slog.Warn("setting max_concurrent failed", "agent", a.Name, "error", err)
+		}
+	}
+	if body.Publishable {
+		if _, err := s.db().ExecContext(r.Context(),
+			`UPDATE agents SET publishable = 1 WHERE id = ?`, a.ID); err != nil {
+			slog.Warn("setting publishable failed", "agent", a.Name, "error", err)
 		}
 	}
 	w.WriteHeader(http.StatusCreated)

@@ -13,6 +13,7 @@
 	let newType = $state('http');
 	let newURL = $state('');
 	let newMaxConcurrent = $state(0);
+	let newPublishable = $state(false);
 	let formError = $state('');
 	let submitting = $state(false);
 
@@ -35,11 +36,13 @@
 				name: newName,
 				type: newType,
 				url: newURL,
-				max_concurrent: Number(newMaxConcurrent) || 0
+				max_concurrent: Number(newMaxConcurrent) || 0,
+				publishable: newPublishable
 			});
 			newName = '';
 			newURL = '';
 			newMaxConcurrent = 0;
+			newPublishable = false;
 			await loadAgents();
 		} catch (e) {
 			formError = e instanceof Error ? e.message : String(e);
@@ -122,6 +125,10 @@
 			bind:value={newMaxConcurrent}
 			title="Max concurrent tasks for this agent (0 = use server default)"
 		/>
+		<label class="pub" title="Expose this agent in the federated marketplace">
+			<input type="checkbox" bind:checked={newPublishable} />
+			<span>publish</span>
+		</label>
 		<button type="submit" disabled={submitting}>{submitting ? '…' : 'Register'}</button>
 	</form>
 	{#if formError}<div class="form-error">{formError}</div>{/if}
@@ -155,10 +162,17 @@
 <style>
 	.create-form {
 		display: grid;
-		grid-template-columns: 1fr 130px 2fr 110px auto;
+		grid-template-columns: 1fr 130px 2fr 110px auto auto;
 		gap: 0.5rem;
 		margin-bottom: 1rem;
 		align-items: center;
+	}
+	.create-form .pub {
+		display: flex;
+		gap: 0.3rem;
+		align-items: center;
+		font-size: 0.85rem;
+		color: var(--muted);
 	}
 	.create-form input,
 	.create-form select {
