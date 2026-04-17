@@ -7,13 +7,16 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 	"time"
 
+	"github.com/JulienLeotier/hive/internal/adapter"
 	"github.com/JulienLeotier/hive/internal/agent"
 	"github.com/JulienLeotier/hive/internal/api"
 	"github.com/JulienLeotier/hive/internal/auth"
 	"github.com/JulienLeotier/hive/internal/autonomy"
+	"github.com/JulienLeotier/hive/internal/cluster"
 	"github.com/JulienLeotier/hive/internal/config"
 	"github.com/JulienLeotier/hive/internal/cost"
 	"github.com/JulienLeotier/hive/internal/dashboard"
@@ -25,6 +28,7 @@ import (
 	"github.com/JulienLeotier/hive/internal/storage"
 	"github.com/JulienLeotier/hive/internal/task"
 	"github.com/JulienLeotier/hive/internal/webhook"
+	"github.com/JulienLeotier/hive/internal/workflow"
 	"github.com/JulienLeotier/hive/internal/ws"
 	"github.com/spf13/cobra"
 )
@@ -234,6 +238,83 @@ var serveCmd = &cobra.Command{
 		})
 		defer scheduler.StopAll()
 
+		// Story 22.2/22.3: advertise this node in the cluster roster. Without
+		// a periodic heartbeat, the /cluster dashboard is always empty and
+		// peer nodes can't detect when this one goes away.
+		nodeID := "local"
+		if cfg.Cluster != nil && cfg.Cluster.NodeID != "" {
+			nodeID = cfg.Cluster.NodeID
+		}
+		hostname, _ := os.Hostname()
+		selfNode := &cluster.Node{
+			ID:        nodeID,
+			Hostname:  hostname,
+			Address:   fmt.Sprintf(":%d", cfg.Port),
+			Status:    "active",
+			StartedAt: time.Now(),
+		}
+		roster := cluster.NewRoster(store.DB)
+		if err := roster.Heartbeat(supervisorCtx, selfNode); err != nil {
+			slog.Warn("cluster heartbeat: initial upsert failed", "error", err)
+		}
+		go func() {
+			t := time.NewTicker(15 * time.Second)
+			defer t.Stop()
+			for {
+				select {
+				case <-t.C:
+					if err := roster.Heartbeat(supervisorCtx, selfNode); err != nil {
+						slog.Warn("cluster heartbeat failed", "error", err)
+					}
+					// Mark nodes silent for >2 heartbeats as offline so the
+					// /cluster view stays honest.
+					if _, err := roster.MarkStale(supervisorCtx, 45*time.Second); err != nil {
+						slog.Warn("cluster stale-scan failed", "error", err)
+					}
+				case <-supervisorCtx.Done():
+					return
+				}
+			}
+		}()
+
+		// Story 3.4 AC: workflows declared with `trigger: {type: schedule|webhook}`
+		// need an active dispatcher. Without this block, scheduled workflows
+		// never fire and webhook paths are unknown to the HTTP server. YAML
+		// files are discovered under `${data_dir}/workflows/*.yaml`; missing
+		// dir = no-op.
+		wfStore := workflow.NewStore(store.DB, bus)
+		triggerMgr := workflow.NewTriggerManager(func(ctx context.Context, wfCfg *workflow.Config, payload workflow.TriggerPayload) error {
+			engine := workflow.NewEngine(wfStore, taskStore, router, bus)
+			engine.WithMarketStore(market.NewStore(store.DB).WithBus(bus.PublishErr))
+			engine.WithAgentLookup(buildAgentLookup(mgr))
+			_, err := engine.Run(ctx, wfCfg)
+			return err
+		})
+		defer triggerMgr.Stop()
+		workflowsDir := filepath.Join(cfg.DataDir, "workflows")
+		if entries, err := os.ReadDir(workflowsDir); err == nil {
+			registered := 0
+			for _, e := range entries {
+				if e.IsDir() || (filepath.Ext(e.Name()) != ".yaml" && filepath.Ext(e.Name()) != ".yml") {
+					continue
+				}
+				wfPath := filepath.Join(workflowsDir, e.Name())
+				wfCfg, err := workflow.ParseFile(wfPath)
+				if err != nil {
+					slog.Warn("workflow parse failed", "file", wfPath, "error", err)
+					continue
+				}
+				if err := triggerMgr.Register(supervisorCtx, wfCfg); err != nil {
+					slog.Warn("workflow trigger register failed", "file", wfPath, "error", err)
+					continue
+				}
+				registered++
+			}
+			if registered > 0 {
+				slog.Info("workflow triggers armed", "dir", workflowsDir, "count", registered)
+			}
+		}
+
 		keyMgr := api.NewKeyManager(store.DB)
 		users := auth.NewUserStore(store.DB)
 
@@ -375,4 +456,23 @@ func buildEmbedder(cfg *config.KnowledgeBlock) knowledge.Embedder {
 		return knowledge.NewOpenAIEmbedder(emb.APIKey, emb.Model, hashing)
 	}
 	return hashing
+}
+
+// buildAgentLookup wraps the agent manager so the workflow engine can resolve
+// agent ID → AgentSpec at dispatch time. Same shape as the inline closure in
+// `hive run`, factored out because `hive serve` also needs it for triggered
+// workflow runs.
+func buildAgentLookup(mgr *agent.Manager) workflow.AgentLookup {
+	return func(ctx context.Context, agentID string) (adapter.AgentSpec, error) {
+		a, err := mgr.GetByID(ctx, agentID)
+		if err != nil {
+			return adapter.AgentSpec{}, err
+		}
+		return adapter.AgentSpec{
+			Name:         a.Name,
+			Type:         a.Type,
+			Config:       a.Config,
+			Capabilities: a.Capabilities,
+		}, nil
+	}
 }
