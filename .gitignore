@@ -46,3 +46,6 @@ web/.svelte-kit/
 # Air (Go live-reload)
 /.air-tmp/
 /build-errors.log
+
+# Claude Code runtime artifacts (skills stay tracked, lock files don't)
+.claude/scheduled_tasks.lock

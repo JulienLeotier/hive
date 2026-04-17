@@ -30,6 +30,7 @@ var relevantEvents = map[string]string{
 	"project.shipped":          "🚀 Project shipped",
 	"project.architect_failed": "❌ BMAD architect failed",
 	"project.iteration_failed": "❌ BMAD iteration failed",
+	"project.cost_cap_warning": "⚠️ Cost cap 80% reached",
 	"project.cost_cap_reached": "💸 Cost cap reached — run cancelled",
 }
 

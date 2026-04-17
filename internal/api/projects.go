@@ -356,6 +356,7 @@ func (s *Server) handleNotifySettings(w http.ResponseWriter, _ *http.Request) {
 			"project.shipped",
 			"project.architect_failed",
 			"project.iteration_failed",
+			"project.cost_cap_warning",
 			"project.cost_cap_reached",
 		},
 	})
@@ -398,9 +399,21 @@ func (s *Server) handleNotifyTest(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleCostSummaryCSV streams the cost summary as CSV for download.
-// Useful when the operator wants to import into a spreadsheet for
-// billing / capacity analysis.
+// Three sections concaténées dans un seul fichier :
+//   1. par projet (nom, statut, cumul, cap, nb steps, stage d'échec)
+//   2. par phase BMAD (coût total + tokens consommés)
+//   3. par commande BMAD (coût total + nb invocations)
+//
+// Les sections sont séparées par une ligne vide + un nouveau header
+// pour que l'opérateur puisse pivoter dans Excel / Numbers.
 func (s *Server) handleCostSummaryCSV(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "text/csv; charset=utf-8")
+	w.Header().Set("Content-Disposition", `attachment; filename="hive-costs.csv"`)
+	cw := csv.NewWriter(w)
+	defer cw.Flush()
+
+	// Section 1 : projets
+	_ = cw.Write([]string{"section", "project_id", "name", "status", "total_usd", "cap_usd", "steps", "failure_stage"})
 	rows, err := s.db().QueryContext(r.Context(),
 		`SELECT p.id, p.name, p.status,
 		        COALESCE(p.total_cost_usd, 0),
@@ -409,30 +422,84 @@ func (s *Server) handleCostSummaryCSV(w http.ResponseWriter, r *http.Request) {
 		        COALESCE(p.failure_stage, '')
 		 FROM projects p
 		 ORDER BY p.total_cost_usd DESC, p.updated_at DESC`)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "QUERY_FAILED", err.Error())
-		return
-	}
-	defer rows.Close()
-	w.Header().Set("Content-Type", "text/csv; charset=utf-8")
-	w.Header().Set("Content-Disposition", `attachment; filename="hive-costs.csv"`)
-	cw := csv.NewWriter(w)
-	defer cw.Flush()
-	_ = cw.Write([]string{"project_id", "name", "status", "total_usd", "cap_usd", "steps", "failure_stage"})
-	for rows.Next() {
-		var id, name, status, failure string
-		var total, cap_ float64
-		var steps int
-		if err := rows.Scan(&id, &name, &status, &total, &cap_, &steps, &failure); err != nil {
-			return
+	if err == nil {
+		defer rows.Close()
+		for rows.Next() {
+			var id, name, status, failure string
+			var total, cap_ float64
+			var steps int
+			if err := rows.Scan(&id, &name, &status, &total, &cap_, &steps, &failure); err != nil {
+				continue
+			}
+			_ = cw.Write([]string{
+				"project", id, name, status,
+				fmt.Sprintf("%.4f", total),
+				fmt.Sprintf("%.4f", cap_),
+				fmt.Sprintf("%d", steps),
+				failure,
+			})
 		}
-		_ = cw.Write([]string{
-			id, name, status,
-			fmt.Sprintf("%.4f", total),
-			fmt.Sprintf("%.4f", cap_),
-			fmt.Sprintf("%d", steps),
-			failure,
-		})
+	}
+
+	// Section 2 : par phase
+	_ = cw.Write(nil)
+	_ = cw.Write([]string{"section", "phase", "total_usd", "steps", "input_tokens", "output_tokens"})
+	phaseRows, perr := s.db().QueryContext(r.Context(),
+		`SELECT phase,
+		        SUM(COALESCE(cost_usd, 0)),
+		        COUNT(*),
+		        SUM(COALESCE(input_tokens, 0)),
+		        SUM(COALESCE(output_tokens, 0))
+		 FROM bmad_phase_steps
+		 WHERE status = 'done'
+		 GROUP BY phase
+		 ORDER BY 2 DESC`)
+	if perr == nil {
+		defer phaseRows.Close()
+		for phaseRows.Next() {
+			var phase string
+			var total float64
+			var count int
+			var in_, out_ int64
+			if err := phaseRows.Scan(&phase, &total, &count, &in_, &out_); err != nil {
+				continue
+			}
+			_ = cw.Write([]string{
+				"phase", phase,
+				fmt.Sprintf("%.4f", total),
+				fmt.Sprintf("%d", count),
+				fmt.Sprintf("%d", in_),
+				fmt.Sprintf("%d", out_),
+			})
+		}
+	}
+
+	// Section 3 : par commande
+	_ = cw.Write(nil)
+	_ = cw.Write([]string{"section", "command", "total_usd", "invocations"})
+	cmdRows, cerr := s.db().QueryContext(r.Context(),
+		`SELECT command,
+		        SUM(COALESCE(cost_usd, 0)),
+		        COUNT(*)
+		 FROM bmad_phase_steps
+		 WHERE status = 'done'
+		 GROUP BY command
+		 ORDER BY 2 DESC`)
+	if cerr == nil {
+		defer cmdRows.Close()
+		for cmdRows.Next() {
+			var cmd string
+			var total float64
+			var count int
+			if err := cmdRows.Scan(&cmd, &total, &count); err != nil {
+				continue
+			}
+			_ = cw.Write([]string{
+				"command", cmd,
+				fmt.Sprintf("%.4f", total),
+				fmt.Sprintf("%d", count),
+			})
+		}
 	}
 }
 

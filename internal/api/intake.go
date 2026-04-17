@@ -936,10 +936,36 @@ func (s *Server) stepObserver(ctx context.Context, projectID, phase string) bmad
 				slog.Warn("bmad step log finish failed", "project", projectID, "cmd", command, "error", dbErr)
 			}
 			if res.CostUSD > 0 {
+				// Snapshot PRÉ-add pour détecter les franchissements de
+				// seuil (80%, 100%) : on doit pouvoir dire "on VIENT DE
+				// passer 80%" plutôt que "on est au-dessus de 80%" qui
+				// spammerait à chaque step une fois le seuil franchi.
+				var prevTotal, cap_ float64
+				_ = s.db().QueryRowContext(ctx,
+					`SELECT total_cost_usd, COALESCE(cost_cap_usd, 0) FROM projects WHERE id = ?`,
+					projectID).Scan(&prevTotal, &cap_)
 				_, _ = s.db().ExecContext(ctx,
 					`UPDATE projects SET total_cost_usd = total_cost_usd + ?,
 					 updated_at = datetime('now') WHERE id = ?`,
 					res.CostUSD, projectID)
+				total := prevTotal + res.CostUSD
+
+				// Alerte 80% — fire UNE fois quand on franchit le seuil
+				// vers le haut. Pas de kill, juste un event pour que le
+				// dashboard / Slack avertisse l'opérateur avant le coup
+				// de grâce à 100%.
+				if cap_ > 0 && prevTotal < 0.8*cap_ && total >= 0.8*cap_ && total < cap_ {
+					if s.eventBus != nil {
+						_, _ = s.eventBus.Publish(ctx, "project.cost_cap_warning", "api",
+							map[string]any{
+								"project_id": projectID,
+								"total_usd":  total,
+								"cap_usd":    cap_,
+								"pct":        int(total / cap_ * 100),
+							})
+					}
+				}
+
 				// Plafond coût : si le cumul vient de passer le cap,
 				// on annule le run courant. L'observer tourne dans la
 				// goroutine de la séquence BMAD, donc cancel() au
@@ -947,10 +973,6 @@ func (s *Server) stepObserver(ctx context.Context, projectID, phase string) bmad
 				// RunSequenceObserved qui stoppe net. Le fail() dans
 				// runArchitect/runIteration flippe alors le projet en
 				// failed avec stage=cost-cap.
-				var total, cap_ float64
-				_ = s.db().QueryRowContext(ctx,
-					`SELECT total_cost_usd, COALESCE(cost_cap_usd, 0) FROM projects WHERE id = ?`,
-					projectID).Scan(&total, &cap_)
 				if cap_ > 0 && total >= cap_ {
 					slog.Warn("bmad: cost cap reached, cancelling run",
 						"project", projectID, "total_usd", total, "cap_usd", cap_)
