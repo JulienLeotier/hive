@@ -558,6 +558,14 @@
 					{/if}
 				</dl>
 			{/if}
+			<div class="header-actions">
+				<a class="export-btn"
+					href={`/api/v1/projects/${encodeURIComponent(project.id)}/export`}
+					download
+					title="Télécharge un .tar.gz : workdir + PRD + epics + historique phases + intake">
+					↓ Exporter (.tar.gz)
+				</a>
+			</div>
 		</header>
 
 		{#if project.failure_stage}
@@ -1046,6 +1054,24 @@
 		white-space: nowrap;
 	}
 	.retry-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+	.header-actions {
+		margin-top: 0.75rem;
+		display: flex;
+		gap: 0.5rem;
+	}
+	.export-btn {
+		padding: 0.4rem 0.8rem;
+		border: 1px solid var(--border);
+		border-radius: 4px;
+		color: var(--text-muted);
+		text-decoration: none;
+		font-size: 0.78rem;
+		transition: border-color 0.1s, color 0.1s;
+	}
+	.export-btn:hover {
+		border-color: var(--accent);
+		color: var(--accent);
+	}
 
 	.phases { padding: 0.75rem 1rem; background: var(--bg-alt); border: 1px solid var(--border); border-radius: 6px; }
 	.phases-head { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 0.5rem; margin-bottom: 0.5rem; }

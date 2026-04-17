@@ -1,12 +1,15 @@
 package api
 
 import (
+	"archive/tar"
 	"bytes"
+	"compress/gzip"
 	"context"
 	"encoding/csv"
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -212,6 +215,222 @@ func (s *Server) handleGhLogout(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, git.CheckGh(r.Context()))
+}
+
+// handleExportProject streams a .tar.gz containing everything about a
+// project : le workdir complet (code + BMAD artefacts), le PRD, l'arbre
+// epics/stories, l'historique phases en JSON. But : permettre à
+// l'opérateur de sauvegarder / auditer / partager un projet hors Hive.
+//
+// Le tarball contient :
+//   workdir/          → copie exhaustive du répertoire de travail
+//   project.json      → métadonnées DB (name, idea, status, cost, etc.)
+//   epics.json        → arbre epics/stories/ACs
+//   phases.json       → historique complet bmad_phase_steps
+//   intake.json       → conversation PM + messages
+//
+// Streamé en chunks pour ne pas charger 100MB en RAM.
+func (s *Server) handleExportProject(w http.ResponseWriter, r *http.Request) {
+	if s.projectStore == nil {
+		writeError(w, http.StatusServiceUnavailable, "NO_PROJECT_STORE", "")
+		return
+	}
+	id := r.PathValue("id")
+	p, err := s.projectStore.GetByID(r.Context(), id)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "NOT_FOUND", err.Error())
+		return
+	}
+
+	filename := "hive-project-" + p.ID + ".tar.gz"
+	if p.Name != "" {
+		// Sanitise name : alphanumeric + _ seulement, sinon on garde l'ID.
+		clean := sanitizeFilename(p.Name)
+		if clean != "" {
+			filename = "hive-" + clean + ".tar.gz"
+		}
+	}
+	w.Header().Set("Content-Type", "application/gzip")
+	w.Header().Set("Content-Disposition", `attachment; filename="`+filename+`"`)
+
+	gz := gzip.NewWriter(w)
+	defer gz.Close()
+	tw := tar.NewWriter(gz)
+	defer tw.Close()
+
+	// --- 1. project.json : métadonnées + arbre epics/stories/ACs déjà
+	// chargé par GetByID (p.Epics, chaque Epic a ses stories, chaque
+	// story ses acceptance criteria).
+	if err := writeTarJSON(tw, "project.json", p); err != nil {
+		slog.Warn("export: project.json failed", "error", err)
+		return
+	}
+
+	// --- 3. phases.json : historique phases
+	phases := []map[string]any{}
+	rows, err := s.db().QueryContext(r.Context(),
+		`SELECT id, phase, command, started_at, COALESCE(finished_at, ''),
+		        status, input_tokens, output_tokens, cost_usd,
+		        COALESCE(reply_preview, ''), COALESCE(error_text, '')
+		 FROM bmad_phase_steps WHERE project_id = ?
+		 ORDER BY id ASC`, p.ID)
+	if err == nil {
+		defer rows.Close()
+		for rows.Next() {
+			var st map[string]any = make(map[string]any)
+			var (
+				id                              int64
+				phase, cmd, startedAt, finished string
+				status, preview, errText        string
+				in_, out_                       int
+				cost                            float64
+			)
+			if err := rows.Scan(&id, &phase, &cmd, &startedAt, &finished,
+				&status, &in_, &out_, &cost, &preview, &errText); err == nil {
+				st["id"] = id
+				st["phase"] = phase
+				st["command"] = cmd
+				st["started_at"] = startedAt
+				st["finished_at"] = finished
+				st["status"] = status
+				st["input_tokens"] = in_
+				st["output_tokens"] = out_
+				st["cost_usd"] = cost
+				st["reply_preview"] = preview
+				st["error"] = errText
+				phases = append(phases, st)
+			}
+		}
+	}
+	_ = writeTarJSON(tw, "phases.json", phases)
+
+	// --- 4. intake.json : toutes les conversations + messages du projet.
+	// Query directe plutôt que passer par le store car on veut les
+	// conversations terminées aussi (pas juste l'active).
+	type msg struct {
+		Author    string `json:"author"`
+		Content   string `json:"content"`
+		CreatedAt string `json:"created_at"`
+	}
+	type conv struct {
+		ID        string `json:"id"`
+		Role      string `json:"role"`
+		Status    string `json:"status"`
+		CreatedAt string `json:"created_at"`
+		Messages  []msg  `json:"messages"`
+	}
+	var convs []conv
+	cRows, cerr := s.db().QueryContext(r.Context(),
+		`SELECT id, role, status, created_at FROM project_conversations WHERE project_id = ? ORDER BY id ASC`,
+		p.ID)
+	if cerr == nil {
+		defer cRows.Close()
+		for cRows.Next() {
+			var c conv
+			if err := cRows.Scan(&c.ID, &c.Role, &c.Status, &c.CreatedAt); err != nil {
+				continue
+			}
+			mRows, _ := s.db().QueryContext(r.Context(),
+				`SELECT author, content, created_at FROM project_messages WHERE conversation_id = ? ORDER BY id ASC`,
+				c.ID)
+			if mRows != nil {
+				for mRows.Next() {
+					var m msg
+					if err := mRows.Scan(&m.Author, &m.Content, &m.CreatedAt); err == nil {
+						c.Messages = append(c.Messages, m)
+					}
+				}
+				mRows.Close()
+			}
+			convs = append(convs, c)
+		}
+	}
+	_ = writeTarJSON(tw, "intake.json", convs)
+
+	// --- 5. workdir/ : copie du répertoire de travail (best-effort).
+	if p.Workdir != "" {
+		_ = addDirToTar(tw, p.Workdir, "workdir")
+	}
+}
+
+// writeTarJSON serialise obj en JSON indenté et l'écrit comme un seul
+// fichier dans le tarball.
+func writeTarJSON(tw *tar.Writer, name string, obj any) error {
+	data, err := json.MarshalIndent(obj, "", "  ")
+	if err != nil {
+		return err
+	}
+	hdr := &tar.Header{
+		Name:    name,
+		Mode:    0644,
+		Size:    int64(len(data)),
+		ModTime: time.Now(),
+	}
+	if err := tw.WriteHeader(hdr); err != nil {
+		return err
+	}
+	_, err = tw.Write(data)
+	return err
+}
+
+// addDirToTar walk récursivement src et écrit chaque fichier sous
+// prefix/ dans le tarball. Ignore .git/objects/ (lourd et re-derivable
+// via fetch) et les .tmp/.swp communs.
+func addDirToTar(tw *tar.Writer, src, prefix string) error {
+	return filepath.Walk(src, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return nil // best-effort : on skippe les erreurs de stat
+		}
+		rel, err := filepath.Rel(src, path)
+		if err != nil {
+			return nil
+		}
+		// Skip .git/objects and common temp files to keep the tarball lean.
+		if strings.Contains(rel, ".git/objects/") ||
+			strings.HasSuffix(rel, ".tmp") ||
+			strings.HasSuffix(rel, ".swp") {
+			return nil
+		}
+		if info.IsDir() {
+			return nil
+		}
+		tarPath := prefix + "/" + rel
+		hdr := &tar.Header{
+			Name:    tarPath,
+			Mode:    int64(info.Mode()),
+			Size:    info.Size(),
+			ModTime: info.ModTime(),
+		}
+		if err := tw.WriteHeader(hdr); err != nil {
+			return nil
+		}
+		f, err := os.Open(path)
+		if err != nil {
+			return nil
+		}
+		defer f.Close()
+		_, _ = io.Copy(tw, f)
+		return nil
+	})
+}
+
+// sanitizeFilename garde seulement alphanumériques + _ + - du nom du
+// projet pour produire un nom de fichier safe cross-OS.
+func sanitizeFilename(s string) string {
+	var b strings.Builder
+	for _, r := range s {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9':
+			b.WriteRune(r)
+		case r == ' ', r == '-', r == '_':
+			b.WriteRune('-')
+		}
+	}
+	out := b.String()
+	if len(out) > 60 {
+		out = out[:60]
+	}
+	return strings.Trim(out, "-")
 }
 
 // handleCostSummary aggregates cumulative cost across every project,
