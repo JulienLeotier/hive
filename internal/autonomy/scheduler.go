@@ -74,7 +74,10 @@ func (s *Scheduler) Register(agentName string, interval time.Duration) {
 				case s.concurrency <- struct{}{}:
 					go func() {
 						defer func() { <-s.concurrency }()
-						if err := s.handler(context.Background(), agentName); err != nil {
+						ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+						err := s.handler(ctx, agentName)
+						cancel()
+						if err != nil {
 							slog.Error("wake-up cycle failed", "agent", agentName, "error", err)
 						}
 					}()
@@ -105,7 +108,10 @@ func (s *Scheduler) TriggerWakeUp(agentName string) {
 	case s.concurrency <- struct{}{}:
 		go func() {
 			defer func() { <-s.concurrency }()
-			if err := s.handler(context.Background(), agentName); err != nil {
+			ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+			err := s.handler(ctx, agentName)
+			cancel()
+			if err != nil {
 				slog.Error("event-triggered wake-up failed", "agent", agentName, "error", err)
 			}
 		}()

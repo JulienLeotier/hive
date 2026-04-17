@@ -1,16 +1,7 @@
 <script lang="ts">
 	import { fmtRelative, fmtUSD } from '$lib/format';
 	import { apiGet } from '$lib/api';
-
-	type Auction = {
-		id: string;
-		task_id: string;
-		strategy: string;
-		status: string;
-		winner: string;
-		bids: number;
-		opened_at: string;
-	};
+	import type { Auction } from '$lib/types';
 
 	let auctions = $state<Auction[]>([]);
 	let loading = $state(true);

@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/JulienLeotier/hive/internal/agent"
@@ -406,7 +407,7 @@ func (s *Server) handleListEvents(w http.ResponseWriter, r *http.Request) {
 		Type:     r.URL.Query().Get("type"),
 		Source:   r.URL.Query().Get("source"),
 		TenantID: tenant,
-		Limit:    50,
+		Limit:    parseLimit(r, 50, 500),
 	}
 	if since := r.URL.Query().Get("since"); since != "" {
 		if t, err := time.Parse(time.RFC3339, since); err == nil {
@@ -433,6 +434,10 @@ func (s *Server) handleListEvents(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleListTasks(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	tenantClause, tenantArgs := tenantFilter(ctx, "t")
+	limit := parseLimit(r, 500, 500)
+	offset := parseOffset(r)
+	args := append([]any{}, tenantArgs...)
+	args = append(args, limit, offset)
 	rows, err := s.db().QueryContext(ctx,
 		`SELECT t.id, t.workflow_id, t.type, t.status,
 		        COALESCE(t.agent_id, ''), COALESCE(a.name, ''),
@@ -440,7 +445,7 @@ func (s *Server) handleListTasks(w http.ResponseWriter, r *http.Request) {
 		        COALESCE(t.output, '')
 		 FROM tasks t LEFT JOIN agents a ON a.id = t.agent_id
 		 WHERE 1=1`+tenantClause+`
-		 ORDER BY t.created_at DESC LIMIT 500`, tenantArgs...)
+		 ORDER BY t.created_at DESC LIMIT ? OFFSET ?`, args...)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "QUERY_FAILED", err.Error())
 		return
@@ -528,8 +533,15 @@ func summariseTaskOutput(raw string) string {
 }
 
 // handleCosts returns per-agent cost summaries and budget alerts.
+//
+// Runs the four independent queries concurrently. Dashboards poll this every
+// 5s; under SQLite WAL or Postgres multiple goroutines can read in parallel,
+// so the wall-clock latency drops from Σ(queries) to max(queries). We keep
+// a short per-query timeout so a single slow aggregation can't hold the
+// response hostage.
 func (s *Server) handleCosts(w http.ResponseWriter, r *http.Request) {
-	ctx := r.Context()
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	defer cancel()
 	db := s.db()
 	tClause, tArgs := tenantFilter(ctx, "")
 
@@ -538,91 +550,121 @@ func (s *Server) handleCosts(w http.ResponseWriter, r *http.Request) {
 		TotalCost float64 `json:"total_cost"`
 		TaskCount int     `json:"task_count"`
 	}
-	rows, err := db.QueryContext(ctx,
-		`SELECT agent_name, SUM(cost), COUNT(*) FROM costs
-		 WHERE 1=1`+tClause+`
-		 GROUP BY agent_name ORDER BY SUM(cost) DESC`, tArgs...)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "QUERY_FAILED", err.Error())
-		return
+	type wfSummary struct {
+		WorkflowID string  `json:"workflow_id"`
+		TotalCost  float64 `json:"total_cost"`
+		TaskCount  int     `json:"task_count"`
 	}
-	defer rows.Close()
-
-	var summaries []summary
-	for rows.Next() {
-		var s summary
-		if err := rows.Scan(&s.AgentName, &s.TotalCost, &s.TaskCount); err == nil {
-			summaries = append(summaries, s)
-		}
+	type dailyPoint struct {
+		Day       string  `json:"day"`
+		TotalCost float64 `json:"total_cost"`
 	}
-
-	// Budget alerts. Migration 010 added tenant_id to budget_alerts so we can
-	// scope both the alert row and the inner cost SUM to the caller's tenant.
 	type alert struct {
 		AgentName  string  `json:"agent_name"`
 		DailyLimit float64 `json:"daily_limit"`
 		Spend      float64 `json:"spend"`
 		Breached   bool    `json:"breached"`
 	}
-	var alerts []alert
-	innerTClause, innerTArgs := tenantFilter(ctx, "")
-	outerTClause, outerTArgs := tenantFilter(ctx, "b")
-	alertArgs := append([]any{}, innerTArgs...)
-	alertArgs = append(alertArgs, outerTArgs...)
-	if aRows, err := db.QueryContext(ctx,
-		`SELECT b.agent_name, b.daily_limit,
-		        COALESCE((SELECT SUM(cost) FROM costs
-		                  WHERE agent_name = b.agent_name
-		                    AND date(created_at) = date('now')`+innerTClause+`), 0)
-		 FROM budget_alerts b WHERE b.enabled = 1`+outerTClause, alertArgs...); err == nil {
-		defer aRows.Close()
-		for aRows.Next() {
+
+	var (
+		wg          sync.WaitGroup
+		summaries   []summary
+		perWorkflow []wfSummary
+		trend       []dailyPoint
+		alerts      []alert
+	)
+
+	// Each closure captures its own result slice. Errors are logged but
+	// never fail the whole response — a transient DB blip on one section
+	// should still render the rest of the dashboard.
+	run := func(fn func()) {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			fn()
+		}()
+	}
+
+	run(func() {
+		rows, err := db.QueryContext(ctx,
+			`SELECT agent_name, SUM(cost), COUNT(*) FROM costs
+			 WHERE 1=1`+tClause+`
+			 GROUP BY agent_name ORDER BY SUM(cost) DESC`, tArgs...)
+		if err != nil {
+			slog.Warn("costs: summaries query failed", "error", err)
+			return
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var x summary
+			if err := rows.Scan(&x.AgentName, &x.TotalCost, &x.TaskCount); err == nil {
+				summaries = append(summaries, x)
+			}
+		}
+	})
+
+	run(func() {
+		innerClause, innerArgs := tenantFilter(ctx, "")
+		outerClause, outerArgs := tenantFilter(ctx, "b")
+		args := append([]any{}, innerArgs...)
+		args = append(args, outerArgs...)
+		rows, err := db.QueryContext(ctx,
+			`SELECT b.agent_name, b.daily_limit,
+			        COALESCE((SELECT SUM(cost) FROM costs
+			                  WHERE agent_name = b.agent_name
+			                    AND date(created_at) = date('now')`+innerClause+`), 0)
+			 FROM budget_alerts b WHERE b.enabled = 1`+outerClause, args...)
+		if err != nil {
+			slog.Warn("costs: alerts query failed", "error", err)
+			return
+		}
+		defer rows.Close()
+		for rows.Next() {
 			var a alert
-			if err := aRows.Scan(&a.AgentName, &a.DailyLimit, &a.Spend); err == nil {
+			if err := rows.Scan(&a.AgentName, &a.DailyLimit, &a.Spend); err == nil {
 				a.Breached = a.Spend >= a.DailyLimit
 				alerts = append(alerts, a)
 			}
 		}
-	}
+	})
 
-	// Per-workflow breakdown — Story 8.6 "cost per workflow".
-	type wfSummary struct {
-		WorkflowID string  `json:"workflow_id"`
-		TotalCost  float64 `json:"total_cost"`
-		TaskCount  int     `json:"task_count"`
-	}
-	var perWorkflow []wfSummary
-	if wfRows, err := db.QueryContext(ctx,
-		`SELECT workflow_id, SUM(cost), COUNT(*) FROM costs
-		 WHERE 1=1`+tClause+`
-		 GROUP BY workflow_id ORDER BY SUM(cost) DESC LIMIT 50`, tArgs...); err == nil {
-		defer wfRows.Close()
-		for wfRows.Next() {
-			var s wfSummary
-			if err := wfRows.Scan(&s.WorkflowID, &s.TotalCost, &s.TaskCount); err == nil {
-				perWorkflow = append(perWorkflow, s)
+	run(func() {
+		rows, err := db.QueryContext(ctx,
+			`SELECT workflow_id, SUM(cost), COUNT(*) FROM costs
+			 WHERE 1=1`+tClause+`
+			 GROUP BY workflow_id ORDER BY SUM(cost) DESC LIMIT 50`, tArgs...)
+		if err != nil {
+			slog.Warn("costs: per-workflow query failed", "error", err)
+			return
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var x wfSummary
+			if err := rows.Scan(&x.WorkflowID, &x.TotalCost, &x.TaskCount); err == nil {
+				perWorkflow = append(perWorkflow, x)
 			}
 		}
-	}
+	})
 
-	// Daily trend over the last 14 days — Story 8.6 "cost trend over time".
-	type dailyPoint struct {
-		Day       string  `json:"day"`
-		TotalCost float64 `json:"total_cost"`
-	}
-	var trend []dailyPoint
-	if tRows, err := db.QueryContext(ctx,
-		`SELECT date(created_at), SUM(cost) FROM costs
-		 WHERE created_at >= date('now','-14 days')`+tClause+`
-		 GROUP BY date(created_at) ORDER BY date(created_at)`, tArgs...); err == nil {
-		defer tRows.Close()
-		for tRows.Next() {
+	run(func() {
+		rows, err := db.QueryContext(ctx,
+			`SELECT date(created_at), SUM(cost) FROM costs
+			 WHERE created_at >= date('now','-14 days')`+tClause+`
+			 GROUP BY date(created_at) ORDER BY date(created_at)`, tArgs...)
+		if err != nil {
+			slog.Warn("costs: trend query failed", "error", err)
+			return
+		}
+		defer rows.Close()
+		for rows.Next() {
 			var p dailyPoint
-			if err := tRows.Scan(&p.Day, &p.TotalCost); err == nil {
+			if err := rows.Scan(&p.Day, &p.TotalCost); err == nil {
 				trend = append(trend, p)
 			}
 		}
-	}
+	})
+
+	wg.Wait()
 
 	writeJSON(w, map[string]any{
 		"summaries":    summaries,

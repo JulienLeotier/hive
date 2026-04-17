@@ -1,23 +1,15 @@
 <script lang="ts">
 	import { fmtRelative } from '$lib/format';
 	import { apiGet } from '$lib/api';
+	import type { AuditEntry } from '$lib/types';
 
-	type Entry = {
-		id: number;
-		action: string;
-		actor: string;
-		resource: string;
-		detail: string;
-		created_at: string;
-	};
-
-	let entries = $state<Entry[]>([]);
+	let entries = $state<AuditEntry[]>([]);
 	let actorFilter = $state('');
 	let loading = $state(true);
 
 	async function load() {
 		try {
-			entries = (await apiGet<Entry[]>('/api/v1/audit')) ?? [];
+			entries = (await apiGet<AuditEntry[]>('/api/v1/audit')) ?? [];
 		} catch {
 			/* banner shown by apiGet */
 		} finally {

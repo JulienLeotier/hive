@@ -13,10 +13,12 @@ import (
 func (s *Server) handleListWorkflows(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	tClause, tArgs := tenantFilter(ctx, "")
+	args := append([]any{}, tArgs...)
+	args = append(args, parseLimit(r, 500, 500), parseOffset(r))
 	rows, err := s.db().QueryContext(ctx,
 		`SELECT id, name, status, created_at FROM workflows
 		 WHERE 1=1`+tClause+`
-		 ORDER BY created_at DESC LIMIT 500`, tArgs...)
+		 ORDER BY created_at DESC LIMIT ? OFFSET ?`, args...)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "QUERY_FAILED", err.Error())
 		return
@@ -48,10 +50,11 @@ func (s *Server) handleListKnowledge(w http.ResponseWriter, r *http.Request) {
 		typeClause = ` AND task_type = ?`
 		args = append(args, taskType)
 	}
+	args = append(args, parseLimit(r, 200, 500), parseOffset(r))
 	rows, err := s.db().QueryContext(ctx,
 		`SELECT id, task_type, approach, outcome, COALESCE(context,''), created_at
 		 FROM knowledge WHERE 1=1`+tClause+typeClause+`
-		 ORDER BY created_at DESC LIMIT 200`, args...)
+		 ORDER BY created_at DESC LIMIT ? OFFSET ?`, args...)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "QUERY_FAILED", err.Error())
 		return
@@ -82,7 +85,7 @@ func (s *Server) handleListDialogs(w http.ResponseWriter, r *http.Request) {
 		 FROM dialog_threads t
 		 LEFT JOIN dialog_messages m ON m.thread_id = t.id
 		 GROUP BY t.id
-		 ORDER BY t.created_at DESC LIMIT 100`)
+		 ORDER BY t.created_at DESC LIMIT ? OFFSET ?`, parseLimit(r, 100, 500), parseOffset(r))
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "QUERY_FAILED", err.Error())
 		return
@@ -147,7 +150,8 @@ func (s *Server) handleListAuctions(w http.ResponseWriter, r *http.Request) {
 		 LEFT JOIN bids w ON w.id = a.winner_bid_id
 		 LEFT JOIN bids b ON b.auction_id = a.id
 		 GROUP BY a.id, a.task_id, a.strategy, a.status, w.agent_name, a.opened_at
-		 ORDER BY a.opened_at DESC LIMIT 100`)
+		 ORDER BY a.opened_at DESC LIMIT ? OFFSET ?`,
+		parseLimit(r, 100, 500), parseOffset(r))
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "QUERY_FAILED", err.Error())
 		return
@@ -176,7 +180,8 @@ func (s *Server) handleListOptimizations(w http.ResponseWriter, r *http.Request)
 	rows, err := s.db().QueryContext(r.Context(),
 		`SELECT id, setting, COALESCE(old_value, 0), COALESCE(new_value, 0),
 		        COALESCE(rationale, ''), applied_at
-		 FROM optimizations ORDER BY applied_at DESC LIMIT 100`)
+		 FROM optimizations ORDER BY applied_at DESC LIMIT ? OFFSET ?`,
+		parseLimit(r, 100, 500), parseOffset(r))
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "QUERY_FAILED", err.Error())
 		return
@@ -214,10 +219,12 @@ func (s *Server) handleRecommendations(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleListAudit(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	tClause, tArgs := tenantFilter(ctx, "")
+	args := append([]any{}, tArgs...)
+	args = append(args, parseLimit(r, 200, 500), parseOffset(r))
 	rows, err := s.db().QueryContext(ctx,
 		`SELECT id, action, actor, resource, COALESCE(detail, ''), created_at
 		 FROM audit_log WHERE 1=1`+tClause+`
-		 ORDER BY created_at DESC LIMIT 200`, tArgs...)
+		 ORDER BY created_at DESC LIMIT ? OFFSET ?`, args...)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "QUERY_FAILED", err.Error())
 		return

@@ -1,17 +1,9 @@
 <script lang="ts">
 	import { fmtRelative, truncate } from '$lib/format';
 	import { apiGet } from '$lib/api';
+	import type { KnowledgeEntry } from '$lib/types';
 
-	type Entry = {
-		id: number;
-		task_type: string;
-		approach: string;
-		outcome: string;
-		context: string;
-		created_at: string;
-	};
-
-	let entries = $state<Entry[]>([]);
+	let entries = $state<KnowledgeEntry[]>([]);
 	let filterType = $state('');
 	let searchQuery = $state('');
 	let searching = $state(false);
@@ -20,7 +12,7 @@
 	async function load() {
 		try {
 			const url = filterType ? `/api/v1/knowledge?type=${encodeURIComponent(filterType)}` : '/api/v1/knowledge';
-			entries = (await apiGet<Entry[]>(url)) ?? [];
+			entries = (await apiGet<KnowledgeEntry[]>(url)) ?? [];
 		} catch {
 			/* banner shown by apiGet */
 		} finally {
@@ -35,7 +27,7 @@
 		}
 		searching = true;
 		try {
-			entries = (await apiGet<Entry[]>(`/api/v1/knowledge/search?q=${encodeURIComponent(searchQuery)}&limit=20`)) ?? [];
+			entries = (await apiGet<KnowledgeEntry[]>(`/api/v1/knowledge/search?q=${encodeURIComponent(searchQuery)}&limit=20`)) ?? [];
 		} catch {
 			/* banner shown by apiGet */
 		} finally {

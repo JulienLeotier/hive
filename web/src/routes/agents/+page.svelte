@@ -2,16 +2,7 @@
 	import { fmtRelative, truncate } from '$lib/format';
 	import { apiGet } from '$lib/api';
 	import { createReconnectingWS, wsURL } from '$lib/ws';
-
-	type Agent = {
-		id: string;
-		name: string;
-		type: string;
-		health_status: string;
-		trust_level: string;
-		capabilities: string;
-		updated_at: string;
-	};
+	import type { Agent } from '$lib/types';
 
 	let agents = $state<Agent[]>([]);
 	let loading = $state(true);

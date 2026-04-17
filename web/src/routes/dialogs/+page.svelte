@@ -1,23 +1,14 @@
 <script lang="ts">
 	import { fmtRelative } from '$lib/format';
 	import { apiGet } from '$lib/api';
+	import type { DialogThread } from '$lib/types';
 
-	type Thread = {
-		id: string;
-		initiator: string;
-		participant: string;
-		topic: string;
-		status: string;
-		message_count: number;
-		created_at: string;
-	};
-
-	let threads = $state<Thread[]>([]);
+	let threads = $state<DialogThread[]>([]);
 	let loading = $state(true);
 
 	async function load() {
 		try {
-			threads = (await apiGet<Thread[]>('/api/v1/dialogs')) ?? [];
+			threads = (await apiGet<DialogThread[]>('/api/v1/dialogs')) ?? [];
 		} catch {
 			/* banner shown by apiGet */
 		} finally {

@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"log/slog"
+	"time"
 
 	"github.com/JulienLeotier/hive/internal/event"
 	"github.com/JulienLeotier/hive/internal/resilience"
@@ -29,9 +30,14 @@ func NewHealthWatcher(mgr *Manager, reassigner Reassigner, bus *event.Bus) *Heal
 }
 
 // Hook returns the callback to install on the BreakerRegistry.
+// The breaker fires from whichever goroutine tripped it, with no ambient
+// context, so we build one here with a 5s cap — long enough for the DB
+// writes to settle, short enough that a stuck backend doesn't pin a
+// goroutine on every breaker transition.
 func (w *HealthWatcher) Hook() resilience.StateChangeHook {
 	return func(agentName string, from, to resilience.CircuitState) {
-		ctx := context.Background()
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
 		switch to {
 		case resilience.StateOpen:
 			// Story 5.1 AC: "a `agent.circuit_open` event is emitted".

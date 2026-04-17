@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"log/slog"
+	"time"
 
 	"github.com/JulienLeotier/hive/internal/event"
 )
@@ -64,7 +65,11 @@ func (a *AutoRecorder) handle(e event.Event, outcome string) error {
 		"output":  output,
 	})
 
-	if err := a.store.Record(context.Background(), tType, approach, outcome, string(contextJSON)); err != nil {
+	// Subscriber callback, no ambient ctx. Cap the DB write so a stuck
+	// storage can't pile up goroutines from the event bus.
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := a.store.Record(ctx, tType, approach, outcome, string(contextJSON)); err != nil {
 		slog.Warn("knowledge auto-record failed", "task_id", taskID, "error", err)
 		return err
 	}

@@ -1,21 +1,17 @@
 <script lang="ts">
 	import { apiGet } from '$lib/api';
+	import type {
+		CostSummary,
+		CostAlert,
+		CostWorkflowSummary,
+		CostTrendPoint,
+		CostsPayload
+	} from '$lib/types';
 
-	type Summary = { agent_name: string; total_cost: number; task_count: number };
-	type Alert = { agent_name: string; daily_limit: number; spend: number; breached: boolean };
-	type WorkflowSummary = { workflow_id: string; total_cost: number; task_count: number };
-	type TrendPoint = { day: string; total_cost: number };
-	type CostsPayload = {
-		summaries?: Summary[];
-		alerts?: Alert[];
-		per_workflow?: WorkflowSummary[];
-		trend?: TrendPoint[];
-	};
-
-	let summaries = $state<Summary[]>([]);
-	let alerts = $state<Alert[]>([]);
-	let perWorkflow = $state<WorkflowSummary[]>([]);
-	let trend = $state<TrendPoint[]>([]);
+	let summaries = $state<CostSummary[]>([]);
+	let alerts = $state<CostAlert[]>([]);
+	let perWorkflow = $state<CostWorkflowSummary[]>([]);
+	let trend = $state<CostTrendPoint[]>([]);
 	let loading = $state(true);
 
 	async function load() {

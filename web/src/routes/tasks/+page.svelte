@@ -2,18 +2,7 @@
 	import { apiGet } from '$lib/api';
 	import { createReconnectingWS, wsURL } from '$lib/ws';
 	import { fmtDuration, truncate } from '$lib/format';
-
-	type Task = {
-		id: string;
-		workflow_id: string;
-		type: string;
-		status: string;
-		agent_id: string;
-		agent_name: string;
-		created_at: string;
-		duration_seconds?: number | null;
-		result_summary?: string;
-	};
+	import type { Task } from '$lib/types';
 
 	let tasks = $state<Task[]>([]);
 	let loading = $state(true);

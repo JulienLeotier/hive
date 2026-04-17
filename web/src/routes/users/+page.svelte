@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { apiGet } from '$lib/api';
+	import type { User } from '$lib/types';
 
-	type User = { Subject: string; Role: string; TenantID: string };
 	let users = $state<User[]>([]);
 	let loading = $state(true);
 

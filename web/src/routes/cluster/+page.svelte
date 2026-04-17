@@ -1,21 +1,14 @@
 <script lang="ts">
 	import { fmtRelative } from '$lib/format';
 	import { apiGet } from '$lib/api';
+	import type { ClusterMember } from '$lib/types';
 
-	type Member = {
-		node_id: string;
-		hostname: string;
-		address: string;
-		status: string;
-		last_heartbeat: string;
-	};
-
-	let members = $state<Member[]>([]);
+	let members = $state<ClusterMember[]>([]);
 	let loading = $state(true);
 
 	async function load() {
 		try {
-			members = (await apiGet<Member[]>('/api/v1/cluster')) ?? [];
+			members = (await apiGet<ClusterMember[]>('/api/v1/cluster')) ?? [];
 		} catch {
 			/* banner shown by apiGet */
 		} finally {

@@ -1,8 +1,7 @@
 <script lang="ts">
 	import { apiGet } from '$lib/api';
 	import { createReconnectingWS, wsURL } from '$lib/ws';
-
-	type Event = { id: number; type: string; source: string; payload: string; created_at: string; };
+	import type { Event } from '$lib/types';
 
 	let events = $state<Event[]>([]);
 	let typeFilter = $state('');

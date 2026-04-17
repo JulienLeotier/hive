@@ -2,18 +2,7 @@
 	import { fmtRelative } from '$lib/format';
 	import { apiGet } from '$lib/api';
 	import { createReconnectingWS, wsURL } from '$lib/ws';
-
-	type Metrics = {
-		agents: { total: number; healthy: number; degraded: number; unavailable: number };
-		tasks: Record<string, number>;
-		workflows: Record<string, number>;
-		circuit_breakers: { total: number; open: number };
-		events: { last_minute: number; last_hour: number };
-		avg_task_duration_seconds: number;
-		timestamp: string;
-	};
-
-	type Event = { id: number; type: string; source: string; payload: string; created_at: string };
+	import type { Metrics, Event } from '$lib/types';
 
 	let metrics = $state<Metrics | null>(null);
 	let recentEvents = $state<Event[]>([]);

@@ -1,32 +1,17 @@
 <script lang="ts">
 	import { fmtRelative } from '$lib/format';
 	import { apiGet } from '$lib/api';
-
-	type Recommendation = {
-		type: string;
-		description: string;
-		impact: string;
-		confidence: number;
-	};
-
-	type Applied = {
-		id: string;
-		setting: string;
-		old_value: number;
-		new_value: number;
-		rationale: string;
-		applied_at: string;
-	};
+	import type { Recommendation, AppliedOptimization } from '$lib/types';
 
 	let recommendations = $state<Recommendation[]>([]);
-	let applied = $state<Applied[]>([]);
+	let applied = $state<AppliedOptimization[]>([]);
 	let loading = $state(true);
 
 	async function load() {
 		try {
 			const [r1, r2] = await Promise.all([
 				apiGet<Recommendation[]>('/api/v1/recommendations'),
-				apiGet<Applied[]>('/api/v1/optimizations')
+				apiGet<AppliedOptimization[]>('/api/v1/optimizations')
 			]);
 			recommendations = r1 ?? [];
 			applied = r2 ?? [];

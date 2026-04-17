@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"log/slog"
+	"time"
 
 	"github.com/JulienLeotier/hive/internal/event"
 )
@@ -65,7 +66,11 @@ func (a *AutoCredit) handle(e event.Event) {
 		reward = 1.0 / (cost + 0.01)
 	}
 
-	if err := a.store.Credit(context.Background(), agentName, reward); err != nil {
+	// Event subscriber has no ambient ctx; cap the credit write so a stuck
+	// DB doesn't leak one goroutine per completed task.
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := a.store.Credit(ctx, agentName, reward); err != nil {
 		slog.Warn("auto-credit failed", "agent", agentName, "error", err)
 	}
 }

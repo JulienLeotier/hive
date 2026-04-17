@@ -1,21 +1,14 @@
 <script lang="ts">
 	import { fmtRelative } from '$lib/format';
 	import { apiGet } from '$lib/api';
+	import type { FederationLink } from '$lib/types';
 
-	type Link = {
-		name: string;
-		url: string;
-		status: string;
-		shared_caps: string;
-		last_heartbeat: string;
-	};
-
-	let links = $state<Link[]>([]);
+	let links = $state<FederationLink[]>([]);
 	let loading = $state(true);
 
 	async function load() {
 		try {
-			links = (await apiGet<Link[]>('/api/v1/federation')) ?? [];
+			links = (await apiGet<FederationLink[]>('/api/v1/federation')) ?? [];
 		} catch {
 			/* banner shown by apiGet */
 		} finally {

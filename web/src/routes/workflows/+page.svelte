@@ -1,8 +1,8 @@
 <script lang="ts">
 	import { fmtRelative } from '$lib/format';
 	import { apiGet } from '$lib/api';
+	import type { Workflow } from '$lib/types';
 
-	type Workflow = { id: string; name: string; status: string; created_at: string };
 	let workflows = $state<Workflow[]>([]);
 	let loading = $state(true);
 
