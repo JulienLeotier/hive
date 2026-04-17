@@ -54,10 +54,27 @@
 		repo_path?: string;
 		repo_url?: string;
 		is_existing?: boolean;
+		total_cost_usd?: number;
+		failure_stage?: string;
+		failure_error?: string;
 		status: string;
 		created_at: string;
 		updated_at: string;
 		epics?: Epic[];
+	};
+
+	type PhaseStep = {
+		id: number;
+		phase: string;
+		command: string;
+		started_at: string;
+		finished_at?: string;
+		status: string; // running | done | failed
+		input_tokens: number;
+		output_tokens: number;
+		cost_usd: number;
+		reply_preview?: string;
+		error?: string;
 	};
 
 	type ProjectEvent = {
@@ -72,6 +89,50 @@
 	let project = $state<Project | null>(null);
 	let loading = $state(true);
 	let activity = $state<ProjectEvent[]>([]);
+	let phases = $state<PhaseStep[]>([]);
+	let cancelling = $state(false);
+	let retryingBuild = $state(false);
+	let actionError = $state('');
+
+	async function loadPhases() {
+		const id = $page.params.id ?? '';
+		if (!id) return;
+		try {
+			phases = (await apiGet<PhaseStep[]>(`/api/v1/projects/${encodeURIComponent(id)}/phases`)) ?? [];
+		} catch {
+			/* banner */
+		}
+	}
+
+	async function cancelRun() {
+		const id = $page.params.id ?? '';
+		if (!confirm('Annuler le build BMAD en cours ? Les skills Claude actuellement en vol seront tuées.')) return;
+		cancelling = true;
+		actionError = '';
+		try {
+			await apiPost(`/api/v1/projects/${encodeURIComponent(id)}/cancel`, {});
+			await load();
+		} catch (e) {
+			actionError = e instanceof Error ? e.message : String(e);
+		} finally {
+			cancelling = false;
+		}
+	}
+
+	async function retryBuild() {
+		const id = $page.params.id ?? '';
+		retryingBuild = true;
+		actionError = '';
+		try {
+			await apiPost(`/api/v1/projects/${encodeURIComponent(id)}/retry-architect`, {});
+			await load();
+			await loadPhases();
+		} catch (e) {
+			actionError = e instanceof Error ? e.message : String(e);
+		} finally {
+			retryingBuild = false;
+		}
+	}
 
 	function parseEvt(e: ProjectEvent): ProjectEvent {
 		if (e._parsed) return e;
@@ -177,11 +238,13 @@
 	$effect(() => {
 		load();
 		loadActivity();
-		const fast = project?.status === 'building' || project?.status === 'review';
+		loadPhases();
+		const fast = project?.status === 'building' || project?.status === 'review' || project?.status === 'planning';
 		const intervalMs = fast ? 2000 : 10000;
 		const i = setInterval(() => {
 			load();
 			loadActivity();
+			loadPhases();
 		}, intervalMs);
 		return () => clearInterval(i);
 	});
@@ -205,8 +268,16 @@
 						evt.type.startsWith('story.') ||
 						evt.type === 'project.shipped' ||
 						evt.type === 'project.architect_done' ||
-						evt.type === 'project.architect_failed'
+						evt.type === 'project.architect_failed' ||
+						evt.type === 'project.cancelled' ||
+						evt.type === 'project.iteration_started' ||
+						evt.type === 'project.iteration_done' ||
+						evt.type === 'project.iteration_failed'
 					) load();
+					// BMAD step events : refresh phases panel.
+					if (evt.type === 'project.bmad_step_started' || evt.type === 'project.bmad_step_finished') {
+						loadPhases();
+					}
 				} catch {
 					/* ignore non-JSON frames */
 				}
@@ -373,6 +444,11 @@
 						↗ repo
 					</a>
 				{/if}
+				{#if (project.total_cost_usd ?? 0) > 0}
+					<span class="cost-pill" title="Cumul de tokens Claude consommés">
+						💰 ${(project.total_cost_usd ?? 0).toFixed(3)}
+					</span>
+				{/if}
 				<span class="muted">mis à jour {fmtRelative(project.updated_at)}</span>
 				<code class="id">{project.id}</code>
 			</div>
@@ -397,6 +473,77 @@
 				</dl>
 			{/if}
 		</header>
+
+		{#if project.failure_stage}
+			<div class="fail-banner">
+				<div>
+					<strong>Build en échec</strong> — étape <code>{project.failure_stage}</code>
+					{#if project.failure_error}
+						<pre class="fail-error">{project.failure_error}</pre>
+					{/if}
+				</div>
+				<button
+					type="button"
+					class="retry-btn"
+					onclick={retryBuild}
+					disabled={retryingBuild}>
+					{retryingBuild ? 'Relance…' : '↻ Relancer BMAD'}
+				</button>
+			</div>
+		{/if}
+
+		{#if actionError}
+			<div class="err">{actionError}</div>
+		{/if}
+
+		{#if (project.status === 'planning' || project.status === 'building') && phases.length > 0}
+			{@const latest = phases[0]}
+			{@const running = phases.find((s) => s.status === 'running')}
+			{@const done = phases.filter((s) => s.status === 'done').length}
+			{@const total = phases.length}
+			<section class="phases">
+				<div class="phases-head">
+					<h2>
+						BMAD
+						{#if running}
+							<span class="running-pill">
+								<span class="spinner"></span>
+								<code>{running.command}</code>
+								<span class="muted">({running.phase})</span>
+							</span>
+						{:else if latest.status === 'done'}
+							<span class="done-pill">✓ <code>{latest.command}</code></span>
+						{/if}
+					</h2>
+					<div class="phases-actions">
+						<span class="muted">{done}/{total} étapes terminées</span>
+						{#if running || project.status === 'planning'}
+							<button type="button" class="cancel-btn" onclick={cancelRun} disabled={cancelling}>
+								{cancelling ? 'Annulation…' : '✕ Annuler'}
+							</button>
+						{/if}
+					</div>
+				</div>
+				<ul class="phase-list">
+					{#each phases.slice(0, 15) as s (s.id)}
+						<li class={s.status}>
+							<span class="status-dot" class:running={s.status === 'running'}
+								class:done={s.status === 'done'}
+								class:failed={s.status === 'failed'}></span>
+							<code>{s.command}</code>
+							<span class="muted small">{s.phase}</span>
+							{#if s.cost_usd > 0}
+								<span class="muted small">· ${s.cost_usd.toFixed(4)}</span>
+							{/if}
+							{#if s.input_tokens > 0 || s.output_tokens > 0}
+								<span class="muted small">· {s.input_tokens}↓ / {s.output_tokens}↑ tokens</span>
+							{/if}
+							<span class="muted small">· {fmtRelative(s.started_at)}</span>
+						</li>
+					{/each}
+				</ul>
+			</section>
+		{/if}
 
 		<section class="progress">
 			<h2>Avancement</h2>
@@ -719,6 +866,99 @@
 		padding: 0.05rem 0.35rem;
 		border-radius: 3px;
 	}
+	.cost-pill {
+		display: inline-block;
+		padding: 0.1rem 0.5rem;
+		background: color-mix(in srgb, var(--warn) 18%, var(--bg-alt));
+		border: 1px solid color-mix(in srgb, var(--warn) 45%, var(--border));
+		border-radius: 999px;
+		color: var(--warn);
+		font-size: 0.72rem;
+		font-weight: 600;
+	}
+	.fail-banner {
+		display: flex;
+		justify-content: space-between;
+		align-items: flex-start;
+		gap: 1rem;
+		padding: 0.9rem 1rem;
+		background: color-mix(in srgb, var(--err) 12%, var(--bg-alt));
+		border-left: 3px solid var(--err);
+		border-radius: 0 6px 6px 0;
+	}
+	.fail-banner code {
+		font-family: ui-monospace, monospace;
+		font-size: 0.8rem;
+		background: var(--bg);
+		padding: 0.1rem 0.45rem;
+		border-radius: 3px;
+	}
+	.fail-error {
+		margin: 0.5rem 0 0;
+		padding: 0.5rem;
+		background: var(--bg);
+		border: 1px solid var(--border);
+		border-radius: 4px;
+		font-size: 0.75rem;
+		white-space: pre-wrap;
+		max-height: 160px;
+		overflow-y: auto;
+	}
+	.retry-btn {
+		padding: 0.45rem 0.85rem;
+		background: var(--accent);
+		color: white;
+		border: none;
+		border-radius: 4px;
+		cursor: pointer;
+		font-weight: 600;
+		white-space: nowrap;
+	}
+	.retry-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
+	.phases { padding: 0.75rem 1rem; background: var(--bg-alt); border: 1px solid var(--border); border-radius: 6px; }
+	.phases-head { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 0.5rem; margin-bottom: 0.5rem; }
+	.phases-head h2 { display: flex; align-items: center; gap: 0.5rem; margin: 0; }
+	.running-pill {
+		display: inline-flex; align-items: center; gap: 0.4rem;
+		padding: 0.15rem 0.6rem;
+		background: color-mix(in srgb, var(--accent) 15%, var(--bg));
+		border: 1px solid var(--accent);
+		border-radius: 999px;
+		font-size: 0.8rem;
+		font-weight: 500;
+	}
+	.done-pill {
+		display: inline-flex; align-items: center; gap: 0.3rem;
+		padding: 0.1rem 0.5rem;
+		background: color-mix(in srgb, var(--ok) 15%, var(--bg));
+		border: 1px solid var(--ok);
+		border-radius: 999px;
+		font-size: 0.75rem;
+		color: var(--ok);
+	}
+	.phases-actions { display: flex; gap: 0.5rem; align-items: center; }
+	.cancel-btn {
+		padding: 0.3rem 0.65rem;
+		background: transparent;
+		border: 1px solid var(--err);
+		color: var(--err);
+		border-radius: 4px;
+		cursor: pointer;
+		font-size: 0.75rem;
+	}
+	.cancel-btn:hover { background: color-mix(in srgb, var(--err) 15%, transparent); }
+	.cancel-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+	.phase-list { list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 0.25rem; max-height: 260px; overflow-y: auto; }
+	.phase-list li { display: flex; align-items: center; gap: 0.5rem; padding: 0.3rem 0.5rem; background: var(--bg); border-radius: 4px; font-size: 0.82rem; }
+	.phase-list li.failed { background: color-mix(in srgb, var(--err) 10%, var(--bg)); }
+	.phase-list li.running { background: color-mix(in srgb, var(--accent) 12%, var(--bg)); }
+	.status-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); }
+	.status-dot.running { background: var(--accent); animation: pulse-dot 1.5s ease-in-out infinite; }
+	.status-dot.done { background: var(--ok); }
+	.status-dot.failed { background: var(--err); }
+	.small { font-size: 0.72rem; }
+	@keyframes pulse-dot { 0%,100% { opacity: 1; } 50% { opacity: 0.3; } }
 	.empty {
 		color: var(--muted);
 		font-style: italic;
