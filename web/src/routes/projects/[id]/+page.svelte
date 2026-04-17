@@ -364,6 +364,9 @@
 				<code class="id">{project.id}</code>
 			</div>
 			<p class="idea">{project.idea}</p>
+			<nav class="tabs">
+				<a href="/projects/{project.id}/files">📁 Files</a>
+			</nav>
 			{#if project.bmad_output_path || project.repo_path || project.workdir}
 				<dl class="refs">
 					{#if project.workdir}
@@ -615,6 +618,21 @@
 		color: var(--text);
 		line-height: 1.5;
 	}
+	.tabs {
+		display: flex;
+		gap: 0.5rem;
+		margin: 0.75rem 0 0;
+	}
+	.tabs a {
+		padding: 0.3rem 0.7rem;
+		background: var(--bg-alt);
+		border: 1px solid var(--border);
+		border-radius: 4px;
+		color: inherit;
+		text-decoration: none;
+		font-size: 0.8rem;
+	}
+	.tabs a:hover { border-color: var(--accent); color: var(--accent); }
 	.refs {
 		display: grid;
 		grid-template-columns: max-content 1fr;
