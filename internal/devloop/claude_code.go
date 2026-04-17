@@ -108,7 +108,13 @@ func (r *ClaudeCodeReviewer) Review(ctx context.Context, proj ProjectContext, st
 	defer cancel()
 
 	prompt := buildReviewPrompt(proj, story, output)
-	cmd := exec.CommandContext(callCtx, r.cliPath, "--print", "--output-format", "text")
+	// --output-format json wraps Claude's response in a metadata
+	// envelope and buffers the whole thing before flushing, which
+	// sidesteps the mid-stream truncation we hit with text mode
+	// (the reviewer kept getting cut off mid-feedback-string, JSON
+	// parsing failed, scripted fallback took over, and iterations
+	// looped forever on a "dev output didn't cover ACs" text match).
+	cmd := exec.CommandContext(callCtx, r.cliPath, "--print", "--output-format", "json")
 	cmd.Dir = pickWorkdir(proj)
 	cmd.Stdin = strings.NewReader(prompt)
 	var stdout, stderr bytes.Buffer
@@ -119,7 +125,24 @@ func (r *ClaudeCodeReviewer) Review(ctx context.Context, proj ProjectContext, st
 		return r.fallback.Review(ctx, proj, story, output)
 	}
 
-	raw := extractJSON(stdout.String())
+	// Unwrap the CLI envelope: {result: "..."} holds Claude's actual
+	// response as a string; that string itself contains the JSON we
+	// want.
+	var envelope struct {
+		Result  string `json:"result"`
+		IsError bool   `json:"is_error"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &envelope); err != nil {
+		slog.Warn("devloop reviewer: claude envelope parse failed — falling back to scripted",
+			"error", err, "raw", truncateString(stdout.String(), 200))
+		return r.fallback.Review(ctx, proj, story, output)
+	}
+	if envelope.IsError {
+		slog.Warn("devloop reviewer: claude reported error — falling back to scripted",
+			"raw", truncateString(envelope.Result, 200))
+		return r.fallback.Review(ctx, proj, story, output)
+	}
+	raw := extractJSON(envelope.Result)
 	var parsed struct {
 		Pass     bool   `json:"pass"`
 		Feedback string `json:"feedback"`
