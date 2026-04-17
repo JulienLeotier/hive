@@ -11,10 +11,12 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/JulienLeotier/hive/internal/bmad"
 	"github.com/JulienLeotier/hive/internal/intake"
+	"github.com/JulienLeotier/hive/internal/metrics"
 	"github.com/JulienLeotier/hive/internal/project"
 )
 
@@ -881,8 +883,18 @@ func readFirst(workdir string, rels ...string) (string, error) {
 // Les insertions échouées ne plantent pas le pipeline — au pire le
 // dashboard n'a pas l'entrée, mais BMAD continue d'avancer.
 func (s *Server) stepObserver(ctx context.Context, projectID, phase string) bmad.StepObserver {
+	// stepStart[command] → time.Time pour mesurer la durée exacte par
+	// skill. On stocke sous lock léger car OnStart + OnFinish tournent
+	// séquentiellement par séquence, mais on reste thread-safe si un
+	// jour on parallélise.
+	stepStart := make(map[string]time.Time)
+	var mu sync.Mutex
+
 	return bmad.StepObserver{
 		OnStart: func(index, total int, command string) {
+			mu.Lock()
+			stepStart[command] = time.Now()
+			mu.Unlock()
 			res, err := s.db().ExecContext(ctx,
 				`INSERT INTO bmad_phase_steps (project_id, phase, command, status)
 				 VALUES (?, ?, ?, 'running')`,
@@ -909,6 +921,15 @@ func (s *Server) stepObserver(ctx context.Context, projectID, phase string) bmad
 			if err != nil {
 				status = "failed"
 				errText = err.Error()
+			}
+			// Prometheus : coût cumulé + durée par skill.
+			metrics.BMADSkillCost.WithLabelValues(command, status).Add(res.CostUSD)
+			mu.Lock()
+			startT, ok := stepStart[command]
+			delete(stepStart, command)
+			mu.Unlock()
+			if ok {
+				metrics.BMADSkillDuration.WithLabelValues(command).Observe(time.Since(startT).Seconds())
 			}
 			preview := res.Text
 			if len(preview) > 600 {

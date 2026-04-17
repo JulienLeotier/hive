@@ -16,6 +16,7 @@ import (
 	"github.com/JulienLeotier/hive/internal/devloop"
 	"github.com/JulienLeotier/hive/internal/event"
 	"github.com/JulienLeotier/hive/internal/intake"
+	"github.com/JulienLeotier/hive/internal/metrics"
 	"github.com/JulienLeotier/hive/internal/notify"
 	"github.com/JulienLeotier/hive/internal/project"
 	"github.com/JulienLeotier/hive/internal/storage"
@@ -65,6 +66,9 @@ var serveCmd = &cobra.Command{
 		// Notifications Slack (opt-in via HIVE_SLACK_WEBHOOK). No-op si
 		// l'env var est absente — aucun impact en local.
 		notify.Attach(bus)
+
+		// Prometheus : compteur events publiés par type.
+		metrics.AttachBus(bus)
 
 		// Background retention sweeps (events, audit) keep the DB bounded.
 		supervisorCtx, supervisorCancel := context.WithCancel(context.Background())
@@ -122,6 +126,7 @@ var serveCmd = &cobra.Command{
 		mux := http.NewServeMux()
 		mux.Handle("/healthz", api.HealthHandler())
 		mux.Handle("/readyz", api.ReadyHandler(store.DB))
+		mux.Handle("/metrics", metrics.Handler())
 		mux.Handle("/ws", apiSrv.WSHandler(http.HandlerFunc(hub.HandleWS)))
 		mux.Handle("/api/", apiSrv.Handler())
 		mux.Handle("/", dashboard.Handler())

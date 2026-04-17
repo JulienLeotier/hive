@@ -187,9 +187,16 @@ func (s *Server) routes() {
 // tenantFilter calls in downstream helpers keep working without a
 // refactor.
 func (s *Server) Handler() http.Handler {
-	// Rate limit outermost → 429 avant même d'injecter le contexte
-	// admin ou de toucher la DB. localAdminContext reste intérieur.
-	return rateLimitMiddleware(s.rateLimiter, localAdminContext(s.mux))
+	// Chain : rate limit (external)
+	//       → metrics (capture all, even 429s)
+	//       → local admin context (inject role/tenant)
+	//       → mux
+	//
+	// metrics wrap le ratelimit pour compter aussi les 429s, mais
+	// ratelimit reste externe au contexte admin (pas besoin d'un
+	// admin-ctx pour comparer IP/timestamp).
+	return rateLimitMiddleware(s.rateLimiter,
+		metricsMiddleware(localAdminContext(s.mux)))
 }
 
 // WSHandler wraps a WebSocket upgrade handler with the same no-op
