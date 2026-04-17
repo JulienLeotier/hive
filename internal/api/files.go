@@ -174,11 +174,11 @@ func (s *Server) handleListFiles(w http.ResponseWriter, r *http.Request) {
 		}
 		rel, err := filepath.Rel(root, path)
 		if err != nil {
-			return nil
+			return nil //nolint:nilerr // skip entries we can't compute a relative path for
 		}
 		info, err := d.Info()
 		if err != nil {
-			return nil
+			return nil //nolint:nilerr // skip entries whose stat failed; partial listing is better than aborting
 		}
 		entries = append(entries, fileEntry{
 			Path:     filepath.ToSlash(rel),

@@ -510,51 +510,6 @@ func (s *Server) WSHandler(next http.Handler) http.Handler {
 	return localAdminContext(next)
 }
 
-func (s *Server) jwtValidator() JWTValidator {
-	if s.oidc == nil {
-		return nil
-	}
-	return s.oidc.ValidateJWT
-}
-
-// roleResolver pulls the API key name set by AuthMiddleware and resolves it to
-// a role (+tenant) via the UserStore; stashes them in context for RBACMiddleware.
-//
-// A6 guard: dev-mode callers (no user store, or no API keys configured) are
-// given the admin role with an EMPTY tenant string. Combined with
-// tenantFilter's policy, this yields cross-tenant visibility in dev without
-// requiring a hardcoded tenant name that could collide with a real customer.
-func (s *Server) roleResolver(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		ctx := r.Context()
-		if s.users == nil {
-			ctx = auth.WithRole(ctx, auth.RoleAdmin) // no directory → trust the key
-			ctx = auth.WithTenant(ctx, "")           // admin cross-tenant
-			next.ServeHTTP(w, r.WithContext(ctx))
-			return
-		}
-		keyName, _ := ctx.Value(ctxKeyName).(string)
-		if keyName == "" {
-			// AuthMiddleware let a dev-mode request through (no keys configured).
-			ctx = auth.WithRole(ctx, auth.RoleAdmin)
-			ctx = auth.WithTenant(ctx, "")
-			next.ServeHTTP(w, r.WithContext(ctx))
-			return
-		}
-		user, err := s.users.Get(ctx, keyName)
-		if err != nil {
-			// Key exists but isn't mapped to an RBAC role → viewer + no tenant
-			// (which now fails closed instead of opening up the legacy
-			// "default" tenant to a stranger).
-			ctx = auth.WithRole(ctx, auth.RoleViewer)
-			ctx = auth.WithTenant(ctx, "")
-		} else {
-			ctx = auth.WithRole(ctx, user.Role)
-			ctx = auth.WithTenant(ctx, user.TenantID)
-		}
-		next.ServeHTTP(w, r.WithContext(ctx))
-	})
-}
 
 // handleCreateAgent registers an agent from an HTTP request. The request body
 // is {name, type, url} — the manager health-checks the URL and calls /declare

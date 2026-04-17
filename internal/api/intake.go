@@ -123,7 +123,7 @@ func (s *Server) handleIntakeFinalize(w http.ResponseWriter, r *http.Request) {
 	// and return the updated project immediately. The frontend reacts to
 	// project.architect_started / project.architect_done / project.architect_failed
 	// events and polls the project tree when one arrives.
-	go s.runArchitectAsync(p.ID, p.Idea, prd)
+	go s.runArchitectAsync(p.ID, p.Idea, prd) //nolint:gosec // G118: the request ctx dies with the handler; runArchitectAsync deliberately uses its own 10-min background ctx
 
 	writeJSON(w, map[string]any{
 		"project_id": p.ID,
@@ -168,7 +168,7 @@ func (s *Server) RecoverStuckPlanning(ctx context.Context) error {
 	}
 	for _, st := range list {
 		slog.Info("recovering stuck planning project", "project", st.id)
-		go s.runArchitectAsync(st.id, st.idea, st.prd)
+		go s.runArchitectAsync(st.id, st.idea, st.prd) //nolint:gosec // G118: boot-time recovery; no request ctx exists here
 	}
 	return nil
 }

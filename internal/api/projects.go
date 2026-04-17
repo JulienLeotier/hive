@@ -198,7 +198,7 @@ func (s *Server) handleRegeneratePlan(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "UPDATE_FAILED", err.Error())
 		return
 	}
-	go s.runArchitectAsync(p.ID, p.Idea, p.PRD)
+	go s.runArchitectAsync(p.ID, p.Idea, p.PRD) //nolint:gosec // G118: same pattern as finalize — request ctx would cancel the architect mid-run
 	writeJSON(w, map[string]any{"project_id": id, "status": project.StatusPlanning})
 }
 
