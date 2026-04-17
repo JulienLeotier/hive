@@ -1,5 +1,7 @@
 <script lang="ts">
 	import { fmtRelative } from '$lib/format';
+	import { apiGet } from '$lib/api';
+	import { createReconnectingWS, wsURL } from '$lib/ws';
 
 	type Metrics = {
 		agents: { total: number; healthy: number; degraded: number; unavailable: number };
@@ -15,41 +17,36 @@
 
 	let metrics = $state<Metrics | null>(null);
 	let recentEvents = $state<Event[]>([]);
-	let ws: WebSocket | null = $state(null);
 
 	async function load() {
 		try {
 			const [m, e] = await Promise.all([
-				fetch('/api/v1/metrics').then((r) => r.json()),
-				fetch('/api/v1/events?limit=10').then((r) => r.json())
+				apiGet<Metrics>('/api/v1/metrics'),
+				apiGet<Event[]>('/api/v1/events?limit=10')
 			]);
-			metrics = m.data ?? null;
-			recentEvents = e.data ?? [];
+			metrics = m;
+			recentEvents = e ?? [];
 		} catch {
-			/* api not ready */
+			/* banner shown by apiGet */
 		}
-	}
-
-	function connectWS() {
-		const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
-		ws = new WebSocket(`${proto}//${location.host}/ws`);
-		ws.onmessage = (msg) => {
-			try {
-				const evt = JSON.parse(msg.data);
-				recentEvents = [evt, ...recentEvents].slice(0, 10);
-			} catch {
-				/* ignore */
-			}
-		};
-		ws.onclose = () => setTimeout(connectWS, 3000);
 	}
 
 	$effect(() => {
 		load();
-		connectWS();
 		const interval = setInterval(load, 5000);
+		const ws = createReconnectingWS({
+			url: wsURL('/ws'),
+			onmessage: (msg) => {
+				try {
+					const evt = JSON.parse(msg.data);
+					recentEvents = [evt, ...recentEvents].slice(0, 10);
+				} catch {
+					/* ignore non-JSON frames */
+				}
+			}
+		});
 		return () => {
-			ws?.close();
+			ws.close();
 			clearInterval(interval);
 		};
 	});

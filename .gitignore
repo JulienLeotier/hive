@@ -42,3 +42,7 @@ web/.svelte-kit/
 
 # Temp
 /tmp/
+
+# Air (Go live-reload)
+/.air-tmp/
+/build-errors.log

@@ -23,3 +23,11 @@ export function truncate(s: string, max: number): string {
 	if (!s || s.length <= max) return s;
 	return s.slice(0, max - 1) + '…';
 }
+
+export function fmtDuration(seconds: number | null | undefined): string {
+	if (seconds == null) return '—';
+	if (seconds < 1) return `${Math.round(seconds * 1000)}ms`;
+	if (seconds < 60) return `${seconds.toFixed(1)}s`;
+	if (seconds < 3600) return `${Math.floor(seconds / 60)}m ${Math.floor(seconds % 60)}s`;
+	return `${Math.floor(seconds / 3600)}h ${Math.floor((seconds % 3600) / 60)}m`;
+}

@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { fmtRelative } from '$lib/format';
+	import { apiGet } from '$lib/api';
 
 	type Workflow = { id: string; name: string; status: string; created_at: string };
 	let workflows = $state<Workflow[]>([]);
@@ -7,12 +8,12 @@
 
 	async function load() {
 		try {
-			const r = await fetch('/api/v1/workflows');
-			workflows = (await r.json()).data ?? [];
+			workflows = (await apiGet<Workflow[]>('/api/v1/workflows')) ?? [];
 		} catch {
-			/* noop */
+			/* banner shown by apiGet */
+		} finally {
+			loading = false;
 		}
-		loading = false;
 	}
 
 	$effect(() => {

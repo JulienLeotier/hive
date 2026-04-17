@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { fmtRelative } from '$lib/format';
+	import { apiGet } from '$lib/api';
 
 	type Agent = { id: string; name: string; trust_level: string; health_status: string };
 	type Promotion = {
@@ -19,15 +20,16 @@
 	async function load() {
 		try {
 			const [a, h] = await Promise.all([
-				fetch('/api/v1/agents').then((r) => r.json()),
-				fetch('/api/v1/trust').then((r) => r.json())
+				apiGet<Agent[]>('/api/v1/agents'),
+				apiGet<Promotion[]>('/api/v1/trust')
 			]);
-			agents = a.data ?? [];
-			history = h.data ?? [];
+			agents = a ?? [];
+			history = h ?? [];
 		} catch {
-			/* noop */
+			/* banner shown by apiGet */
+		} finally {
+			loading = false;
 		}
-		loading = false;
 	}
 
 	$effect(() => {

@@ -1,16 +1,18 @@
 <script lang="ts">
+	import { apiGet } from '$lib/api';
+
 	type User = { Subject: string; Role: string; TenantID: string };
 	let users = $state<User[]>([]);
 	let loading = $state(true);
 
 	async function load() {
 		try {
-			const r = await fetch('/api/v1/users');
-			users = (await r.json()).data ?? [];
+			users = (await apiGet<User[]>('/api/v1/users')) ?? [];
 		} catch {
-			/* noop */
+			/* banner shown by apiGet */
+		} finally {
+			loading = false;
 		}
-		loading = false;
 	}
 
 	$effect(() => {

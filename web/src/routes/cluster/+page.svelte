@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { fmtRelative } from '$lib/format';
+	import { apiGet } from '$lib/api';
 
 	type Member = {
 		node_id: string;
@@ -14,12 +15,12 @@
 
 	async function load() {
 		try {
-			const r = await fetch('/api/v1/cluster');
-			members = (await r.json()).data ?? [];
+			members = (await apiGet<Member[]>('/api/v1/cluster')) ?? [];
 		} catch {
-			/* noop */
+			/* banner shown by apiGet */
+		} finally {
+			loading = false;
 		}
-		loading = false;
 	}
 
 	$effect(() => {

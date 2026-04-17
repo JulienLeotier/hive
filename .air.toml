@@ -1,0 +1,25 @@
+root = "."
+tmp_dir = ".air-tmp"
+
+[build]
+  cmd = "go build -o .air-tmp/hive ./cmd/hive"
+  bin = ".air-tmp/hive"
+  args_bin = ["serve"]
+  include_ext = ["go"]
+  exclude_dir = [".air-tmp", "web", "node_modules", "_bmad", "_bmad-output", "docs", "internal/dashboard/dist"]
+  exclude_regex = ["_test\\.go$"]
+  delay = 400
+  kill_delay = "2s"
+  stop_on_error = true
+
+[log]
+  time = false
+
+[color]
+  main = "magenta"
+  watcher = "cyan"
+  build = "yellow"
+  runner = "green"
+
+[misc]
+  clean_on_exit = true

@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { fmtRelative, truncate } from '$lib/format';
+	import { apiGet } from '$lib/api';
 
 	type Entry = {
 		id: number;
@@ -19,12 +20,12 @@
 	async function load() {
 		try {
 			const url = filterType ? `/api/v1/knowledge?type=${encodeURIComponent(filterType)}` : '/api/v1/knowledge';
-			const r = await fetch(url);
-			entries = (await r.json()).data ?? [];
+			entries = (await apiGet<Entry[]>(url)) ?? [];
 		} catch {
-			/* noop */
+			/* banner shown by apiGet */
+		} finally {
+			loading = false;
 		}
-		loading = false;
 	}
 
 	async function search() {
@@ -34,12 +35,12 @@
 		}
 		searching = true;
 		try {
-			const r = await fetch(`/api/v1/knowledge/search?q=${encodeURIComponent(searchQuery)}&limit=20`);
-			entries = (await r.json()).data ?? [];
+			entries = (await apiGet<Entry[]>(`/api/v1/knowledge/search?q=${encodeURIComponent(searchQuery)}&limit=20`)) ?? [];
 		} catch {
-			/* noop */
+			/* banner shown by apiGet */
+		} finally {
+			searching = false;
 		}
-		searching = false;
 	}
 
 	$effect(() => {

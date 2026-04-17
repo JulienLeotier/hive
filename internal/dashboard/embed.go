@@ -34,11 +34,26 @@ func Handler() http.Handler {
 		}
 
 		// Check if file exists in embedded FS
-		f, err := sub.Open(strings.TrimPrefix(path, "/"))
+		trimmed := strings.TrimPrefix(path, "/")
+		f, err := sub.Open(trimmed)
 		if err == nil {
 			f.Close()
 			fileServer.ServeHTTP(w, r)
 			return
+		}
+
+		// Prerendered route: try "{path}.html" for clean URLs like /cluster
+		// (SvelteKit's static adapter emits cluster.html, not cluster/index.html here).
+		// Without this, reloading /cluster falls through to the SPA fallback, which
+		// has a different base/manifest and throws "Not found: /cluster".
+		if !strings.Contains(trimmed, ".") {
+			htmlPath := trimmed + ".html"
+			if f, err := sub.Open(htmlPath); err == nil {
+				f.Close()
+				r.URL.Path = "/" + htmlPath
+				fileServer.ServeHTTP(w, r)
+				return
+			}
 		}
 
 		// SPA fallback: serve index.html for all other routes

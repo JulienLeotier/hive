@@ -1,5 +1,7 @@
 <script lang="ts">
 	import { fmtRelative, truncate } from '$lib/format';
+	import { apiGet } from '$lib/api';
+	import { createReconnectingWS, wsURL } from '$lib/ws';
 
 	type Agent = {
 		id: string;
@@ -12,42 +14,36 @@
 	};
 
 	let agents = $state<Agent[]>([]);
-	let ws: WebSocket | null = $state(null);
 	let loading = $state(true);
 
 	async function loadAgents() {
 		try {
-			const res = await fetch('/api/v1/agents');
-			const json = await res.json();
-			agents = json.data ?? [];
+			agents = (await apiGet<Agent[]>('/api/v1/agents')) ?? [];
 		} catch {
-			/* noop */
+			/* banner shown by apiGet */
+		} finally {
+			loading = false;
 		}
-		loading = false;
-	}
-
-	function connectWS() {
-		const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
-		ws = new WebSocket(`${proto}//${location.host}/ws`);
-		ws.onmessage = (msg) => {
-			try {
-				const evt = JSON.parse(msg.data);
-				if (typeof evt.type === 'string' && evt.type.startsWith('agent.')) {
-					loadAgents();
-				}
-			} catch {
-				/* noop */
-			}
-		};
-		ws.onclose = () => setTimeout(connectWS, 3000);
 	}
 
 	$effect(() => {
 		loadAgents();
-		connectWS();
 		const interval = setInterval(loadAgents, 10000);
+		const ws = createReconnectingWS({
+			url: wsURL('/ws'),
+			onmessage: (msg) => {
+				try {
+					const evt = JSON.parse(msg.data);
+					if (typeof evt.type === 'string' && evt.type.startsWith('agent.')) {
+						loadAgents();
+					}
+				} catch {
+					/* ignore non-JSON frames */
+				}
+			}
+		});
 		return () => {
-			ws?.close();
+			ws.close();
 			clearInterval(interval);
 		};
 	});

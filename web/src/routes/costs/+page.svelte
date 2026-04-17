@@ -1,8 +1,16 @@
 <script lang="ts">
+	import { apiGet } from '$lib/api';
+
 	type Summary = { agent_name: string; total_cost: number; task_count: number };
 	type Alert = { agent_name: string; daily_limit: number; spend: number; breached: boolean };
 	type WorkflowSummary = { workflow_id: string; total_cost: number; task_count: number };
 	type TrendPoint = { day: string; total_cost: number };
+	type CostsPayload = {
+		summaries?: Summary[];
+		alerts?: Alert[];
+		per_workflow?: WorkflowSummary[];
+		trend?: TrendPoint[];
+	};
 
 	let summaries = $state<Summary[]>([]);
 	let alerts = $state<Alert[]>([]);
@@ -12,16 +20,16 @@
 
 	async function load() {
 		try {
-			const res = await fetch('/api/v1/costs');
-			const json = await res.json();
-			summaries = json.data?.summaries ?? [];
-			alerts = json.data?.alerts ?? [];
-			perWorkflow = json.data?.per_workflow ?? [];
-			trend = json.data?.trend ?? [];
+			const payload = (await apiGet<CostsPayload>('/api/v1/costs')) ?? {};
+			summaries = payload.summaries ?? [];
+			alerts = payload.alerts ?? [];
+			perWorkflow = payload.per_workflow ?? [];
+			trend = payload.trend ?? [];
 		} catch {
-			/* API not ready */
+			/* banner shown by apiGet */
+		} finally {
+			loading = false;
 		}
-		loading = false;
 	}
 
 	$effect(() => {

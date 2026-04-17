@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { fmtRelative } from '$lib/format';
+	import { apiGet } from '$lib/api';
 
 	type Thread = {
 		id: string;
@@ -16,12 +17,12 @@
 
 	async function load() {
 		try {
-			const r = await fetch('/api/v1/dialogs');
-			threads = (await r.json()).data ?? [];
+			threads = (await apiGet<Thread[]>('/api/v1/dialogs')) ?? [];
 		} catch {
-			/* noop */
+			/* banner shown by apiGet */
+		} finally {
+			loading = false;
 		}
-		loading = false;
 	}
 
 	$effect(() => {

@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { fmtRelative } from '$lib/format';
+	import { apiGet } from '$lib/api';
 
 	type Link = {
 		name: string;
@@ -14,12 +15,12 @@
 
 	async function load() {
 		try {
-			const r = await fetch('/api/v1/federation');
-			links = (await r.json()).data ?? [];
+			links = (await apiGet<Link[]>('/api/v1/federation')) ?? [];
 		} catch {
-			/* noop */
+			/* banner shown by apiGet */
+		} finally {
+			loading = false;
 		}
-		loading = false;
 	}
 
 	$effect(() => {

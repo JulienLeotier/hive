@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { fmtRelative, fmtUSD } from '$lib/format';
+	import { apiGet } from '$lib/api';
 
 	type Auction = {
 		id: string;
@@ -16,12 +17,12 @@
 
 	async function load() {
 		try {
-			const r = await fetch('/api/v1/auctions');
-			auctions = (await r.json()).data ?? [];
+			auctions = (await apiGet<Auction[]>('/api/v1/auctions')) ?? [];
 		} catch {
-			/* noop */
+			/* banner shown by apiGet */
+		} finally {
+			loading = false;
 		}
-		loading = false;
 	}
 
 	$effect(() => {

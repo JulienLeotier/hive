@@ -3,6 +3,7 @@
 	import favicon from '$lib/assets/favicon.svg';
 	import { page } from '$app/stores';
 	import { theme, toggleTheme, applyStoredTheme } from '$lib/theme';
+	import { apiError } from '$lib/api';
 
 	let { children } = $props();
 
@@ -85,6 +86,13 @@
 		</button>
 	</aside>
 	<main class="content">
+		{#if $apiError}
+			<div class="api-banner" role="alert">
+				<span class="dot"></span>
+				<span class="msg">Backend unreachable — {$apiError}</span>
+				<button class="dismiss" onclick={() => apiError.set(null)} aria-label="Dismiss">×</button>
+			</div>
+		{/if}
 		{@render children()}
 	</main>
 </div>
@@ -262,5 +270,43 @@
 	.content {
 		padding: 2rem 2.5rem;
 		max-width: 1400px;
+	}
+	.api-banner {
+		display: flex;
+		align-items: center;
+		gap: 0.625rem;
+		background: color-mix(in srgb, var(--err) 12%, var(--bg-panel));
+		border: 1px solid var(--err);
+		color: var(--text);
+		padding: 0.5rem 0.75rem;
+		border-radius: 6px;
+		font-size: 0.8rem;
+		margin-bottom: 1rem;
+	}
+	.api-banner .dot {
+		width: 8px;
+		height: 8px;
+		border-radius: 50%;
+		background: var(--err);
+		flex-shrink: 0;
+	}
+	.api-banner .msg {
+		flex: 1;
+		font-family: ui-monospace, monospace;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+	}
+	.api-banner .dismiss {
+		background: transparent;
+		border: none;
+		color: var(--text-muted);
+		font-size: 1.1rem;
+		line-height: 1;
+		cursor: pointer;
+		padding: 0 0.25rem;
+	}
+	.api-banner .dismiss:hover {
+		color: var(--text);
 	}
 </style>

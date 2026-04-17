@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { fmtRelative } from '$lib/format';
+	import { apiGet } from '$lib/api';
 
 	type Recommendation = {
 		type: string;
@@ -24,15 +25,16 @@
 	async function load() {
 		try {
 			const [r1, r2] = await Promise.all([
-				fetch('/api/v1/recommendations').then((r) => r.json()),
-				fetch('/api/v1/optimizations').then((r) => r.json())
+				apiGet<Recommendation[]>('/api/v1/recommendations'),
+				apiGet<Applied[]>('/api/v1/optimizations')
 			]);
-			recommendations = r1.data ?? [];
-			applied = r2.data ?? [];
+			recommendations = r1 ?? [];
+			applied = r2 ?? [];
 		} catch {
-			/* noop */
+			/* banner shown by apiGet */
+		} finally {
+			loading = false;
 		}
-		loading = false;
 	}
 
 	$effect(() => {

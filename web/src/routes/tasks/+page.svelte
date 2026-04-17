@@ -1,4 +1,8 @@
 <script lang="ts">
+	import { apiGet } from '$lib/api';
+	import { createReconnectingWS, wsURL } from '$lib/ws';
+	import { fmtDuration, truncate } from '$lib/format';
+
 	type Task = {
 		id: string;
 		workflow_id: string;
@@ -7,6 +11,8 @@
 		agent_id: string;
 		agent_name: string;
 		created_at: string;
+		duration_seconds?: number | null;
+		result_summary?: string;
 	};
 
 	let tasks = $state<Task[]>([]);
@@ -14,19 +20,37 @@
 
 	async function loadTasks() {
 		try {
-			const res = await fetch('/api/v1/tasks');
-			const json = await res.json();
-			tasks = json.data ?? [];
+			tasks = (await apiGet<Task[]>('/api/v1/tasks')) ?? [];
 		} catch {
-			/* API not ready */
+			/* banner shown by apiGet */
+		} finally {
+			loading = false;
 		}
-		loading = false;
 	}
 
+	// Story 8.3 AC2: real-time updates. Keep the slow poll as a safety net
+	// (agents-without-WS, missed frames) but drop the interval from 3s to 10s
+	// now that task.* events trigger an immediate reload.
 	$effect(() => {
 		loadTasks();
-		const interval = setInterval(loadTasks, 3000);
-		return () => clearInterval(interval);
+		const interval = setInterval(loadTasks, 10000);
+		const ws = createReconnectingWS({
+			url: wsURL('/ws'),
+			onmessage: (msg) => {
+				try {
+					const evt = JSON.parse(msg.data);
+					if (typeof evt.type === 'string' && evt.type.startsWith('task.')) {
+						loadTasks();
+					}
+				} catch {
+					/* ignore non-JSON frames */
+				}
+			}
+		});
+		return () => {
+			ws.close();
+			clearInterval(interval);
+		};
 	});
 
 	let grouped = $derived(() => {
@@ -86,6 +110,8 @@
 							<th>Type</th>
 							<th>Status</th>
 							<th>Agent</th>
+							<th>Duration</th>
+							<th>Result</th>
 							<th>Created</th>
 						</tr>
 					</thead>
@@ -96,6 +122,8 @@
 								<td>{t.type}</td>
 								<td><span class="badge" style="background:{statusColor(t.status)}">{t.status}</span></td>
 								<td>{t.agent_name || '—'}</td>
+								<td>{fmtDuration(t.duration_seconds)}</td>
+								<td class="result" title={t.result_summary ?? ''}>{truncate(t.result_summary ?? '', 60) || '—'}</td>
 								<td>{t.created_at}</td>
 							</tr>
 						{/each}
@@ -167,5 +195,14 @@
 		background: #f3f4f6;
 		padding: 1px 4px;
 		border-radius: 3px;
+	}
+	.result {
+		font-family: ui-monospace, monospace;
+		font-size: 0.75rem;
+		color: #475569;
+		max-width: 320px;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
 	}
 </style>

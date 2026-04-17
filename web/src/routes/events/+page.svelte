@@ -1,33 +1,50 @@
 <script lang="ts">
+	import { apiGet } from '$lib/api';
+	import { createReconnectingWS, wsURL } from '$lib/ws';
+
 	type Event = { id: number; type: string; source: string; payload: string; created_at: string; };
 
 	let events = $state<Event[]>([]);
 	let typeFilter = $state('');
-	let ws: WebSocket | null = $state(null);
+	let sourceFilter = $state('');
 
 	async function loadEvents() {
 		try {
-			const url = typeFilter ? `/api/v1/events?type=${typeFilter}` : '/api/v1/events';
-			const res = await fetch(url);
-			const json = await res.json();
-			events = json.data ?? [];
-		} catch { /* API not ready */ }
+			const params = new URLSearchParams();
+			if (typeFilter) params.set('type', typeFilter);
+			if (sourceFilter) params.set('source', sourceFilter);
+			const qs = params.toString();
+			const url = qs ? `/api/v1/events?${qs}` : '/api/v1/events';
+			events = (await apiGet<Event[]>(url)) ?? [];
+		} catch {
+			/* banner shown by apiGet */
+		}
 	}
 
-	function connectWS() {
-		const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
-		ws = new WebSocket(`${proto}//${location.host}/ws`);
-		ws.onmessage = (msg) => {
-			const evt = JSON.parse(msg.data);
-			events = [evt, ...events].slice(0, 100);
-		};
-		ws.onclose = () => setTimeout(connectWS, 3000);
+	// Client-side mirror of the active filters for incoming WS events. Without
+	// this, a filtered view would get polluted by unrelated events pushed over
+	// the socket.
+	function matchesFilters(evt: Event): boolean {
+		if (typeFilter && !evt.type.startsWith(typeFilter)) return false;
+		if (sourceFilter && evt.source !== sourceFilter) return false;
+		return true;
 	}
 
 	$effect(() => {
 		loadEvents();
-		connectWS();
-		return () => ws?.close();
+		const ws = createReconnectingWS({
+			url: wsURL('/ws'),
+			onmessage: (msg) => {
+				try {
+					const evt = JSON.parse(msg.data) as Event;
+					if (!matchesFilters(evt)) return;
+					events = [evt, ...events].slice(0, 100);
+				} catch {
+					/* ignore non-JSON frames */
+				}
+			}
+		});
+		return () => ws.close();
 	});
 </script>
 
@@ -35,7 +52,8 @@
 	<h1>Event Timeline</h1>
 
 	<div class="filter">
-		<input bind:value={typeFilter} placeholder="Filter by type (e.g., task)" />
+		<input bind:value={typeFilter} placeholder="Filter by type prefix (e.g., task)" />
+		<input bind:value={sourceFilter} placeholder="Filter by source" />
 		<button onclick={loadEvents}>Filter</button>
 	</div>
 

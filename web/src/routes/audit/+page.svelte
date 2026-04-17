@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { fmtRelative } from '$lib/format';
+	import { apiGet } from '$lib/api';
 
 	type Entry = {
 		id: number;
@@ -16,12 +17,12 @@
 
 	async function load() {
 		try {
-			const r = await fetch('/api/v1/audit');
-			entries = (await r.json()).data ?? [];
+			entries = (await apiGet<Entry[]>('/api/v1/audit')) ?? [];
 		} catch {
-			/* noop */
+			/* banner shown by apiGet */
+		} finally {
+			loading = false;
 		}
-		loading = false;
 	}
 
 	$effect(() => {
