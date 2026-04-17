@@ -9,6 +9,8 @@
 //
 // Backoff: 500ms → 1s → 2s → 4s → … capped at 30s.
 
+import { wsStatus } from './wsStatus';
+
 export type WSStatus = 'connecting' | 'open' | 'closed';
 
 export type WSHandle = {
@@ -30,6 +32,9 @@ export function createReconnectingWS(opts: WSOptions): WSHandle {
 	let alive = true;
 
 	function setStatus(s: WSStatus) {
+		// Publish to the global store so the sidebar dot reflects
+		// connection state regardless of which page opened the WS.
+		wsStatus.set(s);
 		opts.onstatus?.(s);
 	}
 
@@ -67,6 +72,10 @@ export function createReconnectingWS(opts: WSOptions): WSHandle {
 				ws.close();
 				ws = null;
 			}
+			// La page owner s'en va : on repasse en "connecting" pour
+			// que la prochaine page qui ouvre un WS ne montre pas une
+			// couleur stale.
+			wsStatus.set('connecting');
 		}
 	};
 }

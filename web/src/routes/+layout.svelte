@@ -2,10 +2,27 @@
 	import { onMount } from 'svelte';
 	import favicon from '$lib/assets/favicon.svg';
 	import { page } from '$app/stores';
+	import { afterNavigate } from '$app/navigation';
 	import { theme, toggleTheme, applyStoredTheme } from '$lib/theme';
 	import { apiError } from '$lib/api';
+	import { wsStatus } from '$lib/wsStatus';
 
 	let { children } = $props();
+
+	// Scroll-to-top on chaque nav client-side. SvelteKit le fait par
+	// défaut quand l'URL change, mais pas sur un simple changement de
+	// query-string — on garantit le comportement explicitement pour
+	// éviter les surprises quand on revient d'une page longue sur une
+	// autre (ex. /projects/[id] → /projects).
+	afterNavigate(({ from, to }) => {
+		if (from && to && from.url.pathname !== to.url.pathname) {
+			window.scrollTo({ top: 0, behavior: 'instant' });
+		}
+	});
+
+	function wsStatusLabel(s: 'connecting' | 'open' | 'closed'): string {
+		return s === 'open' ? 'live' : s === 'connecting' ? 'connexion…' : 'hors-ligne';
+	}
 
 	// BMAD-mode nav. The product is a local, single-user product factory:
 	// one idea in, one shipped product out. Everything in Build drives a
@@ -66,6 +83,12 @@
 			{/each}
 		</nav>
 		<div class="sidebar-footer">
+			<div class="ws-status" title={wsStatusLabel($wsStatus)}>
+				<span class="ws-dot" class:open={$wsStatus === 'open'}
+					class:connecting={$wsStatus === 'connecting'}
+					class:closed={$wsStatus === 'closed'}></span>
+				<span class="ws-label">{wsStatusLabel($wsStatus)}</span>
+			</div>
 			<button class="theme-toggle" onclick={toggleTheme} title="Toggle dark mode">
 				{$theme === 'dark' ? '☀' : '☾'}
 			</button>
@@ -243,7 +266,31 @@
 	.sidebar-footer {
 		display: flex;
 		gap: 0.5rem;
+		align-items: center;
 	}
+	.ws-status {
+		display: flex;
+		align-items: center;
+		gap: 0.4rem;
+		font-size: 0.7rem;
+		color: var(--text-muted);
+		flex: 1;
+	}
+	.ws-dot {
+		width: 8px;
+		height: 8px;
+		border-radius: 50%;
+		background: var(--text-muted);
+		flex-shrink: 0;
+	}
+	.ws-dot.open { background: var(--ok); box-shadow: 0 0 4px var(--ok); }
+	.ws-dot.connecting { background: var(--warn); animation: pulse 1s ease-in-out infinite; }
+	.ws-dot.closed { background: var(--err); }
+	@keyframes pulse {
+		0%, 100% { opacity: 1; }
+		50% { opacity: 0.3; }
+	}
+	.ws-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 	.theme-toggle {
 		background: transparent;
 		border: 1px solid var(--border);
