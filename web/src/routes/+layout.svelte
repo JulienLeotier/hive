@@ -64,6 +64,7 @@
 			label: 'Economy',
 			items: [
 				{ href: '/costs', label: 'Costs' },
+				{ href: '/billing', label: 'Billing' },
 				{ href: '/market', label: 'Market' },
 				{ href: '/optimizer', label: 'Optimizer' }
 			]

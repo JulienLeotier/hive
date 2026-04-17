@@ -52,6 +52,15 @@ func (a *natsConnAdapter) Close() {
 	}
 }
 
+// Flush satisfies NATSConnFlusher so NewNATSBus can guarantee the SUB frame
+// has reached the server before returning.
+func (a *natsConnAdapter) Flush() error {
+	if a.conn == nil {
+		return nil
+	}
+	return a.conn.Flush()
+}
+
 // Status reports the NATS connection status — satisfies NATSConnStatus so
 // `hive status` can surface whether the cluster link is live (Story 15.3).
 func (a *natsConnAdapter) Status() string {

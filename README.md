@@ -1,9 +1,15 @@
 # Hive
 
 Universal AI agent orchestration platform. Register heterogeneous agents
-(HTTP, MCP, LangChain, AutoGen, custom), define workflows as DAGs, and let
-Hive route tasks, track cost, and surface live health — all from a single
+(HTTP, Claude Code, MCP, CrewAI, LangChain, AutoGen, OpenAI), compose
+workflows as DAGs (YAML or visual builder), and let Hive route tasks,
+track cost, bill tenants, and surface live health — all from a single
 Go binary with an embedded dashboard.
+
+**Highlights:** first-run setup wizard · visual drag-drop workflow
+builder · federated agent marketplace · SMTP + Slack ops alerts · OTLP
+traces · backup/restore CLI · multi-tenant + multi-node (Postgres + NATS)
+· Go SDK for integrators.
 
 ## Quickstart (Docker)
 
@@ -58,11 +64,16 @@ make lint        # go vet
 
 | Area | Path | Notes |
 |---|---|---|
-| CLI + server | `cmd/hive/`, `internal/cli/` | `hive serve`, `hive add-agent`, ... |
-| API | `internal/api/` | REST `/api/v1/*`, WS `/ws`, Prom `/metrics`, `/healthz`, `/readyz` |
-| Agents | `internal/agent/`, `internal/adapter/` | Registration + adapter protocol (HTTP, MCP, LangChain, AutoGen) |
-| Workflows | `internal/workflow/` | YAML DAG parser + execution engine |
+| CLI + server | `cmd/hive/`, `internal/cli/` | `hive serve`, `hive run`, `hive backup`, `hive restore`, ... |
+| API | `internal/api/` | REST `/api/v1/*`, webhooks `/hooks/*`, WS `/ws`, Prom `/metrics`, health probes |
+| Agents | `internal/agent/`, `internal/adapter/` | Registration + adapter protocol (HTTP, Claude Code, MCP, CrewAI, LangChain, AutoGen, OpenAI) |
+| Workflows | `internal/workflow/` | YAML DAG parser + execution engine + schedule/webhook triggers |
 | Federation | `internal/federation/` | Hive-to-hive with mTLS, hop limits, cert-at-rest encryption |
+| Marketplace | `internal/api/marketplace` | Aggregated catalog of agents published by federated peers |
+| Billing | `internal/billing/` | Monthly invoice generation from costs, pluggable payment gateway |
+| Notify | `internal/notify/` | SMTP + Slack notifiers for ops events (task.failed, cost.alert, agent.isolated) |
+| Tracing | `internal/tracing/` | OTLP exporter; spans on HTTP + adapter + workflow |
+| SDK | `sdk/` | Public Go client for third-party integrations |
 | Storage | `internal/storage/` | SQLite (default) or Postgres via `storage=postgres` |
 | Dashboard | `web/`, `internal/dashboard/` | SvelteKit static build, embedded in the binary |
 
@@ -80,18 +91,34 @@ make lint        # go vet
   See [ADR 0004](docs/adr/0004-sqlite-is-dev-only.md).
 - **Tenancy.** Every handler filters by the caller's tenant. See
   [ADR 0003](docs/adr/0003-tenant-isolation-contract.md).
-- **Federation certs at rest.** Set `HIVE_MASTER_KEY` to envelope-encrypt
-  the TLS material stored for federated peers.
+- **Secrets at rest.** Set `HIVE_MASTER_KEY` to envelope-encrypt the
+  federation TLS material *and* outbound webhook URLs (which may embed
+  bearer tokens). Same key, one `enc:v1:` format across the board.
+- **Observability.** Set `OTEL_EXPORTER_OTLP_ENDPOINT` (or
+  `observability.traces.endpoint` in `hive.yaml`) to ship traces to any
+  OTLP-compatible backend — Jaeger, Tempo, Honeycomb, Grafana Cloud.
+  Prometheus scrape lives on `/metrics`.
+- **Alerts.** Configure `notifications.email` (SMTP) and/or
+  `notifications.slack` (webhook URL) in `hive.yaml` to page on
+  `task.failed`, `cost.alert`, and `agent.isolated`. Each event type is
+  debounced per 60s by default to avoid storm spam.
 - **Retention.** Events, completed tasks, costs, audit are purged on a
   timer. Defaults under `retention:` in `hive.yaml`.
+- **Backups.** `hive backup backup.tar.gz` snapshots the SQLite DB via
+  VACUUM INTO without blocking writers. Postgres deployments should use
+  `pg_dump` instead.
 
 ## Deeper docs
 
+- [Getting started](docs/getting-started.md) — 5-minute walkthrough
 - [Architecture overview](docs/architecture-overview.md)
 - [Configuration reference](docs/configuration.md)
 - [CLI reference](docs/cli-reference.md)
 - [API reference](docs/api-reference.md)
 - [Adapter guide](docs/adapters-guide.md)
+- [Tracing / observability](docs/tracing.md)
+- [Marketplace](docs/marketplace.md)
+- [Notifications](docs/notifications.md)
 - [Federation](docs/federation.md) · [Multi-node](docs/multi-node.md)
 - [Cost management](docs/cost-management.md) · [Optimization](docs/optimization.md)
 - [Knowledge layer](docs/knowledge-layer.md) · [Trust levels](docs/trust-configuration.md)

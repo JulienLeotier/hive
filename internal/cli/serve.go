@@ -16,6 +16,7 @@ import (
 	"github.com/JulienLeotier/hive/internal/api"
 	"github.com/JulienLeotier/hive/internal/auth"
 	"github.com/JulienLeotier/hive/internal/autonomy"
+	"github.com/JulienLeotier/hive/internal/billing"
 	"github.com/JulienLeotier/hive/internal/cluster"
 	"github.com/JulienLeotier/hive/internal/config"
 	"github.com/JulienLeotier/hive/internal/cost"
@@ -189,6 +190,32 @@ var serveCmd = &cobra.Command{
 		// Cost tracker with bus so budget breaches emit cost.alert events.
 		_ = cost.NewTracker(store.DB).WithBus(bus.PublishErr)
 
+		// Monthly billing aggregation. Runs once a day (idempotent thanks to
+		// the unique (tenant, period) constraint), rolls the previous full
+		// calendar month into one invoice per tenant. Gateway wiring
+		// (Stripe, etc.) is a separate follow-up — this is the infra that
+		// keeps accumulating clean data regardless.
+		billingGen := billing.NewGenerator(store.DB, "USD")
+		go func() {
+			t := time.NewTicker(24 * time.Hour)
+			defer t.Stop()
+			// Run once at boot so fresh deployments don't wait a day to see
+			// last month's invoice. Safe because the generator is idempotent.
+			if _, err := billingGen.GenerateLastMonth(supervisorCtx); err != nil {
+				slog.Warn("billing: initial generation failed", "error", err)
+			}
+			for {
+				select {
+				case <-t.C:
+					if _, err := billingGen.GenerateLastMonth(supervisorCtx); err != nil {
+						slog.Warn("billing: daily generation failed", "error", err)
+					}
+				case <-supervisorCtx.Done():
+					return
+				}
+			}
+		}()
+
 		// Story 10.1 + 10.3: auto-record knowledge, configurable max-age.
 		// Story 16.2: opt-in OpenAI embeddings when knowledge.embedding is set,
 		// with HashingEmbedder as the always-present fallback.
@@ -347,7 +374,8 @@ var serveCmd = &cobra.Command{
 		apiSrv := api.NewServer(mgr, bus, breakers, keyMgr).
 			WithUsers(users).
 			WithTriggerManager(triggerMgr).
-			WithWebhookDispatcher(webhookDisp)
+			WithWebhookDispatcher(webhookDisp).
+			WithBillingGenerator(billingGen)
 
 		// Story 19.2: honour the `federation.share:` list so only whitelisted
 		// capabilities appear at /api/v1/capabilities.

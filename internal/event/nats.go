@@ -26,6 +26,15 @@ type NATSConnStatus interface {
 	Status() string // e.g., "connected", "reconnecting", "closed"
 }
 
+// NATSConnFlusher is the optional interface a NATSConn can expose to block
+// until its pending subscriptions/publishes have reached the server. NewNATSBus
+// calls this after its local subscribe so "bus ready" genuinely means "server
+// has our subscription", eliminating a race where a peer publishes before our
+// SUB has propagated.
+type NATSConnFlusher interface {
+	Flush() error
+}
+
 // Unsubscribe closes a subscription.
 type Unsubscribe interface {
 	Unsubscribe() error
@@ -77,6 +86,15 @@ func NewNATSBus(conn NATSConn, cfg NATSConfig) (*NATSBus, error) {
 	// Subscribe to all events on our subject tree; fan out to local subscribers.
 	if _, err := conn.Subscribe(cfg.Subject+".>", b.handleInbound); err != nil {
 		return nil, fmt.Errorf("subscribing to NATS subject: %w", err)
+	}
+	// Flush so the SUB frame reaches the server before NewNATSBus returns.
+	// Without this, callers can Publish from peer bus A while bus B's SUB
+	// is still buffered client-side — message lost, test flakes, prod
+	// drops events during startup.
+	if f, ok := conn.(NATSConnFlusher); ok {
+		if err := f.Flush(); err != nil {
+			return nil, fmt.Errorf("flushing NATS subscription: %w", err)
+		}
 	}
 	return b, nil
 }

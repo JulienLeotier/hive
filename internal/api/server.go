@@ -16,6 +16,7 @@ import (
 	"github.com/JulienLeotier/hive/internal/adapter"
 	"github.com/JulienLeotier/hive/internal/agent"
 	"github.com/JulienLeotier/hive/internal/auth"
+	"github.com/JulienLeotier/hive/internal/billing"
 	"github.com/JulienLeotier/hive/internal/event"
 	"github.com/JulienLeotier/hive/internal/knowledge"
 	"github.com/JulienLeotier/hive/internal/resilience"
@@ -46,6 +47,7 @@ type Server struct {
 	oidc             *auth.OIDCProvider
 	triggerMgr       *workflow.TriggerManager // optional — enables workflow fire + retry endpoints
 	webhookDisp      *webhook.Dispatcher      // optional — enables webhook CRUD endpoints
+	billingGen       *billing.Generator       // optional — enables invoice endpoints
 	mux              *http.ServeMux
 }
 
@@ -81,6 +83,13 @@ func (s *Server) WithTriggerManager(tm *workflow.TriggerManager) *Server {
 // CRUD endpoints for configured outbound webhooks.
 func (s *Server) WithWebhookDispatcher(d *webhook.Dispatcher) *Server {
 	s.webhookDisp = d
+	return s
+}
+
+// WithBillingGenerator wires the billing generator so the API can list +
+// issue + mark-paid invoices. Without it, /api/v1/invoices returns 503.
+func (s *Server) WithBillingGenerator(g *billing.Generator) *Server {
+	s.billingGen = g
 	return s
 }
 
@@ -225,6 +234,13 @@ func (s *Server) routes() {
 	s.mux.Handle("POST /api/v1/webhooks", auth.RBACMiddleware("system", "write")(http.HandlerFunc(s.handleCreateWebhook)))
 	s.mux.Handle("DELETE /api/v1/webhooks/{name}", auth.RBACMiddleware("system", "write")(http.HandlerFunc(s.handleDeleteWebhook)))
 	s.mux.Handle("GET /api/v1/webhooks/{name}/deliveries", auth.RBACMiddleware("system", "read")(http.HandlerFunc(s.handleWebhookDeliveries)))
+
+	// Billing: read invoices (RBAC system:read), issue + mark-paid require
+	// system:write. MarkPaid is usually driven by a gateway webhook; the
+	// manual endpoint covers offline / wire-transfer flows.
+	s.mux.Handle("GET /api/v1/invoices", auth.RBACMiddleware("system", "read")(http.HandlerFunc(s.handleListInvoices)))
+	s.mux.Handle("POST /api/v1/invoices/{id}/issue", auth.RBACMiddleware("system", "write")(http.HandlerFunc(s.handleIssueInvoice)))
+	s.mux.Handle("POST /api/v1/invoices/{id}/paid", auth.RBACMiddleware("system", "write")(http.HandlerFunc(s.handleMarkInvoicePaid)))
 
 	// Agent playground. Lets an operator send an ad-hoc task to a registered
 	// agent without going through a workflow. Handy for verifying
@@ -748,6 +764,64 @@ func (s *Server) handleCreateWebhook(w http.ResponseWriter, r *http.Request) {
 	}
 	w.WriteHeader(http.StatusCreated)
 	writeJSON(w, cfg)
+}
+
+// handleListInvoices returns invoices for the caller's tenant (or all
+// tenants when called by an admin whose tenant context is empty).
+func (s *Server) handleListInvoices(w http.ResponseWriter, r *http.Request) {
+	if s.billingGen == nil {
+		writeError(w, http.StatusServiceUnavailable, "NO_BILLING",
+			"billing subsystem is not configured on this node")
+		return
+	}
+	tenant, _ := auth.TenantFromContext(r.Context())
+	limit := parseLimit(r, 100, 500)
+	invs, err := s.billingGen.List(r.Context(), tenant, limit)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "QUERY_FAILED", err.Error())
+		return
+	}
+	writeJSON(w, invs)
+}
+
+// handleIssueInvoice flips an invoice from draft to issued and pushes it to
+// the payment gateway (if one is attached).
+func (s *Server) handleIssueInvoice(w http.ResponseWriter, r *http.Request) {
+	if s.billingGen == nil {
+		writeError(w, http.StatusServiceUnavailable, "NO_BILLING",
+			"billing subsystem is not configured on this node")
+		return
+	}
+	id := r.PathValue("id")
+	if err := s.billingGen.Issue(r.Context(), id); err != nil {
+		if strings.Contains(err.Error(), "not found") {
+			writeError(w, http.StatusNotFound, "NOT_FOUND", err.Error())
+			return
+		}
+		writeError(w, http.StatusBadRequest, "ISSUE_FAILED", err.Error())
+		return
+	}
+	writeJSON(w, map[string]string{"status": "issued", "invoice_id": id})
+}
+
+// handleMarkInvoicePaid is the manual admin equivalent of a gateway
+// payment webhook. Useful for offline flows (wire transfer, check).
+func (s *Server) handleMarkInvoicePaid(w http.ResponseWriter, r *http.Request) {
+	if s.billingGen == nil {
+		writeError(w, http.StatusServiceUnavailable, "NO_BILLING",
+			"billing subsystem is not configured on this node")
+		return
+	}
+	id := r.PathValue("id")
+	if err := s.billingGen.MarkPaid(r.Context(), id); err != nil {
+		if strings.Contains(err.Error(), "not found") {
+			writeError(w, http.StatusNotFound, "NOT_FOUND", err.Error())
+			return
+		}
+		writeError(w, http.StatusBadRequest, "PAID_FAILED", err.Error())
+		return
+	}
+	writeJSON(w, map[string]string{"status": "paid", "invoice_id": id})
 }
 
 // handleWebhookDeliveries returns the last N delivery attempts for a
