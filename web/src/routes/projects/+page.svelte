@@ -72,6 +72,13 @@
 		}
 	});
 
+	// On considère le projet comme "brownfield" (base de code déjà
+	// là) dès qu'on clone un repo OU qu'on a un repo_path local.
+	// Le form bascule alors son vocabulaire (idée → feature à
+	// ajouter) et l'agent PM côté backend utilisera aussi
+	// IterationPipeline au finalize.
+	let isBrownfield = $derived(githubMode === 'clone' || repoPath.trim() !== '');
+
 	// Login GitHub par PAT depuis l'UI.
 	let ghToken = $state('');
 	let ghLoggingIn = $state(false);
@@ -210,16 +217,31 @@
 	{/snippet}
 
 	{#if showForm}
-		<form class="create-form" onsubmit={createProject}>
+		<form class="create-form" class:brownfield={isBrownfield} onsubmit={createProject}>
+			{#if isBrownfield}
+				<div class="brownfield-banner">
+					🏗 <strong>Mode brownfield</strong> — tu pars d'un code existant.
+					Hive lancera <code>/bmad-document-project</code> puis
+					<code>/bmad-edit-prd</code> au lieu du pipeline from-scratch.
+				</div>
+			{/if}
 			<label>
-				Qu'est-ce que tu veux construire ?
+				{isBrownfield
+					? "Qu'est-ce que tu veux ajouter ou améliorer ?"
+					: "Qu'est-ce que tu veux construire ?"}
 				<textarea
 					rows="3"
-					placeholder="Ex. une app qui aide les romanciers à écrire, éditer et recevoir du feedback IA sur leurs textes."
+					placeholder={isBrownfield
+						? 'Ex. ajouter l\'export PDF avec mise en page personnalisée ; ou : remplacer l\'API REST par du GraphQL.'
+						: 'Ex. une app qui aide les romanciers à écrire, éditer et recevoir du feedback IA sur leurs textes.'}
 					bind:value={idea}
 					required
 				></textarea>
-				<small>Une phrase claire. L'agent PM te posera des questions de suivi à l'étape suivante.</small>
+				<small>
+					{isBrownfield
+						? "Décris la feature ou l'amélioration à faire sur ce code. L'agent PM te posera des questions de suivi."
+						: "Une phrase claire. L'agent PM te posera des questions de suivi à l'étape suivante."}
+				</small>
 			</label>
 			<label>
 				Nom court
@@ -239,13 +261,15 @@
 					label="Choisir le dossier BMAD existant" />
 				<small>Si tu as déjà lancé BMAD ailleurs (PRD, epics, stories), pointe vers ce dossier et l'Architecte réutilisera les artefacts existants.</small>
 			</label>
-			<label>
-				Repo existant (chemin local) <span class="hint-pill">optionnel</span>
-				<FolderPicker bind:value={repoPath}
-					placeholder="/Users/moi/projects/mon-app-existante"
-					label="Choisir un repo local existant" />
-				<small>Ajoute BMAD à une base de code existante. Les agents Dev travaillent dans ce repo au lieu de scaffolder à partir de zéro.</small>
-			</label>
+			{#if githubMode !== 'clone'}
+				<label>
+					Repo existant (chemin local) <span class="hint-pill">optionnel</span>
+					<FolderPicker bind:value={repoPath}
+						placeholder="/Users/moi/projects/mon-app-existante"
+						label="Choisir un repo local existant" />
+					<small>Ajoute BMAD à une base de code existante (sans la cloner depuis GitHub). Les agents Dev travaillent dans ce repo au lieu de scaffolder à partir de zéro.</small>
+				</label>
+			{/if}
 
 			<fieldset class="gh">
 				<legend>
@@ -349,7 +373,11 @@
 			</fieldset>
 
 			<button type="submit" disabled={submitting || !idea.trim()}>
-				{submitting ? 'Création…' : 'Créer le projet'}
+				{submitting
+					? 'Création…'
+					: isBrownfield
+						? 'Créer le projet (brownfield)'
+						: 'Créer le projet'}
 			</button>
 			{#if formError}<div class="form-error">{formError}</div>{/if}
 		</form>
@@ -403,6 +431,26 @@
 		border: 1px solid var(--border);
 		border-radius: 6px;
 		margin-bottom: 1rem;
+		transition: border-color 200ms ease;
+	}
+	.create-form.brownfield {
+		border-color: var(--accent);
+		box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 30%, transparent);
+	}
+	.brownfield-banner {
+		padding: 0.6rem 0.85rem;
+		background: color-mix(in srgb, var(--accent) 14%, var(--bg));
+		border-left: 3px solid var(--accent);
+		border-radius: 0 4px 4px 0;
+		font-size: 0.85rem;
+		color: var(--text);
+	}
+	.brownfield-banner code {
+		font-family: ui-monospace, monospace;
+		font-size: 0.78rem;
+		background: var(--bg-alt);
+		padding: 0.05rem 0.3rem;
+		border-radius: 3px;
 	}
 	.create-form label {
 		display: flex;
