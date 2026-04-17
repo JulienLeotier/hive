@@ -1,11 +1,29 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
+	import { goto } from '$app/navigation';
 	import favicon from '$lib/assets/favicon.svg';
 	import { page } from '$app/stores';
 	import { theme, toggleTheme, applyStoredTheme } from '$lib/theme';
 	import { apiError } from '$lib/api';
 
 	let { children } = $props();
+
+	// On a fresh deployment, redirect to /setup before showing any page so
+	// the user can't land on an empty dashboard and wonder why nothing
+	// loads. The /setup page itself also runs this check and simply stays
+	// put when needs_setup=true.
+	async function checkSetup() {
+		try {
+			const r = await fetch('/api/v1/setup/status');
+			if (!r.ok) return;
+			const json = await r.json();
+			if (json?.data?.needs_setup === true && $page.url.pathname !== '/setup') {
+				goto('/setup');
+			}
+		} catch {
+			/* network down — the global banner will flag it */
+		}
+	}
 
 	const navGroups = [
 		{
@@ -58,6 +76,7 @@
 
 	onMount(() => {
 		applyStoredTheme();
+		checkSetup();
 	});
 </script>
 
@@ -65,6 +84,11 @@
 	<link rel="icon" href={favicon} />
 </svelte:head>
 
+{#if $page.url.pathname === '/setup'}
+	<!-- Pre-auth wizard: no sidebar, no nav — just the form so the first
+	     impression is "one thing to do" rather than "16 empty pages". -->
+	{@render children()}
+{:else}
 <div class="app">
 	<aside class="sidebar">
 		<a href="/" class="brand">
@@ -98,6 +122,7 @@
 		{@render children()}
 	</main>
 </div>
+{/if}
 
 <style>
 	:global(:root) {

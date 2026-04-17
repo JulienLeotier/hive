@@ -24,6 +24,7 @@ import (
 	"github.com/JulienLeotier/hive/internal/federation"
 	"github.com/JulienLeotier/hive/internal/knowledge"
 	"github.com/JulienLeotier/hive/internal/market"
+	"github.com/JulienLeotier/hive/internal/notify"
 	"github.com/JulienLeotier/hive/internal/resilience"
 	"github.com/JulienLeotier/hive/internal/storage"
 	"github.com/JulienLeotier/hive/internal/task"
@@ -191,6 +192,14 @@ var serveCmd = &cobra.Command{
 		bus.Subscribe("*", func(e event.Event) {
 			webhookDisp.Dispatch(supervisorCtx, e)
 		})
+
+		// Email notifier for ops-shaped events. Silent no-op when the config
+		// is missing or incomplete; serve keeps booting either way.
+		notify.NewNotifier(buildEmailConfig(cfg.Notifications)).Attach(bus)
+
+		// Slack notifier (dedicated ops channel — complements the generic
+		// webhook.Dispatcher for users who just want a webhook URL in YAML).
+		notify.NewSlackNotifier(buildSlackConfig(cfg.Notifications)).Attach(bus)
 
 		// Epic 4: autonomy. Wake-up cycles drive agent self-assignment of
 		// pending tasks, busywork suppression, and decision logging.
@@ -464,6 +473,43 @@ func buildEmbedder(cfg *config.KnowledgeBlock) knowledge.Embedder {
 		return knowledge.NewOpenAIEmbedder(emb.APIKey, emb.Model, hashing)
 	}
 	return hashing
+}
+
+// buildEmailConfig turns the YAML config into the shape notify.NewNotifier
+// expects, resolving PasswordEnv via the process environment. When the block
+// is missing or incomplete, the returned EmailConfig.Enabled() is false and
+// the notifier becomes a no-op.
+func buildEmailConfig(cfg *config.NotificationsBlock) notify.EmailConfig {
+	if cfg == nil || cfg.Email == nil {
+		return notify.EmailConfig{}
+	}
+	e := cfg.Email
+	password := ""
+	if e.PasswordEnv != "" {
+		password = os.Getenv(e.PasswordEnv)
+	}
+	return notify.EmailConfig{
+		Host:        e.Host,
+		Port:        e.Port,
+		From:        e.From,
+		To:          e.To,
+		Username:    e.Username,
+		Password:    password,
+		StartTLS:    e.StartTLS,
+		SMTPSOnly:   e.SMTPSOnly,
+		TimeoutSecs: e.TimeoutSecs,
+	}
+}
+
+// buildSlackConfig mirrors buildEmailConfig for the Slack ops channel.
+func buildSlackConfig(cfg *config.NotificationsBlock) notify.SlackConfig {
+	if cfg == nil || cfg.Slack == nil {
+		return notify.SlackConfig{}
+	}
+	return notify.SlackConfig{
+		WebhookURL:  cfg.Slack.WebhookURL,
+		TimeoutSecs: cfg.Slack.TimeoutSecs,
+	}
 }
 
 // buildAgentLookup wraps the agent manager so the workflow engine can resolve

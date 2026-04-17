@@ -224,6 +224,85 @@ func (s *Server) routes() {
 	// agent without going through a workflow. Handy for verifying
 	// connectivity/capabilities after registration.
 	s.mux.Handle("POST /api/v1/agents/{name}/invoke", auth.RBACMiddleware("agents", "write")(http.HandlerFunc(s.handleInvokeAgent)))
+
+	// First-run setup. Two unauthenticated endpoints that let a brand-new
+	// deployment bootstrap an admin user + API key before any OIDC/RBAC
+	// gating can be exercised. Both reject themselves once the hive has
+	// users configured, so this isn't a re-exploitable side channel.
+	s.mux.HandleFunc("GET /api/v1/setup/status", s.handleSetupStatus)
+	s.mux.HandleFunc("POST /api/v1/setup/bootstrap", s.handleSetupBootstrap)
+}
+
+// setupRequired reports whether the hive has no RBAC users configured yet.
+// Used by the setup wizard endpoints and the auth middleware (which skips
+// gating when setup is pending so the wizard remains reachable).
+func (s *Server) setupRequired(ctx context.Context) bool {
+	var count int
+	err := s.db().QueryRowContext(ctx, `SELECT COUNT(*) FROM rbac_users`).Scan(&count)
+	if err != nil {
+		// Fail closed: if we can't read the user table, assume the system is
+		// already configured and let the normal auth paths reject.
+		return false
+	}
+	return count == 0
+}
+
+// handleSetupStatus answers whether the first-run wizard should be shown.
+// Unauthenticated by design so the dashboard can redirect to /setup before
+// any API key exists.
+func (s *Server) handleSetupStatus(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, map[string]bool{"needs_setup": s.setupRequired(r.Context())})
+}
+
+// handleSetupBootstrap creates the first admin user and a bootstrap API
+// key in one call. Succeeds exactly once: subsequent calls return 409 so
+// this cannot be used to steal admin access on a live deployment.
+func (s *Server) handleSetupBootstrap(w http.ResponseWriter, r *http.Request) {
+	if s.users == nil {
+		writeError(w, http.StatusServiceUnavailable, "NO_USER_STORE",
+			"user store is not configured on this node")
+		return
+	}
+	if !s.setupRequired(r.Context()) {
+		writeError(w, http.StatusConflict, "ALREADY_CONFIGURED",
+			"hive already has RBAC users — setup cannot be re-run")
+		return
+	}
+	var body struct {
+		Subject  string `json:"subject"`   // admin login (often an email)
+		TenantID string `json:"tenant_id"` // optional, defaults to "default"
+	}
+	if err := json.NewDecoder(io.LimitReader(r.Body, 1<<14)).Decode(&body); err != nil {
+		writeError(w, http.StatusBadRequest, "BAD_REQUEST", err.Error())
+		return
+	}
+	if body.Subject == "" {
+		writeError(w, http.StatusBadRequest, "MISSING_SUBJECT",
+			"subject is required (e.g. admin email or username)")
+		return
+	}
+
+	if err := s.users.Upsert(r.Context(), auth.UserRecord{
+		Subject:  body.Subject,
+		Role:     auth.RoleAdmin,
+		TenantID: body.TenantID,
+	}); err != nil {
+		writeError(w, http.StatusInternalServerError, "UPSERT_FAILED", err.Error())
+		return
+	}
+
+	rawKey, err := s.keyMgr.Generate(r.Context(), body.Subject)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "KEY_GEN_FAILED", err.Error())
+		return
+	}
+
+	w.WriteHeader(http.StatusCreated)
+	writeJSON(w, map[string]string{
+		"subject": body.Subject,
+		"role":    string(auth.RoleAdmin),
+		"api_key": rawKey,
+	})
 }
 
 // handleListWebhooks returns every configured webhook. URLs are decrypted on
@@ -431,7 +510,18 @@ func (s *Server) SetFederationShared(caps []string) {
 // RBACMiddleware can enforce per-resource rules. If no user store is attached,
 // every authenticated request is treated as an admin (dev mode compatibility).
 func (s *Server) Handler() http.Handler {
-	return AuthMiddlewareWithJWT(s.keyMgr, s.jwtValidator())(s.roleResolver(s.mux))
+	authed := AuthMiddlewareWithJWT(s.keyMgr, s.jwtValidator())(s.roleResolver(s.mux))
+	// Setup endpoints must stay reachable on a fresh deployment that has no
+	// API keys yet, so we short-circuit them before the auth middleware
+	// runs. The handlers themselves fail closed with 409 once the hive has
+	// users configured.
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/api/v1/setup/") {
+			s.mux.ServeHTTP(w, r)
+			return
+		}
+		authed.ServeHTTP(w, r)
+	})
 }
 
 // WSHandler wraps a WebSocket upgrade handler with the same auth policy as

@@ -27,7 +27,40 @@ type Config struct {
 	EventBus    *EventBusBlock   `yaml:"event_bus,omitempty"`
 	Cluster     *ClusterBlock    `yaml:"cluster,omitempty"`
 	Retention   *RetentionBlock  `yaml:"retention,omitempty"`
-	Autonomy    *AutonomyBlock   `yaml:"autonomy,omitempty"`
+	Autonomy      *AutonomyBlock      `yaml:"autonomy,omitempty"`
+	Notifications *NotificationsBlock `yaml:"notifications,omitempty"`
+}
+
+// NotificationsBlock configures out-of-band alert channels for ops-shaped
+// events (task failures, budget breaches, agent isolation). Without this
+// block, no email/Slack-dedicated channel fires — the generic webhook
+// dispatcher remains available for custom integrations.
+type NotificationsBlock struct {
+	Email *EmailBlock `yaml:"email,omitempty"`
+	Slack *SlackBlock `yaml:"slack,omitempty"`
+}
+
+// SlackBlock holds the Slack Incoming Webhook URL for ops alerts. Channel
+// routing is encoded in the URL by Slack's side, so nothing else is needed
+// here. URLs in ops config are *not* encrypted at rest — they're ops secrets
+// living alongside the runtime, same tier as OIDC client secrets.
+type SlackBlock struct {
+	WebhookURL  string `yaml:"webhook_url,omitempty"`
+	TimeoutSecs int    `yaml:"timeout_secs,omitempty"`
+}
+
+// EmailBlock holds SMTP settings. Password is *read from env* via PasswordEnv
+// so operators don't commit it into hive.yaml.
+type EmailBlock struct {
+	Host        string   `yaml:"host,omitempty"`
+	Port        int      `yaml:"port,omitempty"`
+	From        string   `yaml:"from,omitempty"`
+	To          []string `yaml:"to,omitempty"`
+	Username    string   `yaml:"username,omitempty"`
+	PasswordEnv string   `yaml:"password_env,omitempty"` // e.g. "SMTP_PASSWORD"
+	StartTLS    bool     `yaml:"starttls,omitempty"`     // recommended for 587
+	SMTPSOnly   bool     `yaml:"smtps_only,omitempty"`   // true for 465
+	TimeoutSecs int      `yaml:"timeout_secs,omitempty"`
 }
 
 // TLSBlock enables HTTPS when CertFile + KeyFile are both set. Leaving either
