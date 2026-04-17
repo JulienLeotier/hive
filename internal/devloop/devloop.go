@@ -25,6 +25,7 @@ import (
 	"database/sql"
 	"fmt"
 	"log/slog"
+	"sync"
 	"time"
 
 	"github.com/JulienLeotier/hive/internal/bmad"
@@ -229,20 +230,41 @@ func (s *Supervisor) Start(ctx context.Context) {
 	}()
 }
 
-// tick advances one story per building project. Errors are logged but
-// don't stop the supervisor — a single broken project mustn't block the
-// rest of the fleet.
+// maxParallelProjects cappe le nombre de projets qu'on avance en
+// parallèle à chaque tick. Chaque project.advance déclenche plusieurs
+// `claude --print` (create-story, dev-story, code-review) ; laisser
+// N projets tourner à la fois évite de saturer la machine + les
+// crédits Claude. Override via HIVE_MAX_PARALLEL_PROJECTS si besoin.
+const maxParallelProjects = 3
+
+// tick fait avancer plusieurs projets en parallèle (borné par
+// maxParallelProjects). Les stories d'un même projet restent
+// séquentielles — Hive ne lance pas deux dev-story concurrents sur
+// le même sprint-status.yaml. Entre projets, parallélisme sans
+// synchro : chaque projet a son workdir.
 func (s *Supervisor) tick(ctx context.Context) {
 	projects, err := s.buildingProjects(ctx)
 	if err != nil {
 		slog.Warn("devloop: listing building projects", "error", err)
 		return
 	}
-	for _, p := range projects {
-		if err := s.advance(ctx, p); err != nil {
-			slog.Warn("devloop: advance failed", "project", p.ID, "error", err)
-		}
+	if len(projects) == 0 {
+		return
 	}
+	sem := make(chan struct{}, maxParallelProjects)
+	var wg sync.WaitGroup
+	for _, p := range projects {
+		wg.Add(1)
+		go func(p ProjectContext) {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+			if err := s.advance(ctx, p); err != nil {
+				slog.Warn("devloop: advance failed", "project", p.ID, "error", err)
+			}
+		}(p)
+	}
+	wg.Wait()
 }
 
 // advance picks the next pending story for the project, runs one
