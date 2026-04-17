@@ -11,8 +11,10 @@ var logLevel string
 
 var rootCmd = &cobra.Command{
 	Use:   "hive",
-	Short: "Hive — Universal AI agent orchestration platform",
-	Long:  "Hive orchestrates AI agents from any framework through a standardized open protocol.",
+	Short: "Hive — Usine à produits BMAD en local",
+	Long: `Hive drive la chaîne BMAD-METHOD de bout en bout via Claude Code :
+idée → PRD → architecture → stories → implémentation → revue → retrospective.
+Single binary, single user, SQLite par défaut.`,
 	PersistentPreRun: func(cmd *cobra.Command, args []string) {
 		initLogging(logLevel)
 	},

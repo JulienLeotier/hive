@@ -44,6 +44,7 @@ type Server struct {
 	intakeAgentOverride intake.Agent
 	envLookup           func(string) string
 	mux                 *http.ServeMux
+	rateLimiter         *rateLimiter
 	// runCancels garde une cancel-func par projet en cours de build.
 	// Quand l'utilisateur clique Annuler, on appelle la func qui
 	// propage le ctx.Done() à tous les `claude --print` détachés en
@@ -56,10 +57,11 @@ type Server struct {
 // everything else flows from it or is wired with the With* helpers.
 func NewServer(eventBus *event.Bus) *Server {
 	s := &Server{
-		eventBus:   eventBus,
-		mux:        http.NewServeMux(),
-		envLookup:  os.Getenv,
-		runCancels: map[string]context.CancelFunc{},
+		eventBus:    eventBus,
+		mux:         http.NewServeMux(),
+		envLookup:   os.Getenv,
+		runCancels:  map[string]context.CancelFunc{},
+		rateLimiter: newRateLimiter(),
 	}
 	s.routes()
 	return s
@@ -185,7 +187,9 @@ func (s *Server) routes() {
 // tenantFilter calls in downstream helpers keep working without a
 // refactor.
 func (s *Server) Handler() http.Handler {
-	return localAdminContext(s.mux)
+	// Rate limit outermost → 429 avant même d'injecter le contexte
+	// admin ou de toucher la DB. localAdminContext reste intérieur.
+	return rateLimitMiddleware(s.rateLimiter, localAdminContext(s.mux))
 }
 
 // WSHandler wraps a WebSocket upgrade handler with the same no-op

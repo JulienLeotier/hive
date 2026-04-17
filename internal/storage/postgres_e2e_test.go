@@ -9,15 +9,15 @@ import (
 )
 
 // TestPostgresMigrationsRunAgainstRealDB opens a live Postgres (URL from
-// POSTGRES_URL / HIVE_POSTGRES_URL env vars) and asserts all 9 translated
-// migrations apply cleanly. Story 22.1 end-to-end.
+// POSTGRES_URL / HIVE_POSTGRES_URL env vars) and vérifie que les
+// migrations post-pivot (schema BMAD) appliquent proprement.
 //
-// Skips when no URL is supplied so the main `go test ./...` pass stays
-// infrastructure-free. To run it locally:
+// Skip quand aucune URL n'est fournie pour que `go test ./...` reste
+// infrastructure-free. Pour le run en local :
 //
-//   docker run -d --rm -p 5432:5432 -e POSTGRES_PASSWORD=hive postgres:16
-//   POSTGRES_URL='postgres://postgres:hive@localhost:5432/postgres?sslmode=disable' \
-//     go test ./internal/storage/ -run Postgres -v
+//	docker run -d --rm -p 5432:5432 -e POSTGRES_PASSWORD=hive postgres:16
+//	POSTGRES_URL='postgres://postgres:hive@localhost:5432/postgres?sslmode=disable' \
+//	  go test ./internal/storage/ -run Postgres -v
 func TestPostgresMigrationsRunAgainstRealDB(t *testing.T) {
 	url := os.Getenv("POSTGRES_URL")
 	if url == "" {
@@ -31,19 +31,17 @@ func TestPostgresMigrationsRunAgainstRealDB(t *testing.T) {
 	require.NoError(t, err)
 	defer store.Close()
 
-	// schema_versions should have one row per migration file.
+	// schema_versions doit contenir une ligne par migration de 001 à 025.
 	var count int
 	require.NoError(t, store.DB.QueryRow(`SELECT COUNT(*) FROM schema_versions`).Scan(&count))
-	assert.GreaterOrEqual(t, count, 9, "all translated postgres migrations must have been applied")
+	assert.GreaterOrEqual(t, count, 25, "toutes les migrations (001-025) doivent avoir été appliquées")
 
-	// Key tables must exist.
+	// Tables live du produit BMAD post-pivot.
 	for _, table := range []string{
-		"agents", "events", "tasks", "workflows", "api_keys", "costs",
-		"knowledge", "trust_history", "dialog_threads", "dialog_messages", "webhooks",
-		"budget_alerts", "agent_trust_overrides",
-		"auctions", "bids", "agent_tokens", "federation_links", "audit_log",
-		"rbac_users", "cluster_members",
-		"optimizations",
+		"projects", "epics", "stories", "acceptance_criteria",
+		"reviews", "bmad_phase_steps",
+		"project_conversations", "project_messages",
+		"events", "audit_log",
 	} {
 		var exists bool
 		err := store.DB.QueryRow(
@@ -53,28 +51,40 @@ func TestPostgresMigrationsRunAgainstRealDB(t *testing.T) {
 		assert.Truef(t, exists, "table %s must exist after migrations", table)
 	}
 
-	// tenant_id columns must exist on the core tables.
-	for _, table := range []string{"agents", "tasks", "workflows", "events", "knowledge"} {
+	// Tables pré-pivot droppées par migration 025 — ne doivent PAS exister.
+	for _, table := range []string{
+		"agents", "tasks", "workflows", "api_keys", "costs",
+		"knowledge", "webhooks", "invoices", "rbac_users",
+		"dialog_threads", "budget_alerts", "auctions", "bids",
+		"federation_links", "cluster_members", "optimizations",
+	} {
+		var exists bool
+		err := store.DB.QueryRow(
+			`SELECT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = $1)`, table,
+		).Scan(&exists)
+		require.NoError(t, err)
+		assert.Falsef(t, exists, "table %s doit être droppée par la migration 025", table)
+	}
+
+	// Colonnes BMAD clés ajoutées par les migrations récentes.
+	for _, col := range []struct{ table, column string }{
+		{"projects", "cost_cap_usd"},
+		{"projects", "total_cost_usd"},
+		{"projects", "failure_stage"},
+		{"projects", "is_existing"},
+		{"projects", "repo_url"},
+		{"bmad_phase_steps", "cost_usd"},
+	} {
 		var exists bool
 		err := store.DB.QueryRow(
 			`SELECT EXISTS (
 			   SELECT 1 FROM information_schema.columns
-			   WHERE table_name = $1 AND column_name = 'tenant_id'
-			 )`, table,
+			   WHERE table_name = $1 AND column_name = $2
+			 )`, col.table, col.column,
 		).Scan(&exists)
 		require.NoError(t, err)
-		assert.Truef(t, exists, "tenant_id column must exist on %s", table)
+		assert.Truef(t, exists, "%s.%s doit exister", col.table, col.column)
 	}
-
-	// node_id on agents (Story 22.3).
-	var hasNodeID bool
-	err = store.DB.QueryRow(
-		`SELECT EXISTS (
-		   SELECT 1 FROM information_schema.columns
-		   WHERE table_name = 'agents' AND column_name = 'node_id'
-		 )`).Scan(&hasNodeID)
-	require.NoError(t, err)
-	assert.True(t, hasNodeID, "node_id column must exist on agents")
 }
 
 // TestPostgresMigrationsAreIdempotent runs OpenPostgres twice and verifies
