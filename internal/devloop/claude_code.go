@@ -47,7 +47,16 @@ func (d *ClaudeCodeDev) Develop(ctx context.Context, proj ProjectContext, story 
 	defer cancel()
 
 	prompt := buildDevPrompt(proj, story, iteration, feedback)
-	cmd := exec.CommandContext(callCtx, d.cliPath, "--print", "--output-format", "text")
+	// --permission-mode acceptEdits: Claude's file-writing tools need
+	// consent. In interactive mode the user clicks "allow"; in --print
+	// there's no UI so without this flag every Edit/Write call is
+	// denied, Claude emits a summary of what it WOULD do, and the
+	// Reviewer correctly rejects the iteration because nothing hit
+	// disk. This flag auto-accepts inside the project workdir only
+	// (scoped by cmd.Dir), not a full --dangerously-skip-permissions.
+	cmd := exec.CommandContext(callCtx, d.cliPath,
+		"--print", "--output-format", "text",
+		"--permission-mode", "acceptEdits")
 	cmd.Dir = workdir
 	cmd.Stdin = strings.NewReader(prompt)
 	var stdout, stderr bytes.Buffer
