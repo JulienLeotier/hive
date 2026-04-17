@@ -52,6 +52,8 @@
 		workdir?: string;
 		bmad_output_path?: string;
 		repo_path?: string;
+		repo_url?: string;
+		is_existing?: boolean;
 		status: string;
 		created_at: string;
 		updated_at: string;
@@ -361,6 +363,16 @@
 			<h1>{project.name}</h1>
 			<div class="meta">
 				<span class="badge" style="background:{statusColor(project.status)}">{project.status}</span>
+				{#if project.is_existing}
+					<span class="badge brownfield" title="Projet basé sur un repo existant — BMAD tourne en mode brownfield (document-project + edit-prd)">
+						🏗 brownfield
+					</span>
+				{/if}
+				{#if project.repo_url}
+					<a class="repo-link" href={project.repo_url} target="_blank" rel="noopener" title="Repo GitHub">
+						↗ repo
+					</a>
+				{/if}
 				<span class="muted">mis à jour {fmtRelative(project.updated_at)}</span>
 				<code class="id">{project.id}</code>
 			</div>
@@ -410,6 +422,13 @@
 		{#if project.status === 'draft'}
 			<section class="intake">
 				<h2>Intake — discussion avec l'agent PM</h2>
+				{#if project.is_existing}
+					<p class="brownfield-note">
+						🏗 <strong>Projet brownfield</strong> — Hive tourne sur un repo existant.
+						BMAD va lancer <code>/bmad-document-project</code> pour comprendre la base de code,
+						puis <code>/bmad-edit-prd</code> pour étendre le PRD avec ta feature.
+					</p>
+				{/if}
 				{#if intakeLoading && !conversation}
 					<p class="empty">Démarrage de la conversation…</p>
 				{:else if conversation}
@@ -667,6 +686,38 @@
 		color: white;
 		font-size: 0.7rem;
 		font-weight: 500;
+	}
+	.badge.brownfield {
+		background: color-mix(in srgb, var(--accent) 22%, var(--bg-alt));
+		color: var(--accent);
+		border: 1px solid var(--accent);
+	}
+	.repo-link {
+		display: inline-flex;
+		align-items: center;
+		gap: 0.15rem;
+		padding: 0.1rem 0.45rem;
+		border: 1px solid var(--border);
+		border-radius: 4px;
+		color: var(--muted);
+		text-decoration: none;
+		font-size: 0.72rem;
+	}
+	.repo-link:hover { color: var(--accent); border-color: var(--accent); }
+	.brownfield-note {
+		padding: 0.6rem 0.85rem;
+		background: color-mix(in srgb, var(--accent) 10%, var(--bg-alt));
+		border-left: 3px solid var(--accent);
+		border-radius: 0 4px 4px 0;
+		font-size: 0.85rem;
+		line-height: 1.5;
+	}
+	.brownfield-note code {
+		font-family: ui-monospace, monospace;
+		font-size: 0.78rem;
+		background: var(--bg);
+		padding: 0.05rem 0.35rem;
+		border-radius: 3px;
 	}
 	.empty {
 		color: var(--muted);

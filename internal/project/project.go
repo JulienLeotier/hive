@@ -48,8 +48,14 @@ type Project struct {
 	// RepoURL : URL canonique du repo GitHub quand Hive a cloné ou
 	// créé le repo via gh. Affichée dans le dashboard et utilisée
 	// par le workflow BMAD pour les commentaires de PR.
-	RepoURL   string    `json:"repo_url,omitempty"`
-	Status    string    `json:"status"`
+	RepoURL string `json:"repo_url,omitempty"`
+	// IsExisting : vrai quand le projet porte sur une base de code
+	// déjà existante (repo cloné ou repo_path fourni). Change le
+	// pipeline BMAD (brownfield: /bmad-document-project + /bmad-edit-prd)
+	// et le greeting du PM qui demande ce qu'on veut AJOUTER plutôt
+	// que demander l'idée from scratch.
+	IsExisting bool      `json:"is_existing"`
+	Status     string    `json:"status"`
 	TenantID  string    `json:"tenant_id"`
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
@@ -122,6 +128,9 @@ type CreateOpts struct {
 	// RepoURL : URL canonique du repo GitHub (définie quand Hive a
 	// cloné ou créé le repo depuis l'UI). Persistée dans projects.
 	RepoURL string
+	// IsExisting : activer pour les projets brownfield. Hive choisit
+	// alors IterationPipeline à la place de FullPlanningPipeline.
+	IsExisting bool
 }
 
 // Create persists a new project in `draft` state. Name falls back to a
@@ -140,10 +149,14 @@ func (s *Store) Create(ctx context.Context, tenant, idea string, opts CreateOpts
 	}
 	id := "prj_" + ulid.MustNew(ulid.Timestamp(time.Now()), rand.Reader).String()
 
+	isExisting := 0
+	if opts.IsExisting {
+		isExisting = 1
+	}
 	_, err := s.db.ExecContext(ctx,
-		`INSERT INTO projects (id, name, idea, workdir, bmad_output_path, repo_path, repo_url, status, tenant_id)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		id, name, idea, opts.Workdir, opts.BMADOutputPath, opts.RepoPath, opts.RepoURL, StatusDraft, tenant,
+		`INSERT INTO projects (id, name, idea, workdir, bmad_output_path, repo_path, repo_url, is_existing, status, tenant_id)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		id, name, idea, opts.Workdir, opts.BMADOutputPath, opts.RepoPath, opts.RepoURL, isExisting, StatusDraft, tenant,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("inserting project: %w", err)
@@ -159,7 +172,7 @@ func (s *Store) List(ctx context.Context, tenant string, limit int) ([]Project, 
 	}
 	q := `SELECT id, name, idea, COALESCE(prd, ''), COALESCE(workdir, ''),
 	             COALESCE(bmad_output_path, ''), COALESCE(repo_path, ''),
-	             COALESCE(repo_url, ''),
+	             COALESCE(repo_url, ''), COALESCE(is_existing, 0),
 	             status, tenant_id, created_at, updated_at
 	      FROM projects`
 	args := []any{}
@@ -180,11 +193,13 @@ func (s *Store) List(ctx context.Context, tenant string, limit int) ([]Project, 
 	for rows.Next() {
 		var p Project
 		var created, updated string
+		var isExisting int
 		if err := rows.Scan(&p.ID, &p.Name, &p.Idea, &p.PRD, &p.Workdir,
-			&p.BMADOutputPath, &p.RepoPath, &p.RepoURL,
+			&p.BMADOutputPath, &p.RepoPath, &p.RepoURL, &isExisting,
 			&p.Status, &p.TenantID, &created, &updated); err != nil {
 			return nil, err
 		}
+		p.IsExisting = isExisting == 1
 		p.CreatedAt, _ = time.Parse("2006-01-02 15:04:05", created)
 		p.UpdatedAt, _ = time.Parse("2006-01-02 15:04:05", updated)
 		out = append(out, p)
@@ -199,15 +214,17 @@ func (s *Store) List(ctx context.Context, tenant string, limit int) ([]Project, 
 func (s *Store) GetByID(ctx context.Context, id string) (*Project, error) {
 	var p Project
 	var created, updated string
+	var isExisting int
 	err := s.db.QueryRowContext(ctx,
 		`SELECT id, name, idea, COALESCE(prd, ''), COALESCE(workdir, ''),
 		        COALESCE(bmad_output_path, ''), COALESCE(repo_path, ''),
-		        COALESCE(repo_url, ''),
+		        COALESCE(repo_url, ''), COALESCE(is_existing, 0),
 		        status, tenant_id, created_at, updated_at
 		 FROM projects WHERE id = ?`, id,
 	).Scan(&p.ID, &p.Name, &p.Idea, &p.PRD, &p.Workdir,
-		&p.BMADOutputPath, &p.RepoPath, &p.RepoURL,
+		&p.BMADOutputPath, &p.RepoPath, &p.RepoURL, &isExisting,
 		&p.Status, &p.TenantID, &created, &updated)
+	p.IsExisting = isExisting == 1
 	if err == sql.ErrNoRows {
 		return nil, fmt.Errorf("project %s not found", id)
 	}

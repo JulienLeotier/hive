@@ -122,6 +122,13 @@ func (s *Server) handleCreateProject(w http.ResponseWriter, r *http.Request) {
 		repoURL = url
 	}
 
+	// Un projet est « brownfield » dès qu'on part d'un code existant :
+	// clone d'un repo GitHub, ou repo_path local fourni. Hive
+	// basculera alors le pipeline BMAD sur IterationPipeline
+	// (bmad-document-project + bmad-edit-prd + …) au lieu de
+	// FullPlanningPipeline qui part d'une page blanche.
+	isExisting := body.CloneRepo != "" || body.RepoPath != ""
+
 	tenant, _ := auth.TenantFromContext(r.Context())
 	p, err := s.projectStore.Create(r.Context(), tenant, body.Idea, project.CreateOpts{
 		Name:           body.Name,
@@ -129,6 +136,7 @@ func (s *Server) handleCreateProject(w http.ResponseWriter, r *http.Request) {
 		BMADOutputPath: body.BMADOutputPath,
 		RepoPath:       body.RepoPath,
 		RepoURL:        repoURL,
+		IsExisting:     isExisting,
 	})
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "CREATE_FAILED", err.Error())

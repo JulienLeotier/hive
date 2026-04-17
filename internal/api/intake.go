@@ -38,7 +38,7 @@ func (s *Server) handleIntakeGet(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "QUERY_FAILED", err.Error())
 		return
 	}
-	conv, err := s.intakeStore.GetOrStart(r.Context(), p.ID, p.Idea, s.intakeAgent())
+	conv, err := s.intakeStore.GetOrStart(r.Context(), p.ID, p.Idea, s.intakeAgentFor(p))
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "INTAKE_START_FAILED", err.Error())
 		return
@@ -50,16 +50,14 @@ func (s *Server) handleIntakeGet(w http.ResponseWriter, r *http.Request) {
 // returns the updated conversation including the agent's follow-up.
 // Body: {content}.
 func (s *Server) handleIntakeMessage(w http.ResponseWriter, r *http.Request) {
-	s.handleConversationMessage(w, r, s.intakeAgent())
+	s.handleConversationMessage(w, r, s.intakeAgentFor)
 }
 
 // handleConversationMessage is the shared body between the initial
-// intake chat and the brownfield iteration chat. Both store messages
-// in project_conversations keyed by agent role, both call the same
-// AppendUserMessage primitive, and both return the updated
-// conversation. The only variable is which agent drives the
-// responses (pm vs pm-iterate wrapper).
-func (s *Server) handleConversationMessage(w http.ResponseWriter, r *http.Request, agent intake.Agent) {
+// intake chat and the brownfield iteration chat. agentFn est appelé
+// après chargement du projet pour laisser l'appelant picker un agent
+// dépendant du contexte (greenfield vs brownfield).
+func (s *Server) handleConversationMessage(w http.ResponseWriter, r *http.Request, agentFn func(*project.Project) intake.Agent) {
 	if s.projectStore == nil || s.intakeStore == nil {
 		writeError(w, http.StatusServiceUnavailable, "NO_INTAKE",
 			"intake subsystem is not configured on this node")
@@ -78,6 +76,7 @@ func (s *Server) handleConversationMessage(w http.ResponseWriter, r *http.Reques
 		writeError(w, http.StatusBadRequest, "BAD_REQUEST", err.Error())
 		return
 	}
+	agent := agentFn(p)
 	conv, err := s.intakeStore.GetOrStart(r.Context(), p.ID, p.Idea, agent)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "INTAKE_START_FAILED", err.Error())
@@ -106,7 +105,7 @@ func (s *Server) handleIntakeFinalize(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "NOT_FOUND", err.Error())
 		return
 	}
-	conv, err := s.intakeStore.GetOrStart(r.Context(), p.ID, p.Idea, s.intakeAgent())
+	conv, err := s.intakeStore.GetOrStart(r.Context(), p.ID, p.Idea, s.intakeAgentFor(p))
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "INTAKE_START_FAILED", err.Error())
 		return
@@ -160,9 +159,11 @@ func (s *Server) handleIterateGet(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleIterateMessage poste une réponse utilisateur dans la
-// conversation d'itération (brownfield). Délègue au shared body.
+// conversation d'itération (brownfield post-shipping). Délègue au
+// shared body avec un factory qui ignore le projet (l'itération
+// utilise le même IterationAgent quel que soit le state).
 func (s *Server) handleIterateMessage(w http.ResponseWriter, r *http.Request) {
-	s.handleConversationMessage(w, r, s.iterationAgent())
+	s.handleConversationMessage(w, r, func(*project.Project) intake.Agent { return s.iterationAgent() })
 }
 
 // handleIterateFinalize clôture la conversation d'itération et
@@ -571,24 +572,22 @@ func (s *Server) runArchitectAsync(projectID, idea, seedDoc string) {
 		return
 	}
 
-	// On applique à la lettre le pipeline Analysis + Planning +
-	// Solutioning + Implementation-init tel que décrit dans les docs
-	// BMAD-METHOD. Soit en tout, dans l'ordre :
-	//
-	//   Phase 1 Analysis    : bmad-agent-analyst, bmad-product-brief
-	//   Phase 2 Planning    : bmad-agent-pm, bmad-create-prd,
-	//                         bmad-validate-prd,
-	//                         bmad-agent-ux-designer, bmad-create-ux-design
-	//   Phase 3 Solutioning : bmad-agent-architect, bmad-create-architecture,
-	//                         bmad-agent-pm, bmad-create-epics-and-stories,
-	//                         bmad-agent-architect,
-	//                         bmad-check-implementation-readiness
-	//   Phase 4 init        : bmad-agent-dev, bmad-sprint-planning
-	//
-	// Chaque slash-command tourne dans une invocation `claude --print`
-	// séparée (doc BMAD : « fresh chat each »).
-	if _, err := runner.RunSequence(ctx, workdir, bmad.FullPlanningPipeline); err != nil {
-		fail("planning-sequence", err)
+	// Pipeline choisi selon le type de projet :
+	//  - greenfield (is_existing=false) → FullPlanningPipeline (from
+	//    scratch : analyst + product-brief + create-prd + ...).
+	//  - brownfield (is_existing=true, repo cloné ou repo_path) →
+	//    IterationPipeline (bmad-document-project +
+	//    bmad-generate-project-context + bmad-edit-prd + ...). BMAD
+	//    lit le code existant et étend le PRD au lieu d'en créer un
+	//    de zéro.
+	pipeline := bmad.FullPlanningPipeline
+	stageLabel := "planning-sequence"
+	if proj.IsExisting {
+		pipeline = bmad.IterationPipeline
+		stageLabel = "brownfield-sequence"
+	}
+	if _, err := runner.RunSequence(ctx, workdir, pipeline); err != nil {
+		fail(stageLabel, err)
 		return
 	}
 
@@ -777,4 +776,16 @@ func (s *Server) intakeAgent() intake.Agent {
 		}
 	}
 	return intake.NewClaudeCodeAgent()
+}
+
+// intakeAgentFor choisit l'agent adapté au projet : brownfield →
+// IterationAgent (greeting "projet existant, qu'est-ce que tu veux
+// ajouter ?") tout en conservant le role "pm" pour la conversation
+// initiale ; greenfield → agent de base.
+func (s *Server) intakeAgentFor(p *project.Project) intake.Agent {
+	base := s.intakeAgent()
+	if p != nil && p.IsExisting {
+		return &intake.IterationAgent{Base: base, RoleOverride: intake.RolePM}
+	}
+	return base
 }

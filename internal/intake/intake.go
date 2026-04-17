@@ -110,15 +110,24 @@ type Store struct {
 func NewStore(db *sql.DB) *Store { return &Store{db: db} }
 
 // IterationAgent adapte un Agent existant pour une conversation
-// d'itération (ajout d'une feature à un projet déjà livré). Le rôle
-// devient `pm-iterate` ce qui isole la nouvelle conversation de
-// celle de la création initiale dans la même table
-// project_conversations. Le greeting rappelle au user qu'on est en
-// mode brownfield.
-type IterationAgent struct{ Base Agent }
+// brownfield — ajout d'une feature à un projet déjà livré OU intake
+// initial d'un projet qui part d'un repo existant. Par défaut le
+// role est `pm-iterate` (conversation séparée de l'intake initial) ;
+// RoleOverride="pm" permet de réutiliser l'agent pour la PREMIÈRE
+// conversation d'un projet brownfield, sans dédupliquer la
+// conversation en deux entrées dans project_conversations.
+type IterationAgent struct {
+	Base         Agent
+	RoleOverride string // "" → RolePMIterate
+}
 
-// Role fixe le rôle à "pm-iterate" pour isoler la conversation.
-func (i *IterationAgent) Role() string { return RolePMIterate }
+// Role renvoie le rôle configuré (ou RolePMIterate par défaut).
+func (i *IterationAgent) Role() string {
+	if i.RoleOverride != "" {
+		return i.RoleOverride
+	}
+	return RolePMIterate
+}
 
 // Greeting ouvre la conversation en rappelant le projet existant.
 func (i *IterationAgent) Greeting(_ context.Context, projectIdea string) string {
