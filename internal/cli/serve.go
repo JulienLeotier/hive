@@ -13,6 +13,7 @@ import (
 	"github.com/JulienLeotier/hive/internal/agent"
 	"github.com/JulienLeotier/hive/internal/api"
 	"github.com/JulienLeotier/hive/internal/auth"
+	"github.com/JulienLeotier/hive/internal/autonomy"
 	"github.com/JulienLeotier/hive/internal/config"
 	"github.com/JulienLeotier/hive/internal/cost"
 	"github.com/JulienLeotier/hive/internal/dashboard"
@@ -23,6 +24,7 @@ import (
 	"github.com/JulienLeotier/hive/internal/resilience"
 	"github.com/JulienLeotier/hive/internal/storage"
 	"github.com/JulienLeotier/hive/internal/task"
+	"github.com/JulienLeotier/hive/internal/webhook"
 	"github.com/JulienLeotier/hive/internal/ws"
 	"github.com/spf13/cobra"
 )
@@ -166,7 +168,9 @@ var serveCmd = &cobra.Command{
 		_ = cost.NewTracker(store.DB).WithBus(bus.PublishErr)
 
 		// Story 10.1 + 10.3: auto-record knowledge, configurable max-age.
-		kStore := knowledge.NewStore(store.DB).WithEmbedder(knowledge.NewHashingEmbedder(128))
+		// Story 16.2: opt-in OpenAI embeddings when knowledge.embedding is set,
+		// with HashingEmbedder as the always-present fallback.
+		kStore := knowledge.NewStore(store.DB).WithEmbedder(buildEmbedder(cfg.Knowledge))
 		if cfg.Knowledge != nil && cfg.Knowledge.MaxAgeDays > 0 {
 			kStore.WithMaxAge(time.Duration(cfg.Knowledge.MaxAgeDays) * 24 * time.Hour)
 		}
@@ -175,6 +179,60 @@ var serveCmd = &cobra.Command{
 		// Story 18.3: auto-credit tokens to agents on task.completed.
 		marketStore := market.NewStore(store.DB).WithBus(bus.PublishErr)
 		market.NewAutoCredit(store.DB, marketStore, 1.0).Attach(bus)
+
+		// Story 11.3/11.4: configured webhooks are delivered by subscribing
+		// the dispatcher to every event on the bus. Without this, `hive
+		// webhook add` stored the config but nothing ever fired.
+		webhookDisp := webhook.NewDispatcher(store.DB)
+		bus.Subscribe("*", func(e event.Event) {
+			webhookDisp.Dispatch(supervisorCtx, e)
+		})
+
+		// Epic 4: autonomy. Wake-up cycles drive agent self-assignment of
+		// pending tasks, busywork suppression, and decision logging.
+		// Without this block, configured agents never pick up pending
+		// tasks on their own — they only run when explicitly invoked by a
+		// workflow.
+		observer := autonomy.NewObserver(store.DB)
+		idleTracker := autonomy.NewIdleTracker(3)
+		wakeupHandler := autonomy.NewDefaultHandler(observer, router, idleTracker, bus)
+		scheduler := autonomy.NewScheduler(wakeupHandler.Handle)
+		// Register every currently healthy agent. Future agents added via
+		// CLI during runtime will pick up wake-up cycles on the next
+		// server restart (a future story can add live subscription).
+		{
+			agents, err := mgr.List(supervisorCtx)
+			if err != nil {
+				slog.Warn("autonomy: listing agents for scheduler failed", "error", err)
+			} else {
+				interval := 30 * time.Second
+				if cfg.Autonomy != nil && cfg.Autonomy.HeartbeatSeconds > 0 {
+					interval = time.Duration(cfg.Autonomy.HeartbeatSeconds) * time.Second
+				}
+				for _, a := range agents {
+					if a.HealthStatus == "healthy" {
+						scheduler.Register(a.Name, interval)
+					}
+				}
+			}
+		}
+		// Story 4.2 AC: "heartbeats can also be triggered by events".
+		// Trigger an immediate wake-up when an agent event arrives so the
+		// system reacts faster than the polling interval.
+		bus.Subscribe("agent.registered", func(e event.Event) {
+			scheduler.TriggerWakeUp(e.Source)
+		})
+		bus.Subscribe("task.unroutable", func(e event.Event) {
+			// Best-effort: nudge every healthy agent to re-evaluate, since
+			// we don't know which one might now be capable.
+			agents, _ := mgr.List(supervisorCtx)
+			for _, a := range agents {
+				if a.HealthStatus == "healthy" {
+					scheduler.TriggerWakeUp(a.Name)
+				}
+			}
+		})
+		defer scheduler.StopAll()
 
 		keyMgr := api.NewKeyManager(store.DB)
 		users := auth.NewUserStore(store.DB)
@@ -300,4 +358,21 @@ func storageLabel(cfg config.Config) string {
 
 func init() {
 	rootCmd.AddCommand(serveCmd)
+}
+
+// buildEmbedder picks the knowledge embedder based on config. Default is
+// HashingEmbedder (no external dependency). When knowledge.embedding is set
+// with provider=openai and an API key, switches to OpenAIEmbedder with
+// HashingEmbedder as the fallback for transient API failures.
+func buildEmbedder(cfg *config.KnowledgeBlock) knowledge.Embedder {
+	hashing := knowledge.NewHashingEmbedder(128)
+	if cfg == nil || cfg.Embedding == nil {
+		return hashing
+	}
+	emb := cfg.Embedding
+	if emb.Provider == "openai" && emb.APIKey != "" {
+		slog.Info("knowledge embedder: openai", "model", emb.Model)
+		return knowledge.NewOpenAIEmbedder(emb.APIKey, emb.Model, hashing)
+	}
+	return hashing
 }

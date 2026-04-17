@@ -27,6 +27,7 @@ type Config struct {
 	EventBus    *EventBusBlock   `yaml:"event_bus,omitempty"`
 	Cluster     *ClusterBlock    `yaml:"cluster,omitempty"`
 	Retention   *RetentionBlock  `yaml:"retention,omitempty"`
+	Autonomy    *AutonomyBlock   `yaml:"autonomy,omitempty"`
 }
 
 // TLSBlock enables HTTPS when CertFile + KeyFile are both set. Leaving either
@@ -66,6 +67,24 @@ type RetryBlock struct {
 // KnowledgeBlock tunes knowledge-layer lifecycle. Story 10.3.
 type KnowledgeBlock struct {
 	MaxAgeDays int `yaml:"max_age_days,omitempty"` // default 90
+	// OpenAI embeddings opt-in (Story 16.2). When APIKey + Model are set,
+	// the knowledge store uses the OpenAI embeddings API with the default
+	// HashingEmbedder as a fallback. Without this block, hashing is used
+	// exclusively.
+	Embedding *EmbeddingBlock `yaml:"embedding,omitempty"`
+}
+
+// EmbeddingBlock configures the knowledge-layer embedder. Kept optional so
+// dev deployments don't need an OpenAI key.
+type EmbeddingBlock struct {
+	Provider string `yaml:"provider,omitempty"` // "openai" | "hashing" (default)
+	APIKey   string `yaml:"api_key,omitempty"`
+	Model    string `yaml:"model,omitempty"` // e.g. "text-embedding-3-small"
+}
+
+// AutonomyBlock tunes the wake-up scheduler. Story 4.2.
+type AutonomyBlock struct {
+	HeartbeatSeconds int `yaml:"heartbeat_seconds,omitempty"` // default 30
 }
 
 // RetentionBlock caps growth on the big append-only tables. Zero or negative

@@ -10,6 +10,7 @@ import (
 	"github.com/JulienLeotier/hive/internal/agent"
 	"github.com/JulienLeotier/hive/internal/config"
 	"github.com/JulienLeotier/hive/internal/event"
+	"github.com/JulienLeotier/hive/internal/market"
 	"github.com/JulienLeotier/hive/internal/storage"
 	"github.com/JulienLeotier/hive/internal/task"
 	"github.com/JulienLeotier/hive/internal/workflow"
@@ -73,6 +74,7 @@ var runCmd = &cobra.Command{
 		wfStore := workflow.NewStore(store.DB, bus)
 
 		engine := workflow.NewEngine(wfStore, taskStore, taskRouter, bus)
+		engine.WithMarketStore(market.NewStore(store.DB).WithBus(bus.PublishErr))
 
 		// Story 5.5 AC: retry policy configurable from hive.yaml.
 		if cfg.Retry != nil {

@@ -12,19 +12,23 @@ import (
 
 	"github.com/JulienLeotier/hive/internal/adapter"
 	"github.com/JulienLeotier/hive/internal/event"
+	"github.com/JulienLeotier/hive/internal/market"
 	"github.com/JulienLeotier/hive/internal/task"
 )
 
 // pickAgent selects the agent for a task type using the workflow's allocation
-// strategy. Story 18.1/18.2: "market" opens an auction, auto-bids on behalf
-// of capable agents using their declared cost_per_run, picks the lowest bid.
-func (e *Engine) pickAgent(ctx context.Context, taskType, strategy string) (string, string, error) {
+// strategy. Story 18.1/18.2: "market" opens a persisted auction, auto-bids on
+// behalf of capable agents using their declared cost_per_run, and closes the
+// auction on the winning bid so the /market dashboard and audit logs reflect
+// real activity. Without a MarketStore installed, the market strategy still
+// picks the lowest-cost agent but skips persistence and falls back to a
+// workflow_engine-sourced `task.auction.won` event.
+func (e *Engine) pickAgent(ctx context.Context, taskID, taskType, strategy string) (string, string, error) {
 	if strategy != "market" {
 		// Default capability-match + round-robin share the same first-fit path.
 		return e.taskRouter.FindCapableAgent(ctx, taskType)
 	}
 
-	// Query every healthy agent with this capability.
 	rows, err := e.taskStore.DB().QueryContext(ctx,
 		`SELECT id, name, capabilities FROM agents WHERE health_status = 'healthy'`)
 	if err != nil {
@@ -32,11 +36,7 @@ func (e *Engine) pickAgent(ctx context.Context, taskType, strategy string) (stri
 	}
 	defer rows.Close()
 
-	type bid struct {
-		id, name string
-		cost     float64
-	}
-	var bids []bid
+	var bids []market.Bid
 	for rows.Next() {
 		var id, name, capsJSON string
 		if err := rows.Scan(&id, &name, &capsJSON); err != nil {
@@ -58,9 +58,13 @@ func (e *Engine) pickAgent(ctx context.Context, taskType, strategy string) (stri
 		}
 		cost := caps.CostPerRun
 		if cost == 0 {
-			cost = 1.0 // default bid price
+			cost = 1.0
 		}
-		bids = append(bids, bid{id: id, name: name, cost: cost})
+		bids = append(bids, market.Bid{
+			AgentID:   id,
+			AgentName: name,
+			Price:     cost,
+		})
 	}
 	if err := rows.Err(); err != nil {
 		return "", "", err
@@ -69,22 +73,54 @@ func (e *Engine) pickAgent(ctx context.Context, taskType, strategy string) (stri
 		return "", "", nil
 	}
 
-	// Lowest-cost wins. Emit task.auction.won so the timeline shows the decision.
+	strategyKind := market.StrategyLowestCost
+
+	// Persisted path: open auction, record every bid, select winner, close.
+	if e.marketStore != nil {
+		auctionID, err := e.marketStore.Open(ctx, taskID, strategyKind)
+		if err != nil {
+			return "", "", fmt.Errorf("opening auction: %w", err)
+		}
+		for _, b := range bids {
+			if err := e.marketStore.SubmitBid(ctx, auctionID, b); err != nil {
+				slog.Warn("auction bid insert failed", "auction", auctionID, "agent", b.AgentName, "error", err)
+			}
+		}
+		persisted, err := e.marketStore.Bids(ctx, auctionID)
+		if err != nil || len(persisted) == 0 {
+			// Persistence read-back failed; fall through to in-memory pick
+			// rather than abort the workflow.
+			slog.Warn("auction bid read-back failed, falling back", "auction", auctionID, "error", err)
+		} else {
+			bids = persisted
+		}
+		auction := market.NewAuction(e.taskStore.DB())
+		winner, err := auction.SelectWinner(bids, strategyKind)
+		if err != nil {
+			return "", "", fmt.Errorf("select winner: %w", err)
+		}
+		if err := e.marketStore.Close(ctx, auctionID, winner.ID); err != nil {
+			slog.Warn("auction close failed", "auction", auctionID, "error", err)
+		}
+		return winner.AgentID, winner.AgentName, nil
+	}
+
+	// No-persistence path: pick lowest cost and emit a single event.
 	winner := bids[0]
 	for _, b := range bids[1:] {
-		if b.cost < winner.cost {
+		if b.Price < winner.Price {
 			winner = b
 		}
 	}
 	if e.eventBus != nil {
 		_, _ = e.eventBus.Publish(ctx, "task.auction.won", "workflow_engine", map[string]any{
 			"task_type": taskType,
-			"agent":     winner.name,
-			"price":     winner.cost,
+			"agent":     winner.AgentName,
+			"price":     winner.Price,
 			"bidders":   len(bids),
 		})
 	}
-	return winner.id, winner.name, nil
+	return winner.AgentID, winner.AgentName, nil
 }
 
 // depsKey stringifies a task's dependency set so sibling tasks can be grouped.
@@ -114,6 +150,7 @@ type Engine struct {
 	adapters      map[string]adapter.Adapter // agentID -> adapter
 	agentConfigs  map[string]string          // agentID -> baseURL (legacy HTTP shortcut)
 	lookupAgent   AgentLookup                // optional — if set, used to build non-HTTP adapters
+	marketStore   *market.Store              // optional — persists auctions/bids for "market" allocation
 	concurrency   int                        // per-workflow level concurrency cap
 	allocation    string                     // per-workflow allocation strategy
 	retry         *adapter.RetryPolicy       // default retry for auto-built HTTP adapters
@@ -133,6 +170,14 @@ func (e *Engine) WithAgentLookup(l AgentLookup) *Engine {
 // Story 5.5.
 func (e *Engine) WithRetry(p *adapter.RetryPolicy) *Engine {
 	e.retry = p
+	return e
+}
+
+// WithMarketStore enables persisted auctions when the workflow allocation is
+// "market". Story 18.1/18.2: without this, auctions happen in memory only and
+// the /market dashboard has nothing to show.
+func (e *Engine) WithMarketStore(s *market.Store) *Engine {
+	e.marketStore = s
 	return e
 }
 
@@ -296,7 +341,7 @@ func (e *Engine) executeLevel(ctx context.Context, workflowID string, level []Ta
 			return fmt.Errorf("creating task %s: %w", td.Name, err)
 		}
 
-		agentID, agentName, err := e.pickAgent(ctx, td.Type, e.allocation)
+		agentID, agentName, err := e.pickAgent(ctx, t.ID, td.Type, e.allocation)
 		if err != nil || agentID == "" {
 			// Story 2.3 AC: task remains `pending` with a task.unroutable event.
 			// task.Router.FindCapableAgent already emits task.unroutable; we

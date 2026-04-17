@@ -6,6 +6,7 @@ import (
 
 	"github.com/JulienLeotier/hive/internal/adapter"
 	"github.com/JulienLeotier/hive/internal/event"
+	"github.com/JulienLeotier/hive/internal/market"
 	"github.com/JulienLeotier/hive/internal/storage"
 	"github.com/JulienLeotier/hive/internal/task"
 	"github.com/stretchr/testify/assert"
@@ -135,6 +136,84 @@ func TestEngineRunNoAgentAvailable(t *testing.T) {
 	require.Error(t, err)
 	assert.Equal(t, "failed", result.Status)
 	assert.Contains(t, err.Error(), "no agent available")
+}
+
+func TestEngineMarketAllocationPersistsAuction(t *testing.T) {
+	engine, st := setupEngine(t)
+
+	// Two agents with different cost_per_run bid on the same task.
+	srvCheap := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/health":
+			json.NewEncoder(w).Encode(adapter.HealthStatus{Status: "healthy"})
+		case "/declare":
+			json.NewEncoder(w).Encode(adapter.AgentCapabilities{Name: "cheap", TaskTypes: []string{"work"}, CostPerRun: 0.2})
+		case "/invoke":
+			var task adapter.Task
+			json.NewDecoder(r.Body).Decode(&task)
+			json.NewEncoder(w).Encode(adapter.TaskResult{TaskID: task.ID, Status: "completed", Output: map[string]string{"by": "cheap"}})
+		}
+	}))
+	t.Cleanup(srvCheap.Close)
+	srvExpensive := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/health":
+			json.NewEncoder(w).Encode(adapter.HealthStatus{Status: "healthy"})
+		case "/declare":
+			json.NewEncoder(w).Encode(adapter.AgentCapabilities{Name: "expensive", TaskTypes: []string{"work"}, CostPerRun: 2.0})
+		case "/invoke":
+			var task adapter.Task
+			json.NewDecoder(r.Body).Decode(&task)
+			json.NewEncoder(w).Encode(adapter.TaskResult{TaskID: task.ID, Status: "completed", Output: map[string]string{"by": "expensive"}})
+		}
+	}))
+	t.Cleanup(srvExpensive.Close)
+
+	capsCheap, _ := json.Marshal(adapter.AgentCapabilities{Name: "cheap", TaskTypes: []string{"work"}, CostPerRun: 0.2})
+	cfgCheap, _ := json.Marshal(map[string]string{"base_url": srvCheap.URL})
+	st.DB.Exec(`INSERT INTO agents (id, name, type, config, capabilities, health_status) VALUES (?, ?, 'http', ?, ?, 'healthy')`,
+		"cheap", "cheap", string(cfgCheap), string(capsCheap))
+	capsExp, _ := json.Marshal(adapter.AgentCapabilities{Name: "expensive", TaskTypes: []string{"work"}, CostPerRun: 2.0})
+	cfgExp, _ := json.Marshal(map[string]string{"base_url": srvExpensive.URL})
+	st.DB.Exec(`INSERT INTO agents (id, name, type, config, capabilities, health_status) VALUES (?, ?, 'http', ?, ?, 'healthy')`,
+		"expensive", "expensive", string(cfgExp), string(capsExp))
+
+	engine.RegisterAdapter("cheap", srvCheap.URL, adapter.NewHTTPAdapter(srvCheap.URL))
+	engine.RegisterAdapter("expensive", srvExpensive.URL, adapter.NewHTTPAdapter(srvExpensive.URL))
+
+	marketStore := market.NewStore(st.DB)
+	engine.WithMarketStore(marketStore)
+
+	cfg := &Config{
+		Name:       "market-test",
+		Allocation: "market",
+		Tasks: []TaskDef{
+			{Name: "auction-job", Type: "work"},
+		},
+	}
+
+	result, err := engine.Run(context.Background(), cfg)
+	require.NoError(t, err)
+	assert.Equal(t, "completed", result.Status)
+
+	// Auction row persisted as closed with the cheaper bidder as winner.
+	var count int
+	err = st.DB.QueryRow(`SELECT COUNT(*) FROM auctions WHERE status = 'closed'`).Scan(&count)
+	require.NoError(t, err)
+	assert.Equal(t, 1, count, "one auction should be closed")
+
+	var winnerAgent string
+	err = st.DB.QueryRow(`
+		SELECT b.agent_name FROM auctions a
+		JOIN bids b ON a.winner_bid_id = b.id
+		WHERE a.status = 'closed'`).Scan(&winnerAgent)
+	require.NoError(t, err)
+	assert.Equal(t, "cheap", winnerAgent, "lowest-cost bidder must win")
+
+	var bidCount int
+	err = st.DB.QueryRow(`SELECT COUNT(*) FROM bids`).Scan(&bidCount)
+	require.NoError(t, err)
+	assert.Equal(t, 2, bidCount, "every capable agent's bid must be persisted")
 }
 
 func TestEngineEmitsWorkflowEvents(t *testing.T) {
