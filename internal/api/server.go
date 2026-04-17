@@ -140,7 +140,9 @@ func (s *Server) routes() {
 	s.mux.Handle("POST /api/v1/gh/device/start", http.HandlerFunc(s.handleGhDeviceStart))
 	s.mux.Handle("POST /api/v1/gh/device/poll", http.HandlerFunc(s.handleGhDevicePoll))
 	s.mux.Handle("GET /api/v1/costs", http.HandlerFunc(s.handleCostSummary))
+	s.mux.Handle("GET /api/v1/costs.csv", http.HandlerFunc(s.handleCostSummaryCSV))
 	s.mux.Handle("GET /api/v1/settings/notify", http.HandlerFunc(s.handleNotifySettings))
+	s.mux.Handle("POST /api/v1/settings/notify/test", http.HandlerFunc(s.handleNotifyTest))
 
 	// Folder picker local : le formulaire projet s'en sert pour
 	// laisser l'opérateur choisir workdir / repo_path via un modal au

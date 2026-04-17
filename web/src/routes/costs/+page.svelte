@@ -34,9 +34,28 @@
 	let loading = $state(true);
 	let refreshHandle: ReturnType<typeof setInterval> | null = null;
 
+	// Pour la projection : on compare le grand_total actuel à celui d'il y
+	// a 60s (un tick de rafraîchissement précédent) et on extrapole à
+	// l'heure. Zero-alloc : juste deux floats en mémoire.
+	let lastTotalUSD = $state<number | null>(null);
+	let lastSampledAt = $state<number | null>(null);
+	let currentRateUSDPerHour = $state(0);
+
 	async function load() {
 		try {
-			summary = await apiGet<Summary>('/api/v1/costs');
+			const next = await apiGet<Summary>('/api/v1/costs');
+			if (next && lastTotalUSD !== null && lastSampledAt !== null) {
+				const deltaUSD = next.grand_total_usd - lastTotalUSD;
+				const deltaHours = (Date.now() - lastSampledAt) / 3_600_000;
+				if (deltaHours > 0 && deltaUSD >= 0) {
+					currentRateUSDPerHour = deltaUSD / deltaHours;
+				}
+			}
+			if (next) {
+				lastTotalUSD = next.grand_total_usd;
+				lastSampledAt = Date.now();
+			}
+			summary = next;
 		} catch {
 			/* banner */
 		} finally {
@@ -97,8 +116,19 @@
 	<div class="empty">Aucune donnée.</div>
 {:else}
 	<div class="summary-card">
-		<div class="big">{fmt(summary.grand_total_usd)}</div>
-		<div class="muted">total dépensé · {summary.projects.length} projet(s)</div>
+		<div class="summary-row">
+			<div>
+				<div class="big">{fmt(summary.grand_total_usd)}</div>
+				<div class="muted">total dépensé · {summary.projects.length} projet(s)</div>
+			</div>
+			{#if currentRateUSDPerHour > 0}
+				<div class="rate">
+					<div class="rate-big">{fmt(currentRateUSDPerHour)}<span class="unit">/h</span></div>
+					<div class="muted">rythme actuel · ≈ {fmt(currentRateUSDPerHour * 24)} / jour</div>
+				</div>
+			{/if}
+			<a class="csv-btn" href="/api/v1/costs.csv" download>↓ Export CSV</a>
+		</div>
 	</div>
 
 	<h2>Par projet</h2>
@@ -220,10 +250,31 @@
 		border-radius: 8px;
 		padding: 1.25rem 1.5rem;
 		margin-bottom: 1.5rem;
-		display: flex;
-		flex-direction: column;
-		gap: 0.25rem;
 	}
+	.summary-row {
+		display: flex;
+		gap: 2rem;
+		align-items: center;
+		flex-wrap: wrap;
+	}
+	.rate { display: flex; flex-direction: column; gap: 0.1rem; }
+	.rate-big {
+		font-family: ui-monospace, monospace;
+		font-size: 1.1rem;
+		color: var(--warn);
+		font-weight: 600;
+	}
+	.rate-big .unit { color: var(--text-muted); font-size: 0.8rem; margin-left: 0.15rem; }
+	.csv-btn {
+		margin-left: auto;
+		padding: 0.5rem 0.9rem;
+		border: 1px solid var(--border);
+		border-radius: 4px;
+		color: var(--text);
+		text-decoration: none;
+		font-size: 0.8rem;
+	}
+	.csv-btn:hover { border-color: var(--accent); color: var(--accent); }
 	.big {
 		font-size: 2.2rem;
 		font-weight: 700;

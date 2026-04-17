@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
-	import { apiGet } from '$lib/api';
+	import { apiGet, apiPost } from '$lib/api';
 
 	type NotifySettings = {
 		slack_enabled: boolean;
@@ -10,6 +10,9 @@
 
 	let settings = $state<NotifySettings | null>(null);
 	let loading = $state(true);
+	let testing = $state(false);
+	let testStatus = $state<'idle' | 'ok' | 'err'>('idle');
+	let testMessage = $state('');
 
 	async function load() {
 		try {
@@ -18,6 +21,22 @@
 			/* banner */
 		} finally {
 			loading = false;
+		}
+	}
+
+	async function testWebhook() {
+		testing = true;
+		testStatus = 'idle';
+		testMessage = '';
+		try {
+			await apiPost('/api/v1/settings/notify/test', {});
+			testStatus = 'ok';
+			testMessage = 'Message envoyé — vérifie ton canal Slack.';
+		} catch (e) {
+			testStatus = 'err';
+			testMessage = e instanceof Error ? e.message : String(e);
+		} finally {
+			testing = false;
 		}
 	}
 
@@ -48,6 +67,16 @@
 				<li><code>{evt}</code></li>
 			{/each}
 		</ul>
+		<div class="test-row">
+			<button type="button" onclick={testWebhook} disabled={testing}>
+				{testing ? 'Envoi…' : 'Tester le webhook'}
+			</button>
+			{#if testStatus === 'ok'}
+				<span class="test-msg ok">✓ {testMessage}</span>
+			{:else if testStatus === 'err'}
+				<span class="test-msg err">✗ {testMessage}</span>
+			{/if}
+		</div>
 	{:else}
 		<div class="status-off">
 			<span class="dot"></span>
@@ -144,4 +173,23 @@
 	.env dd { margin: 0; color: var(--text-muted); }
 	a { color: var(--accent); text-decoration: none; }
 	a:hover { text-decoration: underline; }
+	.test-row {
+		display: flex;
+		align-items: center;
+		gap: 0.8rem;
+		margin-top: 0.8rem;
+	}
+	.test-row button {
+		padding: 0.4rem 0.9rem;
+		background: var(--accent);
+		color: white;
+		border: none;
+		border-radius: 4px;
+		cursor: pointer;
+		font-size: 0.85rem;
+	}
+	.test-row button:disabled { opacity: 0.5; cursor: not-allowed; }
+	.test-msg { font-size: 0.8rem; }
+	.test-msg.ok { color: var(--ok); }
+	.test-msg.err { color: var(--err); }
 </style>

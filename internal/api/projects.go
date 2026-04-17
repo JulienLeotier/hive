@@ -1,8 +1,11 @@
 package api
 
 import (
+	"bytes"
 	"context"
+	"encoding/csv"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"os"
@@ -354,6 +357,81 @@ func (s *Server) handleNotifySettings(w http.ResponseWriter, _ *http.Request) {
 			"project.cost_cap_reached",
 		},
 	})
+}
+
+// handleNotifyTest pings the configured Slack webhook with a synthetic
+// "hello world" event so the operator can verify the endpoint works
+// without having to trigger a real project.shipped. Returns 200 on
+// delivery, 400 if the webhook is unset, 502 if Slack rejects.
+func (s *Server) handleNotifyTest(w http.ResponseWriter, r *http.Request) {
+	webhook := os.Getenv("HIVE_SLACK_WEBHOOK")
+	if webhook == "" {
+		writeError(w, http.StatusBadRequest, "SLACK_NOT_CONFIGURED",
+			"Aucun webhook Slack configuré (HIVE_SLACK_WEBHOOK).")
+		return
+	}
+	body, _ := json.Marshal(map[string]string{
+		"text": ":wave: Hive test — webhook opérationnel.",
+	})
+	ctx, cancel := context.WithTimeout(r.Context(), 8*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, "POST", webhook, bytes.NewReader(body))
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "REQUEST_FAILED", err.Error())
+		return
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		writeError(w, http.StatusBadGateway, "WEBHOOK_UNREACHABLE", err.Error())
+		return
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 400 {
+		writeError(w, http.StatusBadGateway, "WEBHOOK_REJECTED",
+			fmt.Sprintf("slack a répondu %d", resp.StatusCode))
+		return
+	}
+	writeJSON(w, map[string]string{"status": "ok"})
+}
+
+// handleCostSummaryCSV streams the cost summary as CSV for download.
+// Useful when the operator wants to import into a spreadsheet for
+// billing / capacity analysis.
+func (s *Server) handleCostSummaryCSV(w http.ResponseWriter, r *http.Request) {
+	rows, err := s.db().QueryContext(r.Context(),
+		`SELECT p.id, p.name, p.status,
+		        COALESCE(p.total_cost_usd, 0),
+		        COALESCE(p.cost_cap_usd, 0),
+		        COALESCE((SELECT COUNT(*) FROM bmad_phase_steps s WHERE s.project_id = p.id), 0),
+		        COALESCE(p.failure_stage, '')
+		 FROM projects p
+		 ORDER BY p.total_cost_usd DESC, p.updated_at DESC`)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "QUERY_FAILED", err.Error())
+		return
+	}
+	defer rows.Close()
+	w.Header().Set("Content-Type", "text/csv; charset=utf-8")
+	w.Header().Set("Content-Disposition", `attachment; filename="hive-costs.csv"`)
+	cw := csv.NewWriter(w)
+	defer cw.Flush()
+	_ = cw.Write([]string{"project_id", "name", "status", "total_usd", "cap_usd", "steps", "failure_stage"})
+	for rows.Next() {
+		var id, name, status, failure string
+		var total, cap_ float64
+		var steps int
+		if err := rows.Scan(&id, &name, &status, &total, &cap_, &steps, &failure); err != nil {
+			return
+		}
+		_ = cw.Write([]string{
+			id, name, status,
+			fmt.Sprintf("%.4f", total),
+			fmt.Sprintf("%.4f", cap_),
+			fmt.Sprintf("%d", steps),
+			failure,
+		})
+	}
 }
 
 // handleGhDeviceStart kicks off a GitHub OAuth device flow. Returns
