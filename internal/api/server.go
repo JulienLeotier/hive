@@ -17,6 +17,7 @@ import (
 	"github.com/JulienLeotier/hive/internal/adapter"
 	"github.com/JulienLeotier/hive/internal/agent"
 	"github.com/JulienLeotier/hive/internal/auth"
+	"github.com/JulienLeotier/hive/internal/architect"
 	"github.com/JulienLeotier/hive/internal/event"
 	"github.com/JulienLeotier/hive/internal/intake"
 	"github.com/JulienLeotier/hive/internal/knowledge"
@@ -49,6 +50,7 @@ type Server struct {
 	projectStore     *project.Store           // BMAD project CRUD
 	intakeStore      *intake.Store            // PM Q&A drive
 	intakeAgentOverride intake.Agent          // optional for tests
+	architectAgentOverride architect.Agent    // optional for tests
 	envLookup        func(string) string      // optional for tests
 	mux              *http.ServeMux
 }
