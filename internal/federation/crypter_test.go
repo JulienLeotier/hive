@@ -21,7 +21,7 @@ func TestEncryptDecrypt_RoundTrip(t *testing.T) {
 	plain := "-----BEGIN PRIVATE KEY-----\nAAAA\n-----END PRIVATE KEY-----"
 	enc, err := encrypt(plain)
 	require.NoError(t, err)
-	assert.True(t, strings.HasPrefix(enc, cryptPrefix), "envelope should carry version tag")
+	assert.True(t, strings.HasPrefix(enc, "enc:v1:"), "envelope should carry version tag")
 	assert.NotContains(t, enc, "PRIVATE KEY", "plaintext must not leak through")
 
 	dec, err := decrypt(enc)

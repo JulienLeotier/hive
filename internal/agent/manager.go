@@ -67,20 +67,25 @@ func (m *Manager) Register(ctx context.Context, name, agentType, baseURL string)
 
 	id := ulid.MustNew(ulid.Timestamp(time.Now()), rand.Reader)
 
+	version := caps.Version
+	if version == "" {
+		version = "1.0.0"
+	}
+
 	_, err = m.db.ExecContext(ctx,
-		`INSERT INTO agents (id, name, type, config, capabilities, health_status, trust_level, node_id)
-		 VALUES (?, ?, ?, ?, ?, ?, 'scripted', ?)`,
-		id.String(), name, agentType, string(configJSON), string(capsJSON), health.Status, LocalNodeID,
+		`INSERT INTO agents (id, name, type, version, config, capabilities, health_status, trust_level, node_id)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, 'scripted', ?)`,
+		id.String(), name, agentType, version, string(configJSON), string(capsJSON), health.Status, LocalNodeID,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("inserting agent %s: %w", name, err)
 	}
 
-	slog.Info("agent registered", "name", name, "type", agentType, "health", health.Status)
+	slog.Info("agent registered", "name", name, "type", agentType, "version", version, "health", health.Status)
 
 	if m.bus != nil {
 		_ = m.bus(ctx, "agent.registered", name, map[string]string{
-			"id": id.String(), "type": agentType, "url": baseURL,
+			"id": id.String(), "type": agentType, "version": version, "url": baseURL,
 		})
 	}
 
@@ -88,6 +93,7 @@ func (m *Manager) Register(ctx context.Context, name, agentType, baseURL string)
 		ID:           id.String(),
 		Name:         name,
 		Type:         agentType,
+		Version:      version,
 		Config:       string(configJSON),
 		Capabilities: string(capsJSON),
 		HealthStatus: health.Status,
@@ -110,21 +116,27 @@ func (m *Manager) RegisterLocal(ctx context.Context, name, agentType, path strin
 		return nil, fmt.Errorf("marshaling config: %w", err)
 	}
 
+	version := "1.0.0"
+	if v, ok := caps["version"].(string); ok && v != "" {
+		version = v
+	}
+
 	id := ulid.MustNew(ulid.Timestamp(time.Now()), rand.Reader)
 
 	if _, err := m.db.ExecContext(ctx,
-		`INSERT INTO agents (id, name, type, config, capabilities, health_status, trust_level, node_id)
-		 VALUES (?, ?, ?, ?, ?, 'healthy', 'scripted', ?)`,
-		id.String(), name, agentType, string(configJSON), string(capsJSON), LocalNodeID,
+		`INSERT INTO agents (id, name, type, version, config, capabilities, health_status, trust_level, node_id)
+		 VALUES (?, ?, ?, ?, ?, ?, 'healthy', 'scripted', ?)`,
+		id.String(), name, agentType, version, string(configJSON), string(capsJSON), LocalNodeID,
 	); err != nil {
 		return nil, fmt.Errorf("inserting local agent %s: %w", name, err)
 	}
 
-	slog.Info("local agent registered", "name", name, "type", agentType, "path", path)
+	slog.Info("local agent registered", "name", name, "type", agentType, "version", version, "path", path)
 	return &Agent{
 		ID:           id.String(),
 		Name:         name,
 		Type:         agentType,
+		Version:      version,
 		Config:       string(configJSON),
 		Capabilities: string(capsJSON),
 		HealthStatus: "healthy",
@@ -146,7 +158,7 @@ func (m *Manager) ListByTenant(ctx context.Context, tenant string, limit int) ([
 	if limit <= 0 {
 		limit = 1000
 	}
-	query := `SELECT id, name, type, config, capabilities, health_status, trust_level, created_at, updated_at
+	query := `SELECT id, name, type, version, config, capabilities, health_status, trust_level, created_at, updated_at
 	          FROM agents WHERE 1=1`
 	args := []any{}
 	if tenant != "" {
@@ -161,7 +173,7 @@ func (m *Manager) ListByTenant(ctx context.Context, tenant string, limit int) ([
 // ListWithLimit returns registered agents up to the given limit.
 func (m *Manager) ListWithLimit(ctx context.Context, limit int) ([]Agent, error) {
 	return m.queryAgents(ctx,
-		`SELECT id, name, type, config, capabilities, health_status, trust_level, created_at, updated_at
+		`SELECT id, name, type, version, config, capabilities, health_status, trust_level, created_at, updated_at
 		 FROM agents ORDER BY name LIMIT ?`, limit)
 }
 
@@ -176,7 +188,7 @@ func (m *Manager) queryAgents(ctx context.Context, query string, args ...any) ([
 	for rows.Next() {
 		var a Agent
 		var createdAt, updatedAt string
-		if err := rows.Scan(&a.ID, &a.Name, &a.Type, &a.Config, &a.Capabilities,
+		if err := rows.Scan(&a.ID, &a.Name, &a.Type, &a.Version, &a.Config, &a.Capabilities,
 			&a.HealthStatus, &a.TrustLevel, &createdAt, &updatedAt); err != nil {
 			return nil, fmt.Errorf("scanning agent row: %w", err)
 		}
@@ -237,9 +249,9 @@ func (m *Manager) getOne(ctx context.Context, column, value string) (*Agent, err
 	var a Agent
 	var createdAt, updatedAt string
 	err := m.db.QueryRowContext(ctx,
-		`SELECT id, name, type, config, capabilities, health_status, trust_level, created_at, updated_at
+		`SELECT id, name, type, version, config, capabilities, health_status, trust_level, created_at, updated_at
 		 FROM agents WHERE `+column+` = ?`, value,
-	).Scan(&a.ID, &a.Name, &a.Type, &a.Config, &a.Capabilities,
+	).Scan(&a.ID, &a.Name, &a.Type, &a.Version, &a.Config, &a.Capabilities,
 		&a.HealthStatus, &a.TrustLevel, &createdAt, &updatedAt)
 	if err == sql.ErrNoRows {
 		return nil, fmt.Errorf("agent %s=%s not found", column, value)

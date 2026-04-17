@@ -66,7 +66,7 @@
 	<table>
 		<thead>
 			<tr>
-				<th>Name</th><th>Type</th><th>Health</th><th>Trust</th><th>Capabilities</th><th>Last check</th>
+				<th>Name</th><th>Type</th><th>Version</th><th>Health</th><th>Trust</th><th>Capabilities</th><th>Last check</th>
 			</tr>
 		</thead>
 		<tbody>
@@ -74,6 +74,7 @@
 				<tr>
 					<td><strong>{agent.name}</strong></td>
 					<td><code>{agent.type}</code></td>
+					<td><code>{agent.version ?? '1.0.0'}</code></td>
 					<td>
 						<span class="badge" style="background:{statusColor(agent.health_status)}">
 							{agent.health_status}

@@ -124,6 +124,19 @@ func (m *TriggerManager) WebhookPaths() []string {
 	return out
 }
 
+// WebhookSecret returns the HMAC secret declared for the workflow bound at
+// `path`, or "" if none is registered. Used by the HTTP transport to decide
+// whether to require `X-Hive-Signature` on incoming requests.
+func (m *TriggerManager) WebhookSecret(path string) string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	cfg := m.webhooks[path]
+	if cfg == nil || cfg.Trigger == nil {
+		return ""
+	}
+	return cfg.Trigger.Secret
+}
+
 // ---------------------------------------------------------------------
 // scheduler — tiny cron-like firing loop
 // ---------------------------------------------------------------------

@@ -11,6 +11,7 @@ export type Agent = {
 	id: string;
 	name: string;
 	type: string;
+	version?: string;
 	health_status: string; // "healthy" | "degraded" | "unavailable"
 	trust_level: string; // "scripted" | "supervised" | "guided" | "autonomous" | "trusted"
 	capabilities: string; // JSON-encoded adapter capability blob

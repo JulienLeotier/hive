@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/JulienLeotier/hive/internal/event"
+	"github.com/JulienLeotier/hive/internal/secretstore"
 	"github.com/oklog/ulid/v2"
 )
 
@@ -65,17 +66,25 @@ func NewDispatcher(db *sql.DB) *Dispatcher {
 }
 
 // Add registers a new webhook configuration.
-// Rejects URLs targeting private/internal IPs to prevent SSRF.
+// Rejects URLs targeting private/internal IPs to prevent SSRF. When
+// HIVE_MASTER_KEY is set, the URL is stored encrypted — users sometimes embed
+// bearer tokens in webhook URLs (Slack, Discord, custom auth) and we
+// shouldn't leak those to anyone with DB read access.
 func (d *Dispatcher) Add(ctx context.Context, name, url, whType, eventFilter string) (*Config, error) {
 	if err := validateWebhookURL(url); err != nil {
 		return nil, fmt.Errorf("invalid webhook URL: %w", err)
 	}
 
+	stored, err := secretstore.Encrypt(url)
+	if err != nil {
+		return nil, fmt.Errorf("encrypting webhook URL: %w", err)
+	}
+
 	id := ulid.MustNew(ulid.Timestamp(time.Now()), rand.Reader)
 
-	_, err := d.db.ExecContext(ctx,
+	_, err = d.db.ExecContext(ctx,
 		`INSERT INTO webhooks (id, name, url, type, event_filter, enabled) VALUES (?, ?, ?, ?, ?, 1)`,
-		id.String(), name, url, whType, eventFilter,
+		id.String(), name, stored, whType, eventFilter,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("adding webhook %s: %w", name, err)
@@ -84,7 +93,7 @@ func (d *Dispatcher) Add(ctx context.Context, name, url, whType, eventFilter str
 	return &Config{ID: id.String(), Name: name, URL: url, Type: whType, EventFilter: eventFilter, Enabled: true}, nil
 }
 
-// List returns all webhook configurations.
+// List returns all webhook configurations with URLs decrypted.
 func (d *Dispatcher) List(ctx context.Context) ([]Config, error) {
 	rows, err := d.db.QueryContext(ctx, `SELECT id, name, url, type, COALESCE(event_filter,''), enabled FROM webhooks ORDER BY name`)
 	if err != nil {
@@ -96,9 +105,16 @@ func (d *Dispatcher) List(ctx context.Context) ([]Config, error) {
 	for rows.Next() {
 		var c Config
 		var enabled int
-		if err := rows.Scan(&c.ID, &c.Name, &c.URL, &c.Type, &c.EventFilter, &enabled); err != nil {
+		var storedURL string
+		if err := rows.Scan(&c.ID, &c.Name, &storedURL, &c.Type, &c.EventFilter, &enabled); err != nil {
 			continue
 		}
+		plain, err := secretstore.Decrypt(storedURL)
+		if err != nil {
+			slog.Error("webhook URL decrypt failed — skipping", "webhook", c.Name, "error", err)
+			continue
+		}
+		c.URL = plain
 		c.Enabled = enabled == 1
 		configs = append(configs, c)
 	}

@@ -7,6 +7,7 @@ type Agent struct {
 	ID           string    `json:"id"`
 	Name         string    `json:"name"`
 	Type         string    `json:"type"`
+	Version      string    `json:"version"`
 	Config       string    `json:"config"`
 	Capabilities string    `json:"capabilities"`
 	HealthStatus string    `json:"health_status"`

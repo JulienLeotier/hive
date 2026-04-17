@@ -32,9 +32,14 @@ type TaskDef struct {
 
 // TriggerDef defines how a workflow is triggered.
 type TriggerDef struct {
-	Type     string `yaml:"type"`     // "manual", "webhook", "schedule"
+	Type     string `yaml:"type"`               // "manual", "webhook", "schedule"
 	Schedule string `yaml:"schedule,omitempty"` // cron expression
 	Webhook  string `yaml:"webhook,omitempty"`  // endpoint path
+	// Secret, when set on a webhook trigger, enables HMAC-SHA256 signature
+	// verification. Incoming requests must carry `X-Hive-Signature:
+	// sha256=<hex>` computed over the raw body. Empty = accept unsigned
+	// (dev-friendly, explicit opt-in for prod).
+	Secret string `yaml:"secret,omitempty"`
 }
 
 // ParseFile reads and parses a workflow YAML file.

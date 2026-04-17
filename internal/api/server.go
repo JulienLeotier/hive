@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"strings"
@@ -17,6 +18,7 @@ import (
 	"github.com/JulienLeotier/hive/internal/event"
 	"github.com/JulienLeotier/hive/internal/knowledge"
 	"github.com/JulienLeotier/hive/internal/resilience"
+	"github.com/JulienLeotier/hive/internal/workflow"
 )
 
 // Response is the standard API response envelope.
@@ -40,6 +42,7 @@ type Server struct {
 	users            *auth.UserStore
 	federationShared []string // capabilities exposed to federated peers (empty = all)
 	oidc             *auth.OIDCProvider
+	triggerMgr       *workflow.TriggerManager // optional — enables workflow fire + retry endpoints
 	mux              *http.ServeMux
 }
 
@@ -60,6 +63,14 @@ func NewServer(agentMgr *agent.Manager, eventBus *event.Bus, breakers *resilienc
 // key names to roles. Story 21.2.
 func (s *Server) WithUsers(users *auth.UserStore) *Server {
 	s.users = users
+	return s
+}
+
+// WithTriggerManager wires the workflow trigger manager so the API exposes
+// `POST /api/v1/workflows/:name/runs` for manual firing. Without it the
+// endpoint returns 503.
+func (s *Server) WithTriggerManager(tm *workflow.TriggerManager) *Server {
+	s.triggerMgr = tm
 	return s
 }
 
@@ -185,6 +196,95 @@ func (s *Server) routes() {
 	s.mux.Handle("GET /api/v1/tenants", auth.RBACMiddleware("system", "read")(http.HandlerFunc(s.handleListTenants)))
 	s.mux.Handle("GET /api/v1/cluster", auth.RBACMiddleware("system", "read")(http.HandlerFunc(s.handleListCluster)))
 	s.mux.Handle("GET /api/v1/trust", auth.RBACMiddleware("system", "read")(http.HandlerFunc(s.handleListTrustHistory)))
+
+	// Control-plane writes. POST fires a manual workflow run; POST retries a
+	// failed task. Both require the "workflows" / "tasks" write role.
+	s.mux.Handle("POST /api/v1/workflows/{name}/runs", auth.RBACMiddleware("workflows", "write")(http.HandlerFunc(s.handleFireWorkflow)))
+	s.mux.Handle("POST /api/v1/tasks/{id}/retry", auth.RBACMiddleware("tasks", "write")(http.HandlerFunc(s.handleRetryTask)))
+}
+
+// handleFireWorkflow triggers a registered workflow by name with an optional
+// JSON body forwarded as the trigger payload. Returns 503 when no trigger
+// manager is attached, 404 when the workflow isn't registered, 202 on success.
+func (s *Server) handleFireWorkflow(w http.ResponseWriter, r *http.Request) {
+	if s.triggerMgr == nil {
+		writeError(w, http.StatusServiceUnavailable, "NO_TRIGGER_MANAGER",
+			"workflow triggers are not configured on this node")
+		return
+	}
+	name := r.PathValue("name")
+	if name == "" {
+		writeError(w, http.StatusBadRequest, "MISSING_NAME", "workflow name is required")
+		return
+	}
+
+	var payload map[string]any
+	if r.ContentLength > 0 {
+		if err := json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(&payload); err != nil {
+			writeError(w, http.StatusBadRequest, "BAD_REQUEST", err.Error())
+			return
+		}
+	}
+
+	// FireManual is synchronous — run it on a background context so the
+	// caller doesn't block on the whole workflow. Returns immediately with
+	// "accepted" and the caller polls /api/v1/workflows or the event stream.
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+		defer cancel()
+		if err := s.triggerMgr.FireManual(ctx, name, payload); err != nil {
+			slog.Warn("workflow manual fire failed", "name", name, "error", err)
+		}
+	}()
+
+	w.WriteHeader(http.StatusAccepted)
+	writeJSON(w, map[string]string{"status": "accepted", "workflow": name})
+}
+
+// handleRetryTask re-queues a failed/completed task by creating a fresh task
+// row with the same type/input/workflow_id and status=pending. The original
+// task is left in place for audit. Returns 404 when the task doesn't exist,
+// 409 when it's still running.
+func (s *Server) handleRetryTask(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if id == "" {
+		writeError(w, http.StatusBadRequest, "MISSING_ID", "task id is required")
+		return
+	}
+	ctx := r.Context()
+
+	var origType, origInput, origWorkflow, origStatus string
+	err := s.db().QueryRowContext(ctx,
+		`SELECT type, input, workflow_id, status FROM tasks WHERE id = ?`, id,
+	).Scan(&origType, &origInput, &origWorkflow, &origStatus)
+	if err == sql.ErrNoRows {
+		writeError(w, http.StatusNotFound, "NOT_FOUND", "task not found")
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "QUERY_FAILED", err.Error())
+		return
+	}
+	if origStatus == "running" || origStatus == "assigned" {
+		writeError(w, http.StatusConflict, "TASK_IN_FLIGHT",
+			"task is still in flight — cancel it first or wait for completion")
+		return
+	}
+
+	newID := fmt.Sprintf("retry_%s_%d", id, time.Now().UnixNano())
+	if _, err := s.db().ExecContext(ctx,
+		`INSERT INTO tasks (id, workflow_id, type, input, status, agent_id)
+		 VALUES (?, ?, ?, ?, 'pending', '')`,
+		newID, origWorkflow, origType, origInput,
+	); err != nil {
+		writeError(w, http.StatusInternalServerError, "INSERT_FAILED", err.Error())
+		return
+	}
+	_, _ = s.eventBus.Publish(ctx, "task.retried", "api", map[string]string{
+		"original_task_id": id,
+		"new_task_id":      newID,
+	})
+	writeJSON(w, map[string]string{"new_task_id": newID, "original_task_id": id})
 }
 
 // SetFederationShared configures which capability names are exposed to peers

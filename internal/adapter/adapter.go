@@ -7,6 +7,10 @@ type AgentCapabilities struct {
 	Name       string   `json:"name"`
 	TaskTypes  []string `json:"task_types"`
 	CostPerRun float64  `json:"cost_per_run,omitempty"`
+	// Version is advertised by the adapter so the hive can run multiple
+	// versions of the same named agent side-by-side (canary / A-B). Empty
+	// defaults to "1.0.0" at registration time.
+	Version string `json:"version,omitempty"`
 }
 
 // Task represents work to be sent to an agent.

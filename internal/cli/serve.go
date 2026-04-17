@@ -318,7 +318,7 @@ var serveCmd = &cobra.Command{
 		keyMgr := api.NewKeyManager(store.DB)
 		users := auth.NewUserStore(store.DB)
 
-		apiSrv := api.NewServer(mgr, bus, breakers, keyMgr).WithUsers(users)
+		apiSrv := api.NewServer(mgr, bus, breakers, keyMgr).WithUsers(users).WithTriggerManager(triggerMgr)
 
 		// Story 19.2: honour the `federation.share:` list so only whitelisted
 		// capabilities appear at /api/v1/capabilities.
@@ -369,6 +369,11 @@ var serveCmd = &cobra.Command{
 		// API routes (authenticated). Instrument at the /api/ prefix so every
 		// REST call counts without wiring each handler individually.
 		mux.Handle("/api/", api.Instrument("/api/", apiSrv.Handler()))
+
+		// Webhook triggers — unauthenticated by design (each workflow declares
+		// its own HMAC secret via trigger.secret). Path must match the
+		// `webhook:` field of a registered workflow trigger.
+		mux.Handle("/hooks/", api.Instrument("/hooks/", workflow.WebhookHandler(triggerMgr)))
 
 		// Dashboard (static, no auth)
 		mux.Handle("/", dashboard.Handler())
