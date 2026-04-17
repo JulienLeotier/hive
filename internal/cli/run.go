@@ -93,6 +93,24 @@ var runCmd = &cobra.Command{
 			return fmt.Errorf("loading agents: %w", err)
 		}
 
+		// Install the agent lookup so the engine can build non-HTTP
+		// adapters (claude-code, crewai, autogen, langchain, mcp, openai)
+		// at dispatch time instead of defaulting to HTTP.
+		engine.WithAgentLookup(func(ctx context.Context, agentID string) (adapter.AgentSpec, error) {
+			a, err := agentMgr.GetByID(ctx, agentID)
+			if err != nil {
+				return adapter.AgentSpec{}, err
+			}
+			return adapter.AgentSpec{
+				Name:         a.Name,
+				Type:         a.Type,
+				Config:       a.Config,
+				Capabilities: a.Capabilities,
+			}, nil
+		})
+
+		// Legacy pre-registration of HTTP adapters kept for the fast path:
+		// the lookup still runs on cache miss.
 		for _, a := range agents {
 			var agentConfig map[string]string
 			_ = json.Unmarshal([]byte(a.Config), &agentConfig)

@@ -258,24 +258,28 @@ var addAgentCmd = &cobra.Command{
 		var a *agent.Agent
 		ctx := context.Background()
 
-		// Stories 13.1-13.4: build the right adapter per --type so Declare()
+		// Stories 13.1-13.4 + 1.5 + 1.6: build the right adapter per --type so Declare()
 		// returns framework-native capabilities rather than generic defaults.
 		switch {
-		case path != "" && (agentType == "crewai" || agentType == "autogen" || agentType == "langchain"):
+		case path != "" && (agentType == adapter.TypeCrewAI || agentType == adapter.TypeAutoGen || agentType == adapter.TypeLangChain || agentType == adapter.TypeClaude || agentType == adapter.TypeMCP):
 			// Subprocess-backed local agents — declare via adapter, register as local.
 			var caps adapter.AgentCapabilities
 			switch agentType {
-			case "crewai":
+			case adapter.TypeCrewAI:
 				caps, _ = adapter.NewCrewAIAdapter(path, name).Declare(ctx)
-			case "autogen":
+			case adapter.TypeAutoGen:
 				caps, _ = adapter.NewAutoGenAdapter("file://"+path, name).Declare(ctx)
-			case "langchain":
+			case adapter.TypeLangChain:
 				caps, _ = adapter.NewLangChainAdapter("file://"+path, name).Declare(ctx)
+			case adapter.TypeClaude:
+				caps, _ = adapter.NewClaudeCodeAdapter(path, name).Declare(ctx)
+			case adapter.TypeMCP:
+				caps, _ = adapter.NewMCPAdapter(path, name).Declare(ctx)
 			}
 			capsMap := map[string]any{"name": caps.Name, "task_types": caps.TaskTypes}
 			a, err = mgr.RegisterLocal(ctx, name, agentType, path, capsMap)
 
-		case agentType == "openai":
+		case agentType == adapter.TypeOpenAI:
 			assistantID, _ := cmd.Flags().GetString("assistant-id")
 			apiKey, _ := cmd.Flags().GetString("api-key")
 			if assistantID == "" {

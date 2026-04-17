@@ -97,6 +97,14 @@ func depsKey(deps []string) string {
 	return strings.Join(sorted, ",")
 }
 
+// AgentLookup resolves an agent ID to its stored spec (type + config).
+// The workflow engine calls this on every task dispatch so it can build the
+// right adapter variant (HTTP, Claude Code, CrewAI, etc.) instead of
+// assuming HTTP everywhere. The lookup is intentionally a callback rather
+// than a direct *agent.Manager reference to keep the engine free of a
+// storage import cycle.
+type AgentLookup func(ctx context.Context, agentID string) (adapter.AgentSpec, error)
+
 // Engine orchestrates workflow execution: creates tasks, routes to agents, executes in DAG order.
 type Engine struct {
 	workflowStore *Store
@@ -104,11 +112,21 @@ type Engine struct {
 	taskRouter    *task.Router
 	eventBus      *event.Bus
 	adapters      map[string]adapter.Adapter // agentID -> adapter
-	agentConfigs  map[string]string          // agentID -> baseURL
+	agentConfigs  map[string]string          // agentID -> baseURL (legacy HTTP shortcut)
+	lookupAgent   AgentLookup                // optional — if set, used to build non-HTTP adapters
 	concurrency   int                        // per-workflow level concurrency cap
 	allocation    string                     // per-workflow allocation strategy
 	retry         *adapter.RetryPolicy       // default retry for auto-built HTTP adapters
 	mu            sync.Mutex
+}
+
+// WithAgentLookup wires the agent resolver so the engine can dispatch to
+// non-HTTP adapter types (claude-code, crewai, autogen, langchain, mcp,
+// openai). Without it, the engine degrades to HTTP-only — fine for
+// single-adapter deployments but wrong for mixed fleets.
+func (e *Engine) WithAgentLookup(l AgentLookup) *Engine {
+	e.lookupAgent = l
+	return e
 }
 
 // WithRetry installs a default retry policy applied to auto-built HTTP adapters.
@@ -292,10 +310,29 @@ func (e *Engine) executeLevel(ctx context.Context, workflowID string, level []Ta
 
 		e.mu.Lock()
 		a, ok := e.adapters[agentID]
+		e.mu.Unlock()
 		if !ok {
-			httpA := adapter.NewHTTPAdapter(e.agentConfigs[agentID])
-			if e.retry != nil {
-				// Clone retry with a per-task OnAttempt that emits task.retry events.
+			// Build the adapter from whatever the agents table has on this
+			// ID. Falls back to HTTP when there's no lookup installed, which
+			// preserves the v0 behaviour for single-type deployments.
+			var built adapter.Adapter
+			if e.lookupAgent != nil {
+				spec, lookupErr := e.lookupAgent(ctx, agentID)
+				if lookupErr != nil {
+					return fmt.Errorf("agent lookup for %s (%s): %w", td.Name, agentID, lookupErr)
+				}
+				built, err = adapter.BuildAdapter(spec)
+				if err != nil {
+					return fmt.Errorf("build adapter for %s (%s): %w", td.Name, agentID, err)
+				}
+			} else {
+				built = adapter.NewHTTPAdapter(e.agentConfigs[agentID])
+			}
+			// HTTP adapters get the per-engine retry policy wrapped so
+			// task.retry events fire. Other adapter types don't expose
+			// retry yet — a future story can lift this into the Adapter
+			// interface.
+			if httpA, isHTTP := built.(*adapter.HTTPAdapter); isHTTP && e.retry != nil {
 				policy := *e.retry
 				tid := t.ID
 				policy.OnAttempt = func(attempt int, wait time.Duration, lastErr error) {
@@ -310,9 +347,8 @@ func (e *Engine) executeLevel(ctx context.Context, workflowID string, level []Ta
 				}
 				httpA.WithRetry(&policy)
 			}
-			a = httpA
+			a = built
 		}
-		e.mu.Unlock()
 
 		prepared = append(prepared, preparedTask{
 			taskDef: td, taskID: t.ID, agentID: agentID, agentName: agentName, adapter: a,

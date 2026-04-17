@@ -225,18 +225,27 @@ func (m *Manager) Remove(ctx context.Context, name string) error {
 
 // GetByName retrieves an agent by name.
 func (m *Manager) GetByName(ctx context.Context, name string) (*Agent, error) {
+	return m.getOne(ctx, "name", name)
+}
+
+// GetByID retrieves an agent by its ULID.
+func (m *Manager) GetByID(ctx context.Context, id string) (*Agent, error) {
+	return m.getOne(ctx, "id", id)
+}
+
+func (m *Manager) getOne(ctx context.Context, column, value string) (*Agent, error) {
 	var a Agent
 	var createdAt, updatedAt string
 	err := m.db.QueryRowContext(ctx,
 		`SELECT id, name, type, config, capabilities, health_status, trust_level, created_at, updated_at
-		 FROM agents WHERE name = ?`, name,
+		 FROM agents WHERE `+column+` = ?`, value,
 	).Scan(&a.ID, &a.Name, &a.Type, &a.Config, &a.Capabilities,
 		&a.HealthStatus, &a.TrustLevel, &createdAt, &updatedAt)
 	if err == sql.ErrNoRows {
-		return nil, fmt.Errorf("agent %s not found", name)
+		return nil, fmt.Errorf("agent %s=%s not found", column, value)
 	}
 	if err != nil {
-		return nil, fmt.Errorf("getting agent %s: %w", name, err)
+		return nil, fmt.Errorf("getting agent %s=%s: %w", column, value, err)
 	}
 	a.CreatedAt, _ = time.Parse("2006-01-02 15:04:05", createdAt)
 	a.UpdatedAt, _ = time.Parse("2006-01-02 15:04:05", updatedAt)
