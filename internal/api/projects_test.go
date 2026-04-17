@@ -7,9 +7,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
-	"time"
 
-	"github.com/JulienLeotier/hive/internal/architect"
 	"github.com/JulienLeotier/hive/internal/project"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -165,65 +163,6 @@ func TestRetryStoryRejectsNonBlocked(t *testing.T) {
 	assert.Equal(t, http.StatusConflict, w.Code, "can't retry a story that isn't blocked")
 }
 
-func TestRecoverStuckPlanningRekicksArchitect(t *testing.T) {
-	srv := setupServer(t)
-	store := project.NewStore(srv.db())
-	srv.WithProjectStore(store).architectAgentOverride = architect.NewScripted()
-
-	// Seed a project that looks exactly like one orphaned mid-architect:
-	// status=planning, prd saved, no epics.
-	const prd = `# PRD
-
-## Summary
-
-idea body
-
-## Audience & problem
-
-users
-
-## Core flows
-
-do things
-
-## Constraints & non-goals
-
-none
-
-## Tech notes
-
-Go
-
-## Definition of done
-
-tests pass
-`
-	p, err := store.Create(context.Background(), "default", "a test idea", project.CreateOpts{Name: "orphan"})
-	require.NoError(t, err)
-	_, err = srv.db().Exec(`UPDATE projects SET prd = ?, status = ? WHERE id = ?`,
-		prd, project.StatusPlanning, p.ID)
-	require.NoError(t, err)
-
-	require.NoError(t, srv.RecoverStuckPlanning(context.Background()))
-
-	// runArchitectAsync is a goroutine; give it a moment to finish with
-	// the scripted agent (synchronous CPU work).
-	deadline := time.Now().Add(5 * time.Second)
-	var status string
-	for time.Now().Before(deadline) {
-		require.NoError(t, srv.db().QueryRow(`SELECT status FROM projects WHERE id = ?`, p.ID).Scan(&status))
-		if status == string(project.StatusBuilding) {
-			break
-		}
-		time.Sleep(50 * time.Millisecond)
-	}
-	assert.Equal(t, string(project.StatusBuilding), status, "stuck planning project must advance to building")
-
-	var epicCount int
-	require.NoError(t, srv.db().QueryRow(`SELECT COUNT(*) FROM epics WHERE project_id = ?`, p.ID).Scan(&epicCount))
-	assert.Greater(t, epicCount, 0, "architect must have emitted at least one epic")
-}
-
 func TestUpdatePRDSavesText(t *testing.T) {
 	srv := setupServer(t)
 	store := project.NewStore(srv.db())
@@ -255,75 +194,6 @@ func TestUpdatePRDRejectsEmpty(t *testing.T) {
 	w := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(w, req)
 	assert.Equal(t, http.StatusBadRequest, w.Code)
-}
-
-func TestRegeneratePlanClearsTree(t *testing.T) {
-	srv := setupServer(t)
-	store := project.NewStore(srv.db())
-	srv.WithProjectStore(store).architectAgentOverride = architect.NewScripted()
-
-	const prd = `# PRD
-
-## Summary
-
-idea
-
-## Audience & problem
-
-people
-
-## Core flows
-
-use it
-
-## Constraints & non-goals
-
-none
-
-## Tech notes
-
-Go
-
-## Definition of done
-
-it works
-`
-	p, err := store.Create(context.Background(), "default", "app idea", project.CreateOpts{Name: "x"})
-	require.NoError(t, err)
-	_, err = srv.db().Exec(`UPDATE projects SET prd = ?, status = 'building' WHERE id = ?`, prd, p.ID)
-	require.NoError(t, err)
-	// Seed a pre-existing epic tree that regenerate should nuke.
-	_, err = srv.db().Exec(
-		`INSERT INTO epics (id, project_id, title, ordering, status) VALUES ('old_e', ?, 'old', 0, 'pending')`,
-		p.ID)
-	require.NoError(t, err)
-	_, err = srv.db().Exec(
-		`INSERT INTO stories (id, epic_id, title, ordering, status, iterations) VALUES ('old_s', 'old_e', 't', 0, 'pending', 0)`)
-	require.NoError(t, err)
-
-	req := httptest.NewRequest("POST", "/api/v1/projects/"+p.ID+"/regenerate-plan", nil)
-	w := httptest.NewRecorder()
-	srv.Handler().ServeHTTP(w, req)
-	require.Equal(t, http.StatusOK, w.Code, "body=%s", w.Body.String())
-
-	// Wait for the async architect goroutine (scripted agent) to land the
-	// new tree.
-	deadline := time.Now().Add(5 * time.Second)
-	var epicCount int
-	for time.Now().Before(deadline) {
-		require.NoError(t, srv.db().QueryRow(
-			`SELECT COUNT(*) FROM epics WHERE project_id = ?`, p.ID).Scan(&epicCount))
-		if epicCount > 0 {
-			break
-		}
-		time.Sleep(50 * time.Millisecond)
-	}
-	assert.Greater(t, epicCount, 0, "architect must have re-populated epics")
-
-	var oldStoryCount int
-	require.NoError(t, srv.db().QueryRow(
-		`SELECT COUNT(*) FROM stories WHERE id = 'old_s'`).Scan(&oldStoryCount))
-	assert.Equal(t, 0, oldStoryCount, "old story must be wiped by the cascade")
 }
 
 func TestRegeneratePlanRefusesWhenDevStarted(t *testing.T) {

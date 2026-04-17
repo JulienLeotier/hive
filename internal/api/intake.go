@@ -3,13 +3,16 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
-	"github.com/JulienLeotier/hive/internal/architect"
+	"github.com/JulienLeotier/hive/internal/bmad"
 	"github.com/JulienLeotier/hive/internal/intake"
 	"github.com/JulienLeotier/hive/internal/project"
 )
@@ -97,39 +100,52 @@ func (s *Server) handleIntakeFinalize(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "NOT_FOUND", err.Error())
 		return
 	}
-	agent := s.intakeAgent()
-	conv, err := s.intakeStore.GetOrStart(r.Context(), p.ID, p.Idea, agent)
+	conv, err := s.intakeStore.GetOrStart(r.Context(), p.ID, p.Idea, s.intakeAgent())
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "INTAKE_START_FAILED", err.Error())
 		return
 	}
-	prd, err := s.intakeStore.Finalize(r.Context(), conv.ID, p.Idea, agent)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "FINALIZE_FAILED", err.Error())
-		return
-	}
+
+	// Flip to planning right away so the dashboard shows the spinner
+	// while BMAD runs. The PRD itself is produced by bmad-create-prd
+	// inside runBMADAsync — the old scripted PM agent that used to
+	// Finalize() into a fake PRD is gone.
 	if _, err := s.db().ExecContext(r.Context(),
-		`UPDATE projects SET prd = ?, status = ?, updated_at = datetime('now') WHERE id = ?`,
-		prd, project.StatusPlanning, p.ID,
+		`UPDATE projects SET status = ?, updated_at = datetime('now') WHERE id = ?`,
+		project.StatusPlanning, p.ID,
 	); err != nil {
 		writeError(w, http.StatusInternalServerError, "PROJECT_UPDATE_FAILED", err.Error())
 		return
 	}
 
-	// Architect is the slow path — Claude Code can take minutes to emit
-	// the epic/story/AC tree. Blocking the HTTP request would mean the
-	// dashboard sits on a spinner until then, which also exceeds any
-	// reasonable HTTP timeout. Kick the Architect off in the background
-	// and return the updated project immediately. The frontend reacts to
-	// project.architect_started / project.architect_done / project.architect_failed
-	// events and polls the project tree when one arrives.
-	go s.runArchitectAsync(p.ID, p.Idea, prd) //nolint:gosec // G118: the request ctx dies with the handler; runArchitectAsync deliberately uses its own 10-min background ctx
+	// BMAD is the slow path — `npx bmad-method install` + multiple
+	// `claude --print` invocations each take minutes. Detach so the
+	// HTTP request returns immediately; progress is broadcast via WS
+	// (project.architect_started / _done / _failed events).
+	go s.runArchitectAsync(p.ID, p.Idea, flattenConversation(conv)) //nolint:gosec // G118: request ctx dies with the handler
 
 	writeJSON(w, map[string]any{
 		"project_id": p.ID,
 		"status":     project.StatusPlanning,
-		"prd_length": len(prd),
 	})
+}
+
+// flattenConversation turns the intake conversation into a plain
+// text transcript BMAD's create-prd skill can ingest as a product
+// brief.
+func flattenConversation(conv *intake.Conversation) string {
+	if conv == nil {
+		return ""
+	}
+	var b strings.Builder
+	for _, m := range conv.Messages {
+		role := "PM"
+		if m.Author == "user" {
+			role = "User"
+		}
+		fmt.Fprintf(&b, "%s: %s\n\n", role, strings.TrimSpace(m.Content))
+	}
+	return strings.TrimSpace(b.String())
 }
 
 // RecoverStuckPlanning re-kicks the Architect for every project parked
@@ -173,59 +189,254 @@ func (s *Server) RecoverStuckPlanning(ctx context.Context) error {
 	return nil
 }
 
-// runArchitectAsync executes Architect.Run detached from the caller and
-// emits dashboard events so the UI can track progress. It uses a fresh
-// 10-minute background context — the request context is already gone by
-// the time this runs, and the caller has returned to the browser.
-func (s *Server) runArchitectAsync(projectID, idea, prd string) {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+// runArchitectAsync drives the real BMAD-METHOD planning pipeline
+// against the project's workdir: install BMAD, run bmad-create-prd,
+// run bmad-create-epics-and-stories, ingest the resulting artefacts
+// back into our DB, flip the project to `building`.
+//
+// Our hand-rolled architect is gone — BMAD does the same work with a
+// real framework (14-step PRD, story sharding, checklist validation,
+// etc.). The only glue that remains is ingesting BMAD's output back
+// into the epics/stories/ACs tables so the dashboard stays
+// story-centric.
+//
+// `seedDoc` is a text blob we pass to BMAD as the product brief. On
+// first finalize it's the flattened PM chat; on recovery/regenerate
+// it's whatever we have on file (previous PRD, raw idea).
+func (s *Server) runArchitectAsync(projectID, idea, seedDoc string) {
+	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Minute)
 	defer cancel()
+
+	fail := func(stage string, err error) {
+		slog.Warn("bmad pipeline failed", "project", projectID, "stage", stage, "error", err)
+		if s.eventBus != nil {
+			_, _ = s.eventBus.Publish(ctx, "project.architect_failed", "api", map[string]any{
+				"project_id": projectID,
+				"stage":      stage,
+				"error":      err.Error(),
+			})
+		}
+	}
 
 	if s.eventBus != nil {
 		_, _ = s.eventBus.Publish(ctx, "project.architect_started", "api",
 			map[string]string{"project_id": projectID})
 	}
 
-	arch := s.architectAgent()
-	epics, stories, err := architect.NewDispatcher(s.db(), arch).Run(ctx, projectID, idea, prd)
+	proj, err := s.projectStore.GetByID(ctx, projectID)
 	if err != nil {
-		slog.Warn("architect run failed — project left in planning", "project", projectID, "error", err)
-		if s.eventBus != nil {
-			_, _ = s.eventBus.Publish(ctx, "project.architect_failed", "api", map[string]any{
-				"project_id": projectID,
-				"error":      err.Error(),
-			})
-		}
+		fail("lookup", err)
 		return
 	}
+	if proj.Workdir == "" {
+		fail("prepare", fmt.Errorf("project has no workdir"))
+		return
+	}
+	workdir := proj.Workdir
+	if err := os.MkdirAll(workdir, 0o755); err != nil {
+		fail("prepare", err)
+		return
+	}
+
+	runner := bmad.NewRunner()
+	if runner == nil {
+		fail("prepare", fmt.Errorf("claude CLI missing; BMAD cannot run"))
+		return
+	}
+
+	// Seed BMAD with the intake transcript so its create-prd workflow
+	// has a product brief to work from. BMAD scans the planning dir
+	// for input docs at step-02-discovery — we drop this one there.
+	briefPath := filepath.Join(workdir, bmad.PlanningDir, "_intake.md")
+	if err := os.MkdirAll(filepath.Dir(briefPath), 0o755); err != nil {
+		fail("prepare", err)
+		return
+	}
+	if err := os.WriteFile(briefPath, []byte(buildIntakeDoc(idea, seedDoc)), 0o644); err != nil {
+		fail("prepare", err)
+		return
+	}
+
+	if err := runner.Install(ctx, workdir); err != nil {
+		fail("install", err)
+		return
+	}
+
+	// Phase 2 — Planning: bmad-create-prd.
+	prdGoal := fmt.Sprintf(
+		"Invoke the bmad-create-prd skill. Treat %s/_intake.md as the product brief "+
+			"(it contains the user's idea + PM Q&A). Auto-continue every menu and "+
+			"complete the full PRD workflow in one pass. The PRD must end up at "+
+			"%s (or %s).",
+		bmad.PlanningDir, bmad.PRDFile, bmad.PRDFileLower)
+	if _, err := runner.Invoke(ctx, workdir, prdGoal,
+		[]string{bmad.PRDFile, bmad.PRDFileLower}); err != nil {
+		fail("create-prd", err)
+		return
+	}
+	prdText, err := readFirst(workdir, bmad.PRDFile, bmad.PRDFileLower)
+	if err != nil {
+		fail("read-prd", err)
+		return
+	}
+	if _, err := s.db().ExecContext(ctx,
+		`UPDATE projects SET prd = ?, updated_at = datetime('now') WHERE id = ?`,
+		prdText, projectID,
+	); err != nil {
+		fail("save-prd", err)
+		return
+	}
+
+	// Phase 3 — Solutioning: bmad-create-epics-and-stories.
+	// We ask Claude to emit a JSON mirror of the tree so we don't need
+	// a second parse pass over BMAD's markdown output.
+	epicsGoal := "Invoke the bmad-create-epics-and-stories skill. Auto-continue every menu. " +
+		"After the skill finishes its normal markdown output, append ONE fenced code " +
+		"block with language `json-hive` at the very end of your reply. The block " +
+		"must contain valid JSON matching exactly this shape:\n" +
+		"[{\"title\":\"Epic Title\",\"description\":\"1-2 sentences\",\"stories\":" +
+		"[{\"title\":\"Story Title\",\"description\":\"1-2 sentences\"," +
+		"\"acceptance_criteria\":[\"AC text\",\"AC text\"]}]}]\n" +
+		"Use the same epics/stories the skill just generated. Keep AC strings under 150 chars. " +
+		"No prose after the json-hive block."
+	res, err := runner.Invoke(ctx, workdir, epicsGoal, nil)
+	if err != nil {
+		fail("create-epics", err)
+		return
+	}
+	tree, err := parseBMADTree(res.Text)
+	if err != nil {
+		fail("parse-epics", err)
+		return
+	}
+	if err := s.ingestBMADTree(ctx, projectID, tree); err != nil {
+		fail("ingest", err)
+		return
+	}
+
 	if _, err := s.db().ExecContext(ctx,
 		`UPDATE projects SET status = ?, updated_at = datetime('now') WHERE id = ?`,
 		project.StatusBuilding, projectID,
 	); err != nil {
-		slog.Warn("architect done but project update failed", "project", projectID, "error", err)
+		slog.Warn("bmad done but project update failed", "project", projectID, "error", err)
 		return
 	}
-	slog.Info("architect done", "project", projectID, "epics", epics, "stories", stories)
+	slog.Info("bmad planning done", "project", projectID,
+		"epics", len(tree), "stories", countBMADStories(tree))
 	if s.eventBus != nil {
 		_, _ = s.eventBus.Publish(ctx, "project.architect_done", "api", map[string]any{
 			"project_id": projectID,
-			"epics":      epics,
-			"stories":    stories,
+			"epics":      len(tree),
+			"stories":    countBMADStories(tree),
 		})
 	}
 }
 
-// architectAgent returns the architect driver, honouring HIVE_ARCHITECT=scripted.
-func (s *Server) architectAgent() architect.Agent {
-	if s.architectAgentOverride != nil {
-		return s.architectAgentOverride
+// bmadEpic / bmadStory mirror the JSON shape we ask Claude to emit at
+// the end of bmad-create-epics-and-stories. Kept flat so Claude
+// doesn't have to match a deep nested format.
+type bmadEpic struct {
+	Title       string      `json:"title"`
+	Description string      `json:"description"`
+	Stories     []bmadStory `json:"stories"`
+}
+type bmadStory struct {
+	Title              string   `json:"title"`
+	Description        string   `json:"description"`
+	AcceptanceCriteria []string `json:"acceptance_criteria"`
+}
+
+func parseBMADTree(reply string) ([]bmadEpic, error) {
+	marker := "```json-hive"
+	start := strings.LastIndex(reply, marker)
+	if start < 0 {
+		return nil, fmt.Errorf("no json-hive block in reply")
 	}
-	if getenv := s.envLookup; getenv != nil {
-		if getenv("HIVE_ARCHITECT") == "scripted" {
-			return architect.NewScripted()
+	body := reply[start+len(marker):]
+	end := strings.Index(body, "```")
+	if end < 0 {
+		return nil, fmt.Errorf("json-hive block never closes")
+	}
+	var epics []bmadEpic
+	if err := json.Unmarshal([]byte(strings.TrimSpace(body[:end])), &epics); err != nil {
+		return nil, fmt.Errorf("parse json-hive: %w", err)
+	}
+	if len(epics) == 0 {
+		return nil, fmt.Errorf("bmad emitted an empty epic tree")
+	}
+	return epics, nil
+}
+
+func (s *Server) ingestBMADTree(ctx context.Context, projectID string, epics []bmadEpic) error {
+	tx, err := s.db().BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	for ei, e := range epics {
+		epicID := fmt.Sprintf("epc_%s_%d", projectID, ei)
+		if _, err := tx.ExecContext(ctx,
+			`INSERT INTO epics (id, project_id, title, description, ordering, status)
+			 VALUES (?, ?, ?, ?, ?, 'pending')`,
+			epicID, projectID, e.Title, e.Description, ei,
+		); err != nil {
+			return fmt.Errorf("insert epic %d: %w", ei, err)
+		}
+		for si, st := range e.Stories {
+			storyID := fmt.Sprintf("%s_s%d", epicID, si)
+			if _, err := tx.ExecContext(ctx,
+				`INSERT INTO stories (id, epic_id, title, description, ordering, status)
+				 VALUES (?, ?, ?, ?, ?, 'pending')`,
+				storyID, epicID, st.Title, st.Description, si,
+			); err != nil {
+				return fmt.Errorf("insert story %d/%d: %w", ei, si, err)
+			}
+			for ai, ac := range st.AcceptanceCriteria {
+				if _, err := tx.ExecContext(ctx,
+					`INSERT INTO acceptance_criteria (story_id, ordering, text, passed)
+					 VALUES (?, ?, ?, 0)`,
+					storyID, ai, ac,
+				); err != nil {
+					return fmt.Errorf("insert ac %d/%d/%d: %w", ei, si, ai, err)
+				}
+			}
 		}
 	}
-	return architect.NewClaudeCodeAgent()
+	return tx.Commit()
+}
+
+func countBMADStories(epics []bmadEpic) int {
+	n := 0
+	for _, e := range epics {
+		n += len(e.Stories)
+	}
+	return n
+}
+
+// buildIntakeDoc formats the user's web chat as a product brief BMAD
+// can ingest at step-02-discovery.
+func buildIntakeDoc(idea, conversation string) string {
+	var b strings.Builder
+	b.WriteString("# Product Brief\n\n")
+	b.WriteString("## Idea\n\n")
+	b.WriteString(strings.TrimSpace(idea))
+	b.WriteString("\n\n")
+	if strings.TrimSpace(conversation) != "" {
+		b.WriteString("## PM Q&A Transcript\n\n")
+		b.WriteString(strings.TrimSpace(conversation))
+		b.WriteString("\n")
+	}
+	return b.String()
+}
+
+func readFirst(workdir string, rels ...string) (string, error) {
+	for _, rel := range rels {
+		abs := filepath.Join(workdir, rel)
+		if data, err := os.ReadFile(abs); err == nil && len(data) > 0 {
+			return string(data), nil
+		}
+	}
+	return "", fmt.Errorf("no BMAD output at any of %v", rels)
 }
 
 // intakeAgent returns the PM agent to drive a conversation. Honours

@@ -16,7 +16,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/JulienLeotier/hive/internal/architect"
 	"github.com/JulienLeotier/hive/internal/auth"
 	"github.com/JulienLeotier/hive/internal/event"
 	"github.com/JulienLeotier/hive/internal/intake"
@@ -37,13 +36,12 @@ type Error struct {
 
 // Server holds the dependencies the REST + WS handlers need.
 type Server struct {
-	eventBus               *event.Bus
-	projectStore           *project.Store
-	intakeStore            *intake.Store
-	intakeAgentOverride    intake.Agent
-	architectAgentOverride architect.Agent
-	envLookup              func(string) string
-	mux                    *http.ServeMux
+	eventBus            *event.Bus
+	projectStore        *project.Store
+	intakeStore         *intake.Store
+	intakeAgentOverride intake.Agent
+	envLookup           func(string) string
+	mux                 *http.ServeMux
 }
 
 // NewServer builds the HTTP API. eventBus is the only required dep —
