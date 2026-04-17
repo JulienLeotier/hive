@@ -152,7 +152,16 @@ func (r *Roster) Remove(ctx context.Context, nodeID string) error {
 // ---------------- Node-aware routing (Story 22.3) ----------------
 
 // PickAgent picks the preferred agent name for a task type given the per-node
-// agent bindings. Local-first mode prefers this node; best-fit round-robins.
+// agent bindings. Local-first mode prefers this node; best-fit rotates
+// deterministically so different task types land on different nodes instead
+// of every task piling onto the alphabetically-first node.
+//
+// The previous implementation claimed "round-robin" but was really
+// first-match, so agent-alpha always won. Now we hash the task type and
+// rotate the sorted node list by that hash — same task type → same node
+// every call (stable routing for reproducibility), different types → spread.
+// This is still stateless, so it works across distributed schedulers that
+// each see only their own invocation.
 func (m *Manager) PickAgent(perNode map[string][]string, taskType string) string {
 	if len(perNode) == 0 {
 		return ""
@@ -167,16 +176,34 @@ func (m *Manager) PickAgent(perNode map[string][]string, taskType string) string
 		}
 	}
 
-	// Fallback / best-fit: deterministic round-robin across sorted nodes.
 	nodes := make([]string, 0, len(perNode))
 	for n := range perNode {
 		nodes = append(nodes, n)
 	}
 	sort.Strings(nodes)
-	for _, n := range nodes {
+
+	// Rotate the sorted list by hash(taskType) mod len(nodes). Using FNV so
+	// we don't pull in crypto/sha256 for a non-security purpose.
+	start := int(hashString(taskType)) % len(nodes)
+	for i := 0; i < len(nodes); i++ {
+		n := nodes[(start+i)%len(nodes)]
 		for _, a := range perNode[n] {
 			return a
 		}
 	}
 	return ""
+}
+
+// hashString returns a 32-bit FNV-1a hash of s. Stable across processes.
+func hashString(s string) uint32 {
+	const (
+		offset uint32 = 2166136261
+		prime  uint32 = 16777619
+	)
+	h := offset
+	for i := 0; i < len(s); i++ {
+		h ^= uint32(s[i])
+		h *= prime
+	}
+	return h
 }

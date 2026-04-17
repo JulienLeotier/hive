@@ -35,6 +35,21 @@ const cryptPrefix = "enc:v1:"
 // set. Callers should treat this as "fall back to plaintext".
 var errNoKey = errors.New("HIVE_MASTER_KEY not configured")
 
+// HasMasterKey reports whether HIVE_MASTER_KEY is configured. Useful for a
+// startup check that warns operators when they have stored cert material
+// but no encryption key (legacy plaintext not re-encrypted).
+func HasMasterKey() bool {
+	_, err := derivedKey()
+	return err == nil
+}
+
+// IsEncrypted reports whether a stored value carries the "enc:v1:" envelope
+// tag. Lets ops scan the federation_links table for plaintext rows that
+// should be rotated through a decrypt/re-encrypt cycle.
+func IsEncrypted(stored string) bool {
+	return len(stored) >= len(cryptPrefix) && stored[:len(cryptPrefix)] == cryptPrefix
+}
+
 // derivedKey reads HIVE_MASTER_KEY and returns its SHA-256 digest, or an
 // error if the env var is empty.
 func derivedKey() ([]byte, error) {

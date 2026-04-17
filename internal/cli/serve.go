@@ -103,6 +103,16 @@ var serveCmd = &cobra.Command{
 		// Story 19.3: federation resolver + proxy. When no local agent is
 		// capable, Router.WithFederation hands control to the resolver.
 		fedStore := federation.NewStore(store.DB)
+
+		// A3 follow-up: if HIVE_MASTER_KEY is set, warn about any plaintext
+		// cert material still sitting in federation_links so the operator
+		// can rotate it.
+		if n, err := fedStore.AuditEncryptionAtRest(context.Background()); err != nil {
+			slog.Warn("federation encryption audit failed", "error", err)
+		} else if n > 0 {
+			slog.Warn("federation peers have plaintext TLS material at rest", "count", n)
+		}
+
 		fedResolver, fedProxy := federation.NewResolver(context.Background(), fedStore)
 		router := task.NewRouter(store.DB).WithBus(bus).WithFederation(
 			func(ctx context.Context, taskType string) (string, string, bool) {

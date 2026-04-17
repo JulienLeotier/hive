@@ -167,7 +167,14 @@ func (s *Server) routes() {
 	// Story 19.2: capabilities endpoint so federated peers can discover what
 	// we're willing to handle. Filtered by FederationShared — no filter means
 	// every registered capability is visible.
-	s.mux.HandleFunc("GET /api/v1/capabilities", s.handleListCapabilities)
+	//
+	// A3 hardening: goes through AuthMiddleware (set at Handler() level) and
+	// requires "system:read" — i.e. the peer must present a valid API key or
+	// OIDC JWT. Previously unauth, which leaked architecture fingerprint to
+	// any network scanner. If a use case emerges for truly anonymous
+	// discovery, add a dedicated public sub-endpoint with only the capability
+	// names (no counts, no versions).
+	s.mux.Handle("GET /api/v1/capabilities", auth.RBACMiddleware("system", "read")(http.HandlerFunc(s.handleListCapabilities)))
 	// Write endpoint: viewers get 403.
 	s.mux.Handle("POST /api/v1/agents", auth.RBACMiddleware("agents", "write")(http.HandlerFunc(s.handleCreateAgent)))
 	// Story 2.1 AC: "agents can emit custom events via the adapter protocol".

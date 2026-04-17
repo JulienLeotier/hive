@@ -337,7 +337,7 @@ func (e *Engine) executeLevel(ctx context.Context, workflowID string, level []Ta
 				defer func() { <-sem }()
 			}
 
-			taskResult, err := p.adapter.Invoke(ctx, adapter.Task{
+			taskResult, err := adapter.SafeInvoke(ctx, p.adapter, adapter.Task{
 				ID: p.taskID, Type: p.taskDef.Type, Input: e.buildInput(p.taskDef, result),
 			})
 			if err != nil {

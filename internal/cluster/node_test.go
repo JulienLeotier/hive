@@ -75,3 +75,41 @@ func TestPickAgentBestFitFallsBack(t *testing.T) {
 	}
 	assert.Equal(t, "beta", m.PickAgent(perNode, "x"))
 }
+
+// TestPickAgentBestFit_SpreadsAcrossNodes proves that best-fit no longer
+// pins every task onto the alphabetically-first node. Given 4 nodes each
+// holding one agent, a varied set of task types should land on at least 2
+// distinct nodes. The previous first-match impl would always pick "node-a".
+func TestPickAgentBestFit_SpreadsAcrossNodes(t *testing.T) {
+	m := NewManager(Config{NodeID: "self", RoutingMode: "best-fit"})
+	perNode := map[string][]string{
+		"node-a": {"agent-a"},
+		"node-b": {"agent-b"},
+		"node-c": {"agent-c"},
+		"node-d": {"agent-d"},
+	}
+	types := []string{"review", "summarize", "translate", "embed", "classify", "extract"}
+	picked := map[string]bool{}
+	for _, tt := range types {
+		picked[m.PickAgent(perNode, tt)] = true
+	}
+	assert.GreaterOrEqual(t, len(picked), 2,
+		"different task types should land on different nodes (got picks: %v)", picked)
+}
+
+// TestPickAgentBestFit_Deterministic: same task type always returns the
+// same agent. Lets schedulers running in different processes agree on
+// routing without coordination.
+func TestPickAgentBestFit_Deterministic(t *testing.T) {
+	m := NewManager(Config{NodeID: "self", RoutingMode: "best-fit"})
+	perNode := map[string][]string{
+		"node-a": {"agent-a"},
+		"node-b": {"agent-b"},
+		"node-c": {"agent-c"},
+	}
+	first := m.PickAgent(perNode, "summarize")
+	for i := 0; i < 10; i++ {
+		assert.Equal(t, first, m.PickAgent(perNode, "summarize"),
+			"same task type must pick the same agent every call")
+	}
+}

@@ -45,6 +45,23 @@ func TestClientIP_PrefersXFFOnlyFromLoopback(t *testing.T) {
 		"XFF from local proxy must be trusted and left-most value chosen")
 }
 
+func TestClientIP_IPv6(t *testing.T) {
+	// Go's net.SplitHostPort produces "::1" (no brackets) for "[::1]:port",
+	// and net.ParseIP("::1") reports IsLoopback. So the loopback trust flow
+	// works over IPv6 too.
+	req := httptest.NewRequest("GET", "/", nil)
+	req.RemoteAddr = "[::1]:5678"
+	req.Header.Set("X-Forwarded-For", "2001:db8::1")
+	assert.Equal(t, "2001:db8::1", clientIP(req),
+		"IPv6 loopback peer must trust XFF like IPv4 loopback does")
+
+	// Non-loopback IPv6 peer → ignore XFF.
+	req = httptest.NewRequest("GET", "/", nil)
+	req.RemoteAddr = "[2001:db8::5]:443"
+	req.Header.Set("X-Forwarded-For", "spoofed-by-attacker")
+	assert.Equal(t, "2001:db8::5", clientIP(req))
+}
+
 func TestRateLimiter_MiddlewareReturns429(t *testing.T) {
 	rl := NewRateLimiter(1, 60)
 	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

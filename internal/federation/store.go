@@ -7,6 +7,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"time"
 )
@@ -153,4 +154,40 @@ func (s *Store) Hydrate(ctx context.Context, m *Manager) error {
 		m.links[l.Name] = l
 	}
 	return nil
+}
+
+// AuditEncryptionAtRest scans federation_links for cert material that isn't
+// wrapped in the enc:v1: envelope and logs a warning for each. Called once
+// at startup when HIVE_MASTER_KEY is set — encourages the operator to
+// rotate plaintext rows (e.g. via a delete+re-add cycle). When the key is
+// not set, we skip silently since plaintext is expected.
+func (s *Store) AuditEncryptionAtRest(ctx context.Context) (plaintextRows int, _ error) {
+	if !HasMasterKey() {
+		return 0, nil
+	}
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT name, COALESCE(ca_cert,''), COALESCE(client_cert,''), COALESCE(client_key,'')
+		 FROM federation_links`)
+	if err != nil {
+		return 0, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var name, ca, cert, key string
+		if err := rows.Scan(&name, &ca, &cert, &key); err != nil {
+			continue
+		}
+		// A blob counts as "plaintext" only when it's non-empty AND not
+		// tagged — purely empty fields (mTLS not configured) are fine.
+		if plaintextField(ca) || plaintextField(cert) || plaintextField(key) {
+			plaintextRows++
+			slog.Warn("federation link has plaintext TLS material despite HIVE_MASTER_KEY being set — rotate with `hive federation re-encrypt`",
+				"peer", name)
+		}
+	}
+	return plaintextRows, rows.Err()
+}
+
+func plaintextField(v string) bool {
+	return v != "" && !IsEncrypted(v)
 }
