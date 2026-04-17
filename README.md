@@ -5,7 +5,21 @@ Universal AI agent orchestration platform. Register heterogeneous agents
 Hive route tasks, track cost, and surface live health — all from a single
 Go binary with an embedded dashboard.
 
-## Quickstart
+## Quickstart (Docker)
+
+```bash
+git clone https://github.com/JulienLeotier/hive.git
+cd hive
+docker compose up -d
+```
+
+Open <http://localhost:8233>. The first-run wizard walks you through
+creating an admin user + API key. See
+[docs/getting-started.md](docs/getting-started.md) for the 5-minute
+end-to-end tour (register an agent, fire a workflow, wire alerts, back
+up).
+
+## Quickstart (from source)
 
 ```bash
 # Build everything (Go binary + Svelte dashboard baked in)
@@ -21,9 +35,9 @@ make build
 ./hive run ./examples/content-pipeline/workflow.yaml
 ```
 
-Open `http://localhost:8233/` for the dashboard. On first boot there are
-no API keys, so auth is bypassed (dev mode). See
-[docs/configuration.md](docs/configuration.md) to harden for production.
+On first boot there are no API keys, so auth is bypassed (dev mode).
+See [docs/configuration.md](docs/configuration.md) to harden for
+production.
 
 ## Development
 

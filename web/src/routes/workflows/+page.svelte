@@ -131,9 +131,9 @@ tasks:
 		<tbody>
 			{#each workflows as w (w.id)}
 				<tr>
-					<td><strong>{w.name}</strong></td>
+					<td><a class="wf-link" href="/workflows/{w.id}"><strong>{w.name}</strong></a></td>
 					<td><span class="badge" style="background:{badgeColor(w.status)}">{w.status}</span></td>
-					<td><code>{w.id.slice(-12)}</code></td>
+					<td><a class="wf-link muted" href="/workflows/{w.id}"><code>{w.id.slice(-12)}</code></a></td>
 					<td>{fmtRelative(w.created_at)}</td>
 					<td class="actions">
 						<button
@@ -250,4 +250,7 @@ tasks:
 		color: var(--err);
 		border-color: var(--err);
 	}
+	.wf-link { color: inherit; text-decoration: none; }
+	.wf-link:hover { color: var(--accent); }
+	.muted { color: var(--muted); }
 </style>

@@ -1,0 +1,67 @@
+# One-command Hive deployment.
+#
+# Default profile (no -e HIVE_STORAGE): SQLite in a named volume. Single-node,
+# zero-config. For multi-writer or multi-node setups, enable the `postgres`
+# and/or `nats` profiles:
+#
+#   # SQLite (default)
+#   docker compose up
+#
+#   # Postgres-backed storage
+#   docker compose --profile postgres up
+#
+#   # Postgres + NATS-bridged event bus (multi-node)
+#   docker compose --profile postgres --profile nats up
+#
+# After boot, open http://localhost:8233 and follow the setup wizard.
+
+services:
+  hive:
+    build: .
+    image: hive:local
+    ports:
+      - "8233:8233"
+    environment:
+      HIVE_DATA_DIR: /data
+      HIVE_PORT: "8233"
+      # Uncomment to flip storage backend at runtime. The postgres+nats
+      # profiles below set these for you.
+      # HIVE_STORAGE: postgres
+      # HIVE_POSTGRES_URL: postgres://hive:hive@postgres:5432/hive?sslmode=disable
+    volumes:
+      - hive-data:/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/hive", "version"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+
+  postgres:
+    image: postgres:16-alpine
+    profiles: ["postgres"]
+    environment:
+      POSTGRES_USER: hive
+      POSTGRES_PASSWORD: hive
+      POSTGRES_DB: hive
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U hive"]
+      interval: 5s
+      retries: 10
+
+  nats:
+    image: nats:2.10-alpine
+    profiles: ["nats"]
+    command: ["--jetstream", "-m", "8222"]
+    ports:
+      - "4222:4222"
+      - "8222:8222"
+    volumes:
+      - nats-data:/data
+
+volumes:
+  hive-data:
+  postgres-data:
+  nats-data:

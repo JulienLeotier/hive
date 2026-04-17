@@ -12,6 +12,7 @@
 	let newName = $state('');
 	let newType = $state('http');
 	let newURL = $state('');
+	let newMaxConcurrent = $state(0);
 	let formError = $state('');
 	let submitting = $state(false);
 
@@ -30,9 +31,15 @@
 		formError = '';
 		submitting = true;
 		try {
-			await apiPost('/api/v1/agents', { name: newName, type: newType, url: newURL });
+			await apiPost('/api/v1/agents', {
+				name: newName,
+				type: newType,
+				url: newURL,
+				max_concurrent: Number(newMaxConcurrent) || 0
+			});
 			newName = '';
 			newURL = '';
+			newMaxConcurrent = 0;
 			await loadAgents();
 		} catch (e) {
 			formError = e instanceof Error ? e.message : String(e);
@@ -108,6 +115,13 @@
 			<option value="openai">openai</option>
 		</select>
 		<input placeholder="https://agent.example.com" bind:value={newURL} required />
+		<input
+			type="number"
+			min="0"
+			placeholder="cap (0=∞)"
+			bind:value={newMaxConcurrent}
+			title="Max concurrent tasks for this agent (0 = use server default)"
+		/>
 		<button type="submit" disabled={submitting}>{submitting ? '…' : 'Register'}</button>
 	</form>
 	{#if formError}<div class="form-error">{formError}</div>{/if}
@@ -141,7 +155,7 @@
 <style>
 	.create-form {
 		display: grid;
-		grid-template-columns: 1fr 140px 2fr auto;
+		grid-template-columns: 1fr 130px 2fr 110px auto;
 		gap: 0.5rem;
 		margin-bottom: 1rem;
 		align-items: center;

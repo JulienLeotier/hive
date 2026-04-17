@@ -92,7 +92,7 @@ func (r *Router) FindCapableAgent(ctx context.Context, taskType string) (agentID
 		orderBy = fmt.Sprintf("ORDER BY CASE WHEN node_id = %q OR node_id = '' THEN 0 ELSE 1 END, name", LocalNodeID)
 	}
 	rows, err := r.db.QueryContext(ctx,
-		`SELECT id, name, capabilities FROM agents WHERE health_status = 'healthy' `+orderBy,
+		`SELECT id, name, capabilities, COALESCE(max_concurrent, 0) FROM agents WHERE health_status = 'healthy' `+orderBy,
 	)
 	if err != nil {
 		return "", "", fmt.Errorf("querying agents: %w", err)
@@ -100,14 +100,18 @@ func (r *Router) FindCapableAgent(ctx context.Context, taskType string) (agentID
 	defer rows.Close()
 
 	considered := 0
-	type candidate struct{ id, name, capsJSON string }
+	type candidate struct {
+		id, name, capsJSON string
+		maxConcurrent      int
+	}
 	var candidates []candidate
 	for rows.Next() {
 		var id, name, capsJSON string
-		if err := rows.Scan(&id, &name, &capsJSON); err != nil {
+		var maxC int
+		if err := rows.Scan(&id, &name, &capsJSON, &maxC); err != nil {
 			continue
 		}
-		candidates = append(candidates, candidate{id, name, capsJSON})
+		candidates = append(candidates, candidate{id, name, capsJSON, maxC})
 	}
 	if err := rows.Err(); err != nil {
 		return "", "", fmt.Errorf("iterating agents: %w", err)
@@ -124,15 +128,22 @@ func (r *Router) FindCapableAgent(ctx context.Context, taskType string) (agentID
 		for _, tt := range caps.TaskTypes {
 			if tt == taskType {
 				// Capacity check: how many in-flight tasks does this agent hold?
+				// Per-agent max_concurrent overrides the global default, so ops
+				// can throttle a flaky adapter without starving the rest of the
+				// fleet. max_concurrent=0 (default) falls back to CapacityLimit.
 				var inFlight int
 				_ = r.db.QueryRowContext(ctx,
 					`SELECT COUNT(*) FROM tasks WHERE agent_id = ? AND status IN ('assigned','running')`,
 					c.id).Scan(&inFlight)
-				if inFlight >= CapacityLimit {
-					slog.Debug("agent at capacity; skipping", "agent", c.name, "in_flight", inFlight)
+				cap := c.maxConcurrent
+				if cap <= 0 {
+					cap = CapacityLimit
+				}
+				if inFlight >= cap {
+					slog.Debug("agent at capacity; skipping", "agent", c.name, "in_flight", inFlight, "cap", cap)
 					continue
 				}
-				slog.Debug("routed task to agent", "task_type", taskType, "agent", c.name, "in_flight", inFlight)
+				slog.Debug("routed task to agent", "task_type", taskType, "agent", c.name, "in_flight", inFlight, "cap", cap)
 				r.emitRouteDecision(ctx, taskType, c.name, "capability_match", considered)
 				return c.id, c.name, nil
 			}

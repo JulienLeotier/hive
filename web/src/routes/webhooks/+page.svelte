@@ -10,9 +10,20 @@
 		event_filter: string;
 		enabled: boolean;
 	};
+	type Delivery = {
+		id: number;
+		webhook_name: string;
+		event_type: string;
+		attempt: number;
+		status_code: number;
+		error?: string;
+		created_at: string;
+	};
 
 	let webhooks = $state<Webhook[]>([]);
 	let loading = $state(true);
+	let expanded = $state<string | null>(null);
+	let deliveries = $state<Record<string, Delivery[]>>({});
 
 	let newName = $state('');
 	let newURL = $state('');
@@ -66,6 +77,28 @@
 			formError = e instanceof Error ? e.message : String(e);
 		}
 	}
+
+	async function toggleHistory(name: string) {
+		if (expanded === name) {
+			expanded = null;
+			return;
+		}
+		expanded = name;
+		try {
+			const list = await apiGet<Delivery[]>(
+				`/api/v1/webhooks/${encodeURIComponent(name)}/deliveries?limit=50`
+			);
+			deliveries = { ...deliveries, [name]: list ?? [] };
+		} catch (e) {
+			formError = e instanceof Error ? e.message : String(e);
+		}
+	}
+
+	function deliveryColor(d: Delivery): string {
+		if (d.status_code >= 200 && d.status_code < 300) return 'var(--ok)';
+		if (d.status_code === 0) return 'var(--err)';
+		return 'var(--warn)';
+	}
 </script>
 
 <ListScaffold
@@ -96,13 +129,47 @@
 		<tbody>
 			{#each webhooks as w (w.id)}
 				<tr>
-					<td><strong>{w.name}</strong></td>
+					<td>
+						<button class="expand" onclick={() => toggleHistory(w.name)} title="Show delivery history">
+							{expanded === w.name ? '▾' : '▸'}
+						</button>
+						<strong>{w.name}</strong>
+					</td>
 					<td><code>{w.type}</code></td>
 					<td class="url"><code>{w.url}</code></td>
 					<td><code>{w.event_filter || '—'}</code></td>
 					<td>{w.enabled ? '✓' : '✗'}</td>
 					<td><button class="row-del" onclick={() => removeWebhook(w.name)} title="Remove webhook">✕</button></td>
 				</tr>
+				{#if expanded === w.name}
+					<tr class="history-row">
+						<td colspan="6">
+							{#if !deliveries[w.name] || deliveries[w.name].length === 0}
+								<p class="empty-history">No deliveries yet.</p>
+							{:else}
+								<table class="history">
+									<thead>
+										<tr><th>When</th><th>Event</th><th>Attempt</th><th>Status</th><th>Error</th></tr>
+									</thead>
+									<tbody>
+										{#each deliveries[w.name] as d (d.id)}
+											<tr>
+												<td><code class="ts">{d.created_at}</code></td>
+												<td><code>{d.event_type}</code></td>
+												<td>#{d.attempt}</td>
+												<td>
+													<span class="status-dot" style="background:{deliveryColor(d)}"></span>
+													{d.status_code || '—'}
+												</td>
+												<td class="err">{d.error ?? ''}</td>
+											</tr>
+										{/each}
+									</tbody>
+								</table>
+							{/if}
+						</td>
+					</tr>
+				{/if}
 			{/each}
 		</tbody>
 	</table>
@@ -167,4 +234,36 @@
 		text-overflow: ellipsis;
 		white-space: nowrap;
 	}
+	.expand {
+		background: transparent;
+		border: none;
+		color: var(--muted);
+		font-size: 0.75rem;
+		cursor: pointer;
+		padding: 0 0.3rem 0 0;
+	}
+	.expand:hover { color: var(--accent); }
+	.history-row td {
+		padding: 0.5rem 1rem 1rem 1rem;
+		background: var(--bg-alt);
+	}
+	table.history {
+		width: 100%;
+		font-size: 0.8rem;
+	}
+	table.history th,
+	table.history td {
+		padding: 0.25rem 0.5rem;
+		text-align: left;
+	}
+	.status-dot {
+		display: inline-block;
+		width: 8px;
+		height: 8px;
+		border-radius: 50%;
+		margin-right: 0.4rem;
+	}
+	.ts { color: var(--muted); font-size: 0.75rem; }
+	.err { color: var(--err); font-size: 0.75rem; }
+	.empty-history { color: var(--muted); font-style: italic; margin: 0.5rem 0; }
 </style>

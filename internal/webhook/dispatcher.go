@@ -141,6 +141,8 @@ func (d *Dispatcher) Dispatch(ctx context.Context, evt event.Event) {
 }
 
 // deliver sends the webhook with retry (3 attempts, exponential backoff).
+// Every attempt (success, non-2xx, or transport failure) is written to the
+// webhook_deliveries table so operators can audit the history.
 func (d *Dispatcher) deliver(cfg Config, evt event.Event) {
 	payload := formatPayload(cfg.Type, evt)
 
@@ -152,6 +154,7 @@ func (d *Dispatcher) deliver(cfg Config, evt event.Event) {
 		req, err := http.NewRequest("POST", cfg.URL, bytes.NewReader(payload))
 		if err != nil {
 			slog.Error("webhook request creation failed", "webhook", cfg.Name, "error", err)
+			d.recordDelivery(cfg.Name, evt.Type, attempt+1, 0, err.Error())
 			return
 		}
 		req.Header.Set("Content-Type", "application/json")
@@ -159,9 +162,12 @@ func (d *Dispatcher) deliver(cfg Config, evt event.Event) {
 		resp, err := d.client.Do(req)
 		if err != nil {
 			slog.Warn("webhook delivery failed", "webhook", cfg.Name, "attempt", attempt+1, "error", err)
+			d.recordDelivery(cfg.Name, evt.Type, attempt+1, 0, err.Error())
 			continue
 		}
 		resp.Body.Close()
+
+		d.recordDelivery(cfg.Name, evt.Type, attempt+1, resp.StatusCode, "")
 
 		if resp.StatusCode >= 200 && resp.StatusCode < 300 {
 			slog.Debug("webhook delivered", "webhook", cfg.Name, "event", evt.Type)
@@ -170,6 +176,61 @@ func (d *Dispatcher) deliver(cfg Config, evt event.Event) {
 		slog.Warn("webhook non-2xx response", "webhook", cfg.Name, "status", resp.StatusCode, "attempt", attempt+1)
 	}
 	slog.Error("webhook delivery exhausted retries", "webhook", cfg.Name, "event", evt.Type)
+}
+
+// Delivery is one row of the webhook_deliveries table — surfaced to the
+// dashboard so operators can see why an integration went silent.
+type Delivery struct {
+	ID         int64  `json:"id"`
+	Webhook    string `json:"webhook_name"`
+	EventType  string `json:"event_type"`
+	Attempt    int    `json:"attempt"`
+	StatusCode int    `json:"status_code"`
+	Error      string `json:"error,omitempty"`
+	CreatedAt  string `json:"created_at"`
+}
+
+// recordDelivery writes one attempt to the history table. Non-blocking
+// failure logging: if the write fails we just slog.Warn and move on — the
+// audit row is nice-to-have, not worth breaking a live delivery for.
+func (d *Dispatcher) recordDelivery(name, eventType string, attempt, statusCode int, errMsg string) {
+	_, err := d.db.ExecContext(context.Background(),
+		`INSERT INTO webhook_deliveries (webhook_name, event_type, attempt, status_code, error_message)
+		 VALUES (?, ?, ?, ?, ?)`,
+		name, eventType, attempt, statusCode, errMsg,
+	)
+	if err != nil {
+		slog.Warn("webhook delivery history insert failed", "webhook", name, "error", err)
+	}
+}
+
+// Deliveries returns the last `limit` delivery attempts for the named
+// webhook, newest first. Used by the /api/v1/webhooks/{name}/deliveries
+// endpoint to populate the dashboard history panel.
+func (d *Dispatcher) Deliveries(ctx context.Context, webhookName string, limit int) ([]Delivery, error) {
+	if limit <= 0 {
+		limit = 50
+	}
+	rows, err := d.db.QueryContext(ctx,
+		`SELECT id, webhook_name, event_type, attempt, status_code,
+		        COALESCE(error_message,''), created_at
+		 FROM webhook_deliveries
+		 WHERE webhook_name = ?
+		 ORDER BY created_at DESC LIMIT ?`, webhookName, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Delivery
+	for rows.Next() {
+		var dd Delivery
+		if err := rows.Scan(&dd.ID, &dd.Webhook, &dd.EventType, &dd.Attempt,
+			&dd.StatusCode, &dd.Error, &dd.CreatedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, dd)
+	}
+	return out, rows.Err()
 }
 
 func matchesFilter(eventType, filter string) bool {

@@ -196,6 +196,7 @@ func (s *Server) routes() {
 
 	// Dashboard-backing read-only endpoints (all require at least viewer).
 	s.mux.Handle("GET /api/v1/workflows", auth.RBACMiddleware("workflows", "read")(http.HandlerFunc(s.handleListWorkflows)))
+	s.mux.Handle("GET /api/v1/workflows/{id}", auth.RBACMiddleware("workflows", "read")(http.HandlerFunc(s.handleGetWorkflow)))
 	s.mux.Handle("GET /api/v1/knowledge", auth.RBACMiddleware("system", "read")(http.HandlerFunc(s.handleListKnowledge)))
 	s.mux.Handle("GET /api/v1/dialogs", auth.RBACMiddleware("system", "read")(http.HandlerFunc(s.handleListDialogs)))
 	s.mux.Handle("GET /api/v1/federation", auth.RBACMiddleware("system", "read")(http.HandlerFunc(s.handleListFederation)))
@@ -219,6 +220,7 @@ func (s *Server) routes() {
 	s.mux.Handle("GET /api/v1/webhooks", auth.RBACMiddleware("system", "read")(http.HandlerFunc(s.handleListWebhooks)))
 	s.mux.Handle("POST /api/v1/webhooks", auth.RBACMiddleware("system", "write")(http.HandlerFunc(s.handleCreateWebhook)))
 	s.mux.Handle("DELETE /api/v1/webhooks/{name}", auth.RBACMiddleware("system", "write")(http.HandlerFunc(s.handleDeleteWebhook)))
+	s.mux.Handle("GET /api/v1/webhooks/{name}/deliveries", auth.RBACMiddleware("system", "read")(http.HandlerFunc(s.handleWebhookDeliveries)))
 
 	// Agent playground. Lets an operator send an ad-hoc task to a registered
 	// agent without going through a workflow. Handy for verifying
@@ -379,6 +381,90 @@ func (s *Server) handleDeleteUser(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, map[string]string{"status": "removed", "subject": subject})
 }
 
+// handleGetWorkflow returns a single workflow with its full DAG — every task
+// that belongs to it, ordered by creation. The detail page uses this to
+// render a run timeline without requiring a client-side join.
+func (s *Server) handleGetWorkflow(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if id == "" {
+		writeError(w, http.StatusBadRequest, "MISSING_ID", "workflow id is required")
+		return
+	}
+	ctx := r.Context()
+	tClause, tArgs := tenantFilter(ctx, "")
+
+	var wfName, wfStatus, wfConfig, wfCreated string
+	args := append([]any{id}, tArgs...)
+	err := s.db().QueryRowContext(ctx,
+		`SELECT name, status, config, created_at FROM workflows WHERE id = ?`+tClause,
+		args...,
+	).Scan(&wfName, &wfStatus, &wfConfig, &wfCreated)
+	if err == sql.ErrNoRows {
+		writeError(w, http.StatusNotFound, "NOT_FOUND", "workflow not found")
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "QUERY_FAILED", err.Error())
+		return
+	}
+
+	taskRows, err := s.db().QueryContext(ctx,
+		`SELECT t.id, t.type, t.status,
+		        COALESCE(t.agent_id,''), COALESCE(a.name,''),
+		        COALESCE(t.input,''), COALESCE(t.output,''),
+		        t.created_at, COALESCE(t.started_at,''), COALESCE(t.completed_at,'')
+		 FROM tasks t LEFT JOIN agents a ON a.id = t.agent_id
+		 WHERE t.workflow_id = ?
+		 ORDER BY t.created_at ASC`, id)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "QUERY_FAILED", err.Error())
+		return
+	}
+	defer taskRows.Close()
+
+	type taskDetail struct {
+		ID          string `json:"id"`
+		Type        string `json:"type"`
+		Status      string `json:"status"`
+		AgentID     string `json:"agent_id,omitempty"`
+		AgentName   string `json:"agent_name,omitempty"`
+		Input       string `json:"input,omitempty"`
+		Output      string `json:"output,omitempty"`
+		Error       string `json:"error,omitempty"`
+		CreatedAt   string `json:"created_at"`
+		StartedAt   string `json:"started_at,omitempty"`
+		CompletedAt string `json:"completed_at,omitempty"`
+	}
+	var tasks []taskDetail
+	for taskRows.Next() {
+		var t taskDetail
+		if err := taskRows.Scan(&t.ID, &t.Type, &t.Status, &t.AgentID, &t.AgentName,
+			&t.Input, &t.Output, &t.CreatedAt, &t.StartedAt, &t.CompletedAt); err != nil {
+			writeError(w, http.StatusInternalServerError, "SCAN_FAILED", err.Error())
+			return
+		}
+		// Failed tasks store the error message in output as JSON — surface
+		// it in a dedicated field so the frontend doesn't have to parse.
+		if t.Status == "failed" && t.Output != "" {
+			t.Error = t.Output
+		}
+		tasks = append(tasks, t)
+	}
+	if err := taskRows.Err(); err != nil {
+		writeError(w, http.StatusInternalServerError, "ROW_ERR", err.Error())
+		return
+	}
+
+	writeJSON(w, map[string]any{
+		"id":         id,
+		"name":       wfName,
+		"status":     wfStatus,
+		"config":     wfConfig,
+		"created_at": wfCreated,
+		"tasks":      tasks,
+	})
+}
+
 // handleCreateWorkflow accepts a YAML body and persists the workflow record.
 // The workflow starts in the "idle" state — callers still need to fire it
 // via POST /workflows/{name}/runs. Re-submitting the same name updates the
@@ -489,6 +575,28 @@ func (s *Server) handleCreateWebhook(w http.ResponseWriter, r *http.Request) {
 	}
 	w.WriteHeader(http.StatusCreated)
 	writeJSON(w, cfg)
+}
+
+// handleWebhookDeliveries returns the last N delivery attempts for a
+// webhook so the dashboard history panel has something to render.
+func (s *Server) handleWebhookDeliveries(w http.ResponseWriter, r *http.Request) {
+	if s.webhookDisp == nil {
+		writeError(w, http.StatusServiceUnavailable, "NO_WEBHOOK_DISPATCHER",
+			"webhook subsystem is not configured on this node")
+		return
+	}
+	name := r.PathValue("name")
+	if name == "" {
+		writeError(w, http.StatusBadRequest, "MISSING_NAME", "webhook name is required")
+		return
+	}
+	limit := parseLimit(r, 100, 500)
+	deliveries, err := s.webhookDisp.Deliveries(r.Context(), name, limit)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "QUERY_FAILED", err.Error())
+		return
+	}
+	writeJSON(w, deliveries)
 }
 
 // handleDeleteWebhook removes a webhook by name.
@@ -722,9 +830,10 @@ func (s *Server) roleResolver(next http.Handler) http.Handler {
 // local (path-based) agents should use the CLI; the HTTP path is HTTP-only.
 func (s *Server) handleCreateAgent(w http.ResponseWriter, r *http.Request) {
 	var body struct {
-		Name string `json:"name"`
-		Type string `json:"type"`
-		URL  string `json:"url"`
+		Name          string `json:"name"`
+		Type          string `json:"type"`
+		URL           string `json:"url"`
+		MaxConcurrent int    `json:"max_concurrent"`
 	}
 	if err := json.NewDecoder(io.LimitReader(r.Body, 1<<16)).Decode(&body); err != nil {
 		writeError(w, http.StatusBadRequest, "BAD_REQUEST", err.Error())
@@ -741,6 +850,14 @@ func (s *Server) handleCreateAgent(w http.ResponseWriter, r *http.Request) {
 		// them apart from real 500s (DB write failures).
 		writeError(w, http.StatusBadGateway, "REGISTER_FAILED", err.Error())
 		return
+	}
+	// Apply the per-agent concurrency cap post-registration so the Register
+	// API stays compatible with existing callers.
+	if body.MaxConcurrent > 0 {
+		if _, err := s.db().ExecContext(r.Context(),
+			`UPDATE agents SET max_concurrent = ? WHERE id = ?`, body.MaxConcurrent, a.ID); err != nil {
+			slog.Warn("setting max_concurrent failed", "agent", a.Name, "error", err)
+		}
 	}
 	w.WriteHeader(http.StatusCreated)
 	writeJSON(w, a)
