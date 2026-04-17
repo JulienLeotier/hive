@@ -23,6 +23,8 @@ linters:
     - unconvert      # redundant conversions
     - dogsled        # too many blank identifiers
     - prealloc       # preallocate slices in loops
+    - dupl           # duplicate code blocks
+    - goconst        # repeated literals that should be constants
     # Security
     - gosec          # static security scanner
 
@@ -32,6 +34,14 @@ linters:
         - all
         - -ST1000  # package comment (noisy on internal/)
         - -ST1003  # naming convention (too opinionated)
+    dupl:
+      threshold: 150   # token default — handlers with different query + struct
+                       # but identical boilerplate don't count as duplication
+                       # worth deduplicating (scanAll already removed the
+                       # real logic dup).
+    goconst:
+      min-occurrences: 4  # 4+ uses of the same literal before suggesting a const
+      min-len: 4          # shorter strings aren't worth constifying
     gosec:
       excludes:
         - G104  # ignored errors — covered by errcheck
@@ -92,6 +102,15 @@ linters:
       - path: internal/adapter/
         linters:
           - nilerr
+      # dashboard_handlers.go: each list endpoint has the same skeleton
+      # (query → defer Close → scanAll → writeJSON) but a different struct
+      # and SQL. The meaningful dedup already happened via scanAll. Lifting
+      # the skeleton into a generic helper makes each handler harder to
+      # read (queries/types get stripped out of their use-site) without
+      # saving enough lines to justify the indirection.
+      - path: internal/api/dashboard_handlers\.go
+        linters:
+          - dupl
 
 issues:
   max-issues-per-linter: 0

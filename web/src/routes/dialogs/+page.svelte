@@ -2,6 +2,7 @@
 	import { fmtRelative } from '$lib/format';
 	import { apiGet } from '$lib/api';
 	import type { DialogThread } from '$lib/types';
+	import ListScaffold from '$lib/ListScaffold.svelte';
 
 	let threads = $state<DialogThread[]>([]);
 	let loading = $state(true);
@@ -23,43 +24,33 @@
 	});
 </script>
 
-<main>
-	<h1>Dialogs</h1>
-	<p class="subtitle">Inter-agent conversation threads.</p>
-
-	{#if loading}
-		<div class="empty">Loading…</div>
-	{:else if threads.length === 0}
-		<div class="empty">No dialog threads yet.</div>
-	{:else}
-		<table>
-			<thead>
-				<tr><th>Topic</th><th>Initiator → Participant</th><th>Messages</th><th>Status</th><th>Started</th></tr>
-			</thead>
-			<tbody>
-				{#each threads as t (t.id)}
-					<tr>
-						<td><strong>{t.topic}</strong></td>
-						<td>{t.initiator} → {t.participant}</td>
-						<td>{t.message_count}</td>
-						<td>
-							<span
-								class="badge"
-								style="background:{t.status === 'active' ? 'var(--ok)' : 'var(--text-muted)'}"
-								>{t.status}</span
-							>
-						</td>
-						<td>{fmtRelative(t.created_at)}</td>
-					</tr>
-				{/each}
-			</tbody>
-		</table>
-	{/if}
-</main>
-
-<style>
-	.subtitle {
-		color: var(--text-muted);
-		margin-top: 0;
-	}
-</style>
+<ListScaffold
+	title="Dialogs"
+	subtitle="Inter-agent conversation threads."
+	{loading}
+	isEmpty={threads.length === 0}
+	emptyText="No dialog threads yet."
+>
+	<table>
+		<thead>
+			<tr><th>Topic</th><th>Initiator → Participant</th><th>Messages</th><th>Status</th><th>Started</th></tr>
+		</thead>
+		<tbody>
+			{#each threads as t (t.id)}
+				<tr>
+					<td><strong>{t.topic}</strong></td>
+					<td>{t.initiator} → {t.participant}</td>
+					<td>{t.message_count}</td>
+					<td>
+						<span
+							class="badge"
+							style="background:{t.status === 'active' ? 'var(--ok)' : 'var(--text-muted)'}"
+							>{t.status}</span
+						>
+					</td>
+					<td>{fmtRelative(t.created_at)}</td>
+				</tr>
+			{/each}
+		</tbody>
+	</table>
+</ListScaffold>

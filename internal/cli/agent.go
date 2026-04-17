@@ -161,7 +161,7 @@ func detectAgentType(path string) string {
 			return m.kind
 		}
 	}
-	return "http"
+	return adapter.TypeHTTP
 }
 
 var addAgentCmd = &cobra.Command{
@@ -220,7 +220,7 @@ var addAgentCmd = &cobra.Command{
 			if _, err := os.Stat(abs); err != nil {
 				return fmt.Errorf("agent path: %w", err)
 			}
-			if agentType == "" || agentType == "http" {
+			if agentType == "" || agentType == adapter.TypeHTTP {
 				detected := detectAgentType(abs)
 				// Story 7.2 AC: confirm detected type with user before registering.
 				// --yes skips the prompt for scripted callers (CI etc.).
@@ -239,7 +239,7 @@ var addAgentCmd = &cobra.Command{
 			return fmt.Errorf("--url or --path is required")
 		}
 		if agentType == "" {
-			agentType = "http"
+			agentType = adapter.TypeHTTP
 		}
 
 		cfg, err := config.Load("hive.yaml")

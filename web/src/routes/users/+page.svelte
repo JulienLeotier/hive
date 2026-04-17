@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { apiGet } from '$lib/api';
 	import type { User } from '$lib/types';
+	import ListScaffold from '$lib/ListScaffold.svelte';
 
 	let users = $state<User[]>([]);
 	let loading = $state(true);
@@ -26,39 +27,27 @@
 	}
 </script>
 
-<main>
-	<h1>Users</h1>
-	<p class="subtitle">RBAC directory — OIDC subject → role + tenant mapping.</p>
-
-	{#if loading}
-		<div class="empty">Loading…</div>
-	{:else if users.length === 0}
-		<div class="empty">
-			No users registered. Add one with <code>hive users add &lt;subject&gt; &lt;role&gt;</code>.
-		</div>
-	{:else}
-		<table>
-			<thead>
-				<tr><th>Subject</th><th>Role</th><th>Tenant</th></tr>
-			</thead>
-			<tbody>
-				{#each users as u (u.Subject)}
-					<tr>
-						<td><strong>{u.Subject}</strong></td>
-						<td>
-							<span class="badge" style="background:{roleColor(u.Role)}">{u.Role}</span>
-						</td>
-						<td><code>{u.TenantID}</code></td>
-					</tr>
-				{/each}
-			</tbody>
-		</table>
-	{/if}
-</main>
-
-<style>
-	.subtitle {
-		color: var(--text-muted);
-		margin-top: 0;
-	}
-</style>
+<ListScaffold
+	title="Users"
+	subtitle="RBAC directory — OIDC subject → role + tenant mapping."
+	{loading}
+	isEmpty={users.length === 0}
+	emptyText="No users registered. Add one with `hive users add <subject> <role>`."
+>
+	<table>
+		<thead>
+			<tr><th>Subject</th><th>Role</th><th>Tenant</th></tr>
+		</thead>
+		<tbody>
+			{#each users as u (u.Subject)}
+				<tr>
+					<td><strong>{u.Subject}</strong></td>
+					<td>
+						<span class="badge" style="background:{roleColor(u.Role)}">{u.Role}</span>
+					</td>
+					<td><code>{u.TenantID}</code></td>
+				</tr>
+			{/each}
+		</tbody>
+	</table>
+</ListScaffold>

@@ -3,6 +3,7 @@
 	import { apiGet } from '$lib/api';
 	import { createReconnectingWS, wsURL } from '$lib/ws';
 	import type { Agent } from '$lib/types';
+	import ListScaffold from '$lib/ListScaffold.svelte';
 
 	let agents = $state<Agent[]>([]);
 	let loading = $state(true);
@@ -55,44 +56,34 @@
 	}
 </script>
 
-<main>
-	<h1>Agents</h1>
-	<p class="subtitle">Fleet registered on this hive. Real-time health via WebSocket.</p>
-
-	{#if loading}
-		<div class="empty">Loading…</div>
-	{:else if agents.length === 0}
-		<div class="empty">No agents registered. Use <code>hive add-agent</code>.</div>
-	{:else}
-		<table>
-			<thead>
+<ListScaffold
+	title="Agents"
+	subtitle="Fleet registered on this hive. Real-time health via WebSocket."
+	{loading}
+	isEmpty={agents.length === 0}
+	emptyText="No agents registered. Use `hive add-agent`."
+>
+	<table>
+		<thead>
+			<tr>
+				<th>Name</th><th>Type</th><th>Health</th><th>Trust</th><th>Capabilities</th><th>Last check</th>
+			</tr>
+		</thead>
+		<tbody>
+			{#each agents as agent (agent.id)}
 				<tr>
-					<th>Name</th><th>Type</th><th>Health</th><th>Trust</th><th>Capabilities</th><th>Last check</th>
+					<td><strong>{agent.name}</strong></td>
+					<td><code>{agent.type}</code></td>
+					<td>
+						<span class="badge" style="background:{statusColor(agent.health_status)}">
+							{agent.health_status}
+						</span>
+					</td>
+					<td>{agent.trust_level}</td>
+					<td>{truncate(summariseCaps(agent.capabilities), 60)}</td>
+					<td>{agent.updated_at ? fmtRelative(agent.updated_at) : '—'}</td>
 				</tr>
-			</thead>
-			<tbody>
-				{#each agents as agent (agent.id)}
-					<tr>
-						<td><strong>{agent.name}</strong></td>
-						<td><code>{agent.type}</code></td>
-						<td>
-							<span class="badge" style="background:{statusColor(agent.health_status)}">
-								{agent.health_status}
-							</span>
-						</td>
-						<td>{agent.trust_level}</td>
-						<td>{truncate(summariseCaps(agent.capabilities), 60)}</td>
-						<td>{agent.updated_at ? fmtRelative(agent.updated_at) : '—'}</td>
-					</tr>
-				{/each}
-			</tbody>
-		</table>
-	{/if}
-</main>
-
-<style>
-	.subtitle {
-		color: var(--text-muted);
-		margin-top: 0;
-	}
-</style>
+			{/each}
+		</tbody>
+	</table>
+</ListScaffold>

@@ -2,6 +2,7 @@
 	import { fmtRelative } from '$lib/format';
 	import { apiGet } from '$lib/api';
 	import type { Workflow } from '$lib/types';
+	import ListScaffold from '$lib/ListScaffold.svelte';
 
 	let workflows = $state<Workflow[]>([]);
 	let loading = $state(true);
@@ -30,36 +31,26 @@
 	}
 </script>
 
-<main>
-	<h1>Workflows</h1>
-	<p class="subtitle">Every workflow run recorded on this hive.</p>
-
-	{#if loading}
-		<div class="empty">Loading…</div>
-	{:else if workflows.length === 0}
-		<div class="empty">No workflows yet. Run one with <code>hive run</code>.</div>
-	{:else}
-		<table>
-			<thead>
-				<tr><th>Name</th><th>Status</th><th>ID</th><th>Started</th></tr>
-			</thead>
-			<tbody>
-				{#each workflows as w (w.id)}
-					<tr>
-						<td><strong>{w.name}</strong></td>
-						<td><span class="badge" style="background:{badgeColor(w.status)}">{w.status}</span></td>
-						<td><code>{w.id.slice(-12)}</code></td>
-						<td>{fmtRelative(w.created_at)}</td>
-					</tr>
-				{/each}
-			</tbody>
-		</table>
-	{/if}
-</main>
-
-<style>
-	.subtitle {
-		color: var(--text-muted);
-		margin-top: 0;
-	}
-</style>
+<ListScaffold
+	title="Workflows"
+	subtitle="Every workflow run recorded on this hive."
+	{loading}
+	isEmpty={workflows.length === 0}
+	emptyText="No workflows yet. Run one with `hive run`."
+>
+	<table>
+		<thead>
+			<tr><th>Name</th><th>Status</th><th>ID</th><th>Started</th></tr>
+		</thead>
+		<tbody>
+			{#each workflows as w (w.id)}
+				<tr>
+					<td><strong>{w.name}</strong></td>
+					<td><span class="badge" style="background:{badgeColor(w.status)}">{w.status}</span></td>
+					<td><code>{w.id.slice(-12)}</code></td>
+					<td>{fmtRelative(w.created_at)}</td>
+				</tr>
+			{/each}
+		</tbody>
+	</table>
+</ListScaffold>

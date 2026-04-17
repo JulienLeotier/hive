@@ -2,6 +2,7 @@
 	import { fmtRelative } from '$lib/format';
 	import { apiGet } from '$lib/api';
 	import type { AuditEntry } from '$lib/types';
+	import ListScaffold from '$lib/ListScaffold.svelte';
 
 	let entries = $state<AuditEntry[]>([]);
 	let actorFilter = $state('');
@@ -28,43 +29,38 @@
 	);
 </script>
 
-<main>
-	<h1>Audit log</h1>
-	<p class="subtitle">Every sensitive action: registrations, removals, config changes, trust edits.</p>
+<ListScaffold
+	title="Audit log"
+	subtitle="Every sensitive action: registrations, removals, config changes, trust edits."
+	{loading}
+	isEmpty={filtered.length === 0}
+	emptyText="No audit entries match."
+>
+	{#snippet controls()}
+		<div class="controls">
+			<input type="text" placeholder="Filter by actor" bind:value={actorFilter} />
+		</div>
+	{/snippet}
 
-	<div class="controls">
-		<input type="text" placeholder="Filter by actor" bind:value={actorFilter} />
-	</div>
-
-	{#if loading}
-		<div class="empty">Loading…</div>
-	{:else if filtered.length === 0}
-		<div class="empty">No audit entries match.</div>
-	{:else}
-		<table>
-			<thead>
-				<tr><th>When</th><th>Actor</th><th>Action</th><th>Resource</th><th>Detail</th></tr>
-			</thead>
-			<tbody>
-				{#each filtered as e (e.id)}
-					<tr>
-						<td>{fmtRelative(e.created_at)}</td>
-						<td><strong>{e.actor}</strong></td>
-						<td><code>{e.action}</code></td>
-						<td>{e.resource}</td>
-						<td class="detail">{e.detail}</td>
-					</tr>
-				{/each}
-			</tbody>
-		</table>
-	{/if}
-</main>
+	<table>
+		<thead>
+			<tr><th>When</th><th>Actor</th><th>Action</th><th>Resource</th><th>Detail</th></tr>
+		</thead>
+		<tbody>
+			{#each filtered as e (e.id)}
+				<tr>
+					<td>{fmtRelative(e.created_at)}</td>
+					<td><strong>{e.actor}</strong></td>
+					<td><code>{e.action}</code></td>
+					<td>{e.resource}</td>
+					<td class="detail">{e.detail}</td>
+				</tr>
+			{/each}
+		</tbody>
+	</table>
+</ListScaffold>
 
 <style>
-	.subtitle {
-		color: var(--text-muted);
-		margin-top: 0;
-	}
 	.controls {
 		margin: 1rem 0;
 	}

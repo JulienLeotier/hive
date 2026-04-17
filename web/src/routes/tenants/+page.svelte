@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { apiGet } from '$lib/api';
+	import ListScaffold from '$lib/ListScaffold.svelte';
 
 	let tenants = $state<string[]>([]);
 	let loading = $state(true);
@@ -19,31 +20,24 @@
 	});
 </script>
 
-<main>
-	<h1>Tenants</h1>
-	<p class="subtitle">Each tenant scopes its own agents, workflows, tasks, events, and knowledge.</p>
-
-	{#if loading}
-		<div class="empty">Loading…</div>
-	{:else if tenants.length === 0}
-		<div class="empty">No tenants. Create one with <code>hive tenant create &lt;id&gt;</code>.</div>
-	{:else}
-		<div class="tenant-grid">
-			{#each tenants as t}
-				<div class="tenant-card">
-					<div class="icon">⬡</div>
-					<div class="id">{t}</div>
-				</div>
-			{/each}
-		</div>
-	{/if}
-</main>
+<ListScaffold
+	title="Tenants"
+	subtitle="Each tenant scopes its own agents, workflows, tasks, events, and knowledge."
+	{loading}
+	isEmpty={tenants.length === 0}
+	emptyText="No tenants. Create one with `hive tenant create <id>`."
+>
+	<div class="tenant-grid">
+		{#each tenants as t}
+			<div class="tenant-card">
+				<div class="icon">⬡</div>
+				<div class="id">{t}</div>
+			</div>
+		{/each}
+	</div>
+</ListScaffold>
 
 <style>
-	.subtitle {
-		color: var(--text-muted);
-		margin-top: 0;
-	}
 	.tenant-grid {
 		display: grid;
 		grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));

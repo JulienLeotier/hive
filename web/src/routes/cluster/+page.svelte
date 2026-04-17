@@ -2,6 +2,7 @@
 	import { fmtRelative } from '$lib/format';
 	import { apiGet } from '$lib/api';
 	import type { ClusterMember } from '$lib/types';
+	import ListScaffold from '$lib/ListScaffold.svelte';
 
 	let members = $state<ClusterMember[]>([]);
 	let loading = $state(true);
@@ -29,39 +30,29 @@
 	}
 </script>
 
-<main>
-	<h1>Cluster</h1>
-	<p class="subtitle">Nodes participating in this hive.</p>
-
-	{#if loading}
-		<div class="empty">Loading…</div>
-	{:else if members.length === 0}
-		<div class="empty">Single-node deployment — no roster entries.</div>
-	{:else}
-		<table>
-			<thead>
-				<tr><th>Node</th><th>Hostname</th><th>Address</th><th>Status</th><th>Last heartbeat</th></tr>
-			</thead>
-			<tbody>
-				{#each members as m (m.node_id)}
-					<tr>
-						<td><strong>{m.node_id}</strong></td>
-						<td><code>{m.hostname}</code></td>
-						<td><code>{m.address}</code></td>
-						<td>
-							<span class="badge" style="background:{statusColor(m.status)}">{m.status}</span>
-						</td>
-						<td>{fmtRelative(m.last_heartbeat)}</td>
-					</tr>
-				{/each}
-			</tbody>
-		</table>
-	{/if}
-</main>
-
-<style>
-	.subtitle {
-		color: var(--text-muted);
-		margin-top: 0;
-	}
-</style>
+<ListScaffold
+	title="Cluster"
+	subtitle="Nodes participating in this hive."
+	{loading}
+	isEmpty={members.length === 0}
+	emptyText="Single-node deployment — no roster entries."
+>
+	<table>
+		<thead>
+			<tr><th>Node</th><th>Hostname</th><th>Address</th><th>Status</th><th>Last heartbeat</th></tr>
+		</thead>
+		<tbody>
+			{#each members as m (m.node_id)}
+				<tr>
+					<td><strong>{m.node_id}</strong></td>
+					<td><code>{m.hostname}</code></td>
+					<td><code>{m.address}</code></td>
+					<td>
+						<span class="badge" style="background:{statusColor(m.status)}">{m.status}</span>
+					</td>
+					<td>{fmtRelative(m.last_heartbeat)}</td>
+				</tr>
+			{/each}
+		</tbody>
+	</table>
+</ListScaffold>

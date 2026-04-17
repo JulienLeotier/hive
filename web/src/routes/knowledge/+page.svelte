@@ -2,6 +2,7 @@
 	import { fmtRelative, truncate } from '$lib/format';
 	import { apiGet } from '$lib/api';
 	import type { KnowledgeEntry } from '$lib/types';
+	import ListScaffold from '$lib/ListScaffold.svelte';
 
 	let entries = $state<KnowledgeEntry[]>([]);
 	let filterType = $state('');
@@ -40,52 +41,47 @@
 	});
 </script>
 
-<main>
-	<h1>Knowledge</h1>
-	<p class="subtitle">Approaches the hive has learned, ranked by similarity + recency.</p>
+<ListScaffold
+	title="Knowledge"
+	subtitle="Approaches the hive has learned, ranked by similarity + recency."
+	loading={loading || searching}
+	isEmpty={entries.length === 0}
+	emptyText="No knowledge entries match."
+>
+	{#snippet controls()}
+		<div class="controls">
+			<input type="text" placeholder="Task type filter (e.g. code-review)" bind:value={filterType} onkeydown={(e) => e.key === 'Enter' && load()} />
+			<button onclick={load}>Filter</button>
+			<div class="spacer"></div>
+			<input type="text" placeholder="Semantic search (e.g. how to handle timeouts)" bind:value={searchQuery} onkeydown={(e) => e.key === 'Enter' && search()} />
+			<button onclick={search}>Search</button>
+		</div>
+	{/snippet}
 
-	<div class="controls">
-		<input type="text" placeholder="Task type filter (e.g. code-review)" bind:value={filterType} onkeydown={(e) => e.key === 'Enter' && load()} />
-		<button onclick={load}>Filter</button>
-		<div class="spacer"></div>
-		<input type="text" placeholder="Semantic search (e.g. how to handle timeouts)" bind:value={searchQuery} onkeydown={(e) => e.key === 'Enter' && search()} />
-		<button onclick={search}>Search</button>
-	</div>
-
-	{#if loading || searching}
-		<div class="empty">{searching ? 'Searching…' : 'Loading…'}</div>
-	{:else if entries.length === 0}
-		<div class="empty">No knowledge entries match.</div>
-	{:else}
-		<table>
-			<thead>
-				<tr><th>Type</th><th>Approach</th><th>Outcome</th><th>Age</th></tr>
-			</thead>
-			<tbody>
-				{#each entries as e (e.id)}
-					<tr>
-						<td><code>{e.task_type}</code></td>
-						<td>{truncate(e.approach, 120)}</td>
-						<td>
-							<span
-								class="badge"
-								style="background:{e.outcome === 'success' ? 'var(--ok)' : 'var(--err)'}"
-								>{e.outcome}</span
-							>
-						</td>
-						<td>{fmtRelative(e.created_at)}</td>
-					</tr>
-				{/each}
-			</tbody>
-		</table>
-	{/if}
-</main>
+	<table>
+		<thead>
+			<tr><th>Type</th><th>Approach</th><th>Outcome</th><th>Age</th></tr>
+		</thead>
+		<tbody>
+			{#each entries as e (e.id)}
+				<tr>
+					<td><code>{e.task_type}</code></td>
+					<td>{truncate(e.approach, 120)}</td>
+					<td>
+						<span
+							class="badge"
+							style="background:{e.outcome === 'success' ? 'var(--ok)' : 'var(--err)'}"
+							>{e.outcome}</span
+						>
+					</td>
+					<td>{fmtRelative(e.created_at)}</td>
+				</tr>
+			{/each}
+		</tbody>
+	</table>
+</ListScaffold>
 
 <style>
-	.subtitle {
-		color: var(--text-muted);
-		margin-top: 0;
-	}
 	.controls {
 		display: flex;
 		gap: 0.5rem;

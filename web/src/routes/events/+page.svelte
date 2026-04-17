@@ -2,6 +2,7 @@
 	import { apiGet } from '$lib/api';
 	import { createReconnectingWS, wsURL } from '$lib/ws';
 	import type { Event } from '$lib/types';
+	import ListScaffold from '$lib/ListScaffold.svelte';
 
 	let events = $state<Event[]>([]);
 	let typeFilter = $state('');
@@ -47,33 +48,28 @@
 	});
 </script>
 
-<main>
-	<h1>Event Timeline</h1>
-
-	<div class="filter">
-		<input bind:value={typeFilter} placeholder="Filter by type prefix (e.g., task)" />
-		<input bind:value={sourceFilter} placeholder="Filter by source" />
-		<button onclick={loadEvents}>Filter</button>
-	</div>
-
-	{#if events.length === 0}
-		<p class="empty">No events yet.</p>
-	{:else}
-		<div class="timeline">
-			{#each events as evt}
-				<div class="event">
-					<span class="time">{evt.created_at}</span>
-					<span class="type">{evt.type}</span>
-					<span class="source">{evt.source}</span>
-					<code class="payload">{evt.payload}</code>
-				</div>
-			{/each}
+<ListScaffold title="Event Timeline" isEmpty={events.length === 0} emptyText="No events yet.">
+	{#snippet controls()}
+		<div class="filter">
+			<input bind:value={typeFilter} placeholder="Filter by type prefix (e.g., task)" />
+			<input bind:value={sourceFilter} placeholder="Filter by source" />
+			<button onclick={loadEvents}>Filter</button>
 		</div>
-	{/if}
-</main>
+	{/snippet}
+
+	<div class="timeline">
+		{#each events as evt}
+			<div class="event">
+				<span class="time">{evt.created_at}</span>
+				<span class="type">{evt.type}</span>
+				<span class="source">{evt.source}</span>
+				<code class="payload">{evt.payload}</code>
+			</div>
+		{/each}
+	</div>
+</ListScaffold>
 
 <style>
-	main { font-family: system-ui, sans-serif; }
 	.filter { display: flex; gap: 0.5rem; margin: 1rem 0; }
 	.filter input { flex: 1; padding: 0.5rem; border: 1px solid #ddd; border-radius: 4px; }
 	.filter button { padding: 0.5rem 1rem; background: #333; color: white; border: none; border-radius: 4px; cursor: pointer; }
@@ -83,5 +79,4 @@
 	.type { font-weight: 600; min-width: 150px; }
 	.source { color: #666; min-width: 100px; }
 	.payload { font-size: 0.7rem; color: #888; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 300px; }
-	.empty { color: #666; font-style: italic; }
 </style>

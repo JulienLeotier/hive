@@ -15,6 +15,16 @@ import (
 // WakeUpEventType is emitted for every wake-up cycle decision.
 const WakeUpEventType = "agent.wakeup"
 
+// Wake-up cycle action values assigned to Decision.Action. Stringly-typed
+// because they travel over the event bus as part of the decision payload,
+// but centralising them here keeps typo drift in check.
+const (
+	ActionClaim    = "claim"
+	ActionIdle     = "idle"
+	ActionEscalate = "escalate"
+	ActionNoop     = "noop"
+)
+
 // Observation is the snapshot collected at the start of a wake-up cycle.
 type Observation struct {
 	PendingTasks    int
@@ -227,30 +237,30 @@ func (h *DefaultHandler) Handle(ctx context.Context, agentName string) error {
 
 	switch {
 	case snap.RunningByAgent > 0 || snap.AssignedToAgent > 0:
-		d.Action = "noop"
+		d.Action = ActionNoop
 		d.Reason = "agent already has work in flight"
 		h.tracker.RecordAction(agentName)
 	case snap.PendingTasks > 0 && h.claimer != nil:
 		taskID, err := h.claimer.ClaimPendingForAgent(ctx, agentName)
 		if err != nil {
-			d.Action = "escalate"
+			d.Action = ActionEscalate
 			d.Reason = err.Error()
 		} else if taskID != "" {
-			d.Action = "claim"
+			d.Action = ActionClaim
 			d.TaskID = taskID
 			d.Reason = "claimed pending task"
 			h.tracker.RecordAction(agentName)
 		} else {
-			d.Action = "idle"
+			d.Action = ActionIdle
 			d.Reason = "no capable task matches this agent"
 		}
 	default:
-		d.Action = "idle"
+		d.Action = ActionIdle
 		d.Reason = "no pending work"
 	}
 
 	// Idle busywork prevention: stop emitting once tracker says we've logged enough.
-	if d.Action == "idle" && !h.tracker.RecordIdle(agentName) {
+	if d.Action == ActionIdle && !h.tracker.RecordIdle(agentName) {
 		slog.Debug("wake-up idle suppressed", "agent", agentName)
 		return nil
 	}
@@ -265,7 +275,7 @@ func (h *DefaultHandler) Handle(ctx context.Context, agentName string) error {
 
 	if h.bus != nil {
 		_, _ = h.bus.Publish(ctx, WakeUpEventType, agentName, d)
-		if d.Action == "idle" {
+		if d.Action == ActionIdle {
 			_, _ = h.bus.Publish(ctx, event.AgentIdle, agentName, map[string]string{
 				"reason": d.Reason,
 			})
@@ -283,6 +293,6 @@ func stateFromSnapshot(s Observation) string {
 	case s.PendingTasks > 0:
 		return "available"
 	default:
-		return "idle"
+		return ActionIdle
 	}
 }
