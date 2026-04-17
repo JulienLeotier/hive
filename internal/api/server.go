@@ -9,6 +9,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -17,6 +18,7 @@ import (
 	"github.com/JulienLeotier/hive/internal/agent"
 	"github.com/JulienLeotier/hive/internal/auth"
 	"github.com/JulienLeotier/hive/internal/event"
+	"github.com/JulienLeotier/hive/internal/intake"
 	"github.com/JulienLeotier/hive/internal/knowledge"
 	"github.com/JulienLeotier/hive/internal/project"
 	"github.com/JulienLeotier/hive/internal/resilience"
@@ -45,17 +47,21 @@ type Server struct {
 	oidc             *auth.OIDCProvider
 	triggerMgr       *workflow.TriggerManager // optional — enables workflow fire + retry endpoints
 	projectStore     *project.Store           // BMAD project CRUD
+	intakeStore      *intake.Store            // PM Q&A drive
+	intakeAgentOverride intake.Agent          // optional for tests
+	envLookup        func(string) string      // optional for tests
 	mux              *http.ServeMux
 }
 
 // NewServer creates an API server with all dependencies.
 func NewServer(agentMgr *agent.Manager, eventBus *event.Bus, breakers *resilience.BreakerRegistry, keyMgr *KeyManager) *Server {
 	s := &Server{
-		agentMgr: agentMgr,
-		eventBus: eventBus,
-		breakers: breakers,
-		keyMgr:   keyMgr,
-		mux:      http.NewServeMux(),
+		agentMgr:  agentMgr,
+		eventBus:  eventBus,
+		breakers:  breakers,
+		keyMgr:    keyMgr,
+		mux:       http.NewServeMux(),
+		envLookup: os.Getenv,
 	}
 	s.routes()
 	return s
@@ -80,6 +86,19 @@ func (s *Server) WithTriggerManager(tm *workflow.TriggerManager) *Server {
 // page relies on it for the core BMAD flow.
 func (s *Server) WithProjectStore(p *project.Store) *Server {
 	s.projectStore = p
+	return s
+}
+
+// WithIntakeStore wires the PM-conversation store so /projects/{id}/intake
+// endpoints can drive the Q&A. Without it they return 503.
+func (s *Server) WithIntakeStore(i *intake.Store) *Server {
+	s.intakeStore = i
+	return s
+}
+
+// WithIntakeAgent lets tests inject a deterministic agent.
+func (s *Server) WithIntakeAgent(a intake.Agent) *Server {
+	s.intakeAgentOverride = a
 	return s
 }
 
@@ -206,6 +225,12 @@ func (s *Server) routes() {
 	s.mux.Handle("GET /api/v1/projects/{id}", auth.RBACMiddleware("system", "read")(http.HandlerFunc(s.handleGetProject)))
 	s.mux.Handle("POST /api/v1/projects", auth.RBACMiddleware("system", "write")(http.HandlerFunc(s.handleCreateProject)))
 	s.mux.Handle("DELETE /api/v1/projects/{id}", auth.RBACMiddleware("system", "write")(http.HandlerFunc(s.handleDeleteProject)))
+
+	// BMAD PM intake — the Q&A that turns the idea into a PRD. Web-only;
+	// the dashboard renders the exchange as a chat on /projects/[id].
+	s.mux.Handle("GET /api/v1/projects/{id}/intake", auth.RBACMiddleware("system", "read")(http.HandlerFunc(s.handleIntakeGet)))
+	s.mux.Handle("POST /api/v1/projects/{id}/intake/messages", auth.RBACMiddleware("system", "write")(http.HandlerFunc(s.handleIntakeMessage)))
+	s.mux.Handle("POST /api/v1/projects/{id}/intake/finalize", auth.RBACMiddleware("system", "write")(http.HandlerFunc(s.handleIntakeFinalize)))
 
 	// Agent playground. Lets an operator send an ad-hoc task to a registered
 	// agent without going through a workflow. Handy for verifying

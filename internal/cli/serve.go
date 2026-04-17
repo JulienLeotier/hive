@@ -20,6 +20,7 @@ import (
 	"github.com/JulienLeotier/hive/internal/cost"
 	"github.com/JulienLeotier/hive/internal/dashboard"
 	"github.com/JulienLeotier/hive/internal/event"
+	"github.com/JulienLeotier/hive/internal/intake"
 	"github.com/JulienLeotier/hive/internal/knowledge"
 	"github.com/JulienLeotier/hive/internal/project"
 	"github.com/JulienLeotier/hive/internal/resilience"
@@ -267,7 +268,8 @@ var serveCmd = &cobra.Command{
 		apiSrv := api.NewServer(mgr, bus, breakers, keyMgr).
 			WithUsers(users).
 			WithTriggerManager(triggerMgr).
-			WithProjectStore(project.NewStore(store.DB))
+			WithProjectStore(project.NewStore(store.DB)).
+			WithIntakeStore(intake.NewStore(store.DB))
 
 		// Story 21.1: wire OIDC provider if configured.
 		if cfg.OIDC != nil && cfg.OIDC.Issuer != "" {

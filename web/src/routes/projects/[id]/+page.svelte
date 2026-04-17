@@ -1,7 +1,21 @@
 <script lang="ts">
 	import { page } from '$app/stores';
-	import { apiGet } from '$lib/api';
+	import { apiGet, apiPost } from '$lib/api';
 	import { fmtRelative } from '$lib/format';
+
+	type IntakeMessage = {
+		id: number;
+		author: string;
+		content: string;
+		created_at: string;
+	};
+	type Conversation = {
+		id: string;
+		project_id: string;
+		role: string;
+		status: string;
+		messages?: IntakeMessage[];
+	};
 
 	type AcceptanceCriterion = {
 		id: number;
@@ -43,6 +57,15 @@
 	let project = $state<Project | null>(null);
 	let loading = $state(true);
 
+	// Intake state
+	let conversation = $state<Conversation | null>(null);
+	let intakeLoading = $state(false);
+	let replyDraft = $state('');
+	let sending = $state(false);
+	let intakeDone = $state(false);
+	let finalizing = $state(false);
+	let intakeError = $state('');
+
 	async function load() {
 		const id = $page.params.id ?? '';
 		if (!id) return;
@@ -55,10 +78,67 @@
 		}
 	}
 
+	async function loadIntake() {
+		const id = $page.params.id ?? '';
+		if (!id || !project || project.status !== 'draft') return;
+		intakeLoading = true;
+		try {
+			conversation = await apiGet<Conversation>(
+				`/api/v1/projects/${encodeURIComponent(id)}/intake`
+			);
+		} catch (e) {
+			intakeError = e instanceof Error ? e.message : String(e);
+		} finally {
+			intakeLoading = false;
+		}
+	}
+
+	async function sendReply() {
+		const id = $page.params.id ?? '';
+		if (!id || !replyDraft.trim()) return;
+		intakeError = '';
+		sending = true;
+		try {
+			const resp = (await apiPost(
+				`/api/v1/projects/${encodeURIComponent(id)}/intake/messages`,
+				{ content: replyDraft }
+			)) as { conversation: Conversation; done: boolean };
+			conversation = resp.conversation;
+			intakeDone = resp.done;
+			replyDraft = '';
+		} catch (e) {
+			intakeError = e instanceof Error ? e.message : String(e);
+		} finally {
+			sending = false;
+		}
+	}
+
+	async function finalizePRD() {
+		const id = $page.params.id ?? '';
+		if (!id) return;
+		intakeError = '';
+		finalizing = true;
+		try {
+			await apiPost(`/api/v1/projects/${encodeURIComponent(id)}/intake/finalize`, {});
+			await load();
+		} catch (e) {
+			intakeError = e instanceof Error ? e.message : String(e);
+		} finally {
+			finalizing = false;
+		}
+	}
+
 	$effect(() => {
 		load();
 		const i = setInterval(load, 5000);
 		return () => clearInterval(i);
+	});
+
+	// Load the intake conversation whenever we're on a draft project.
+	$effect(() => {
+		if (project && project.status === 'draft' && !conversation) {
+			loadIntake();
+		}
 	});
 
 	function statusColor(s: string): string {
@@ -149,18 +229,59 @@
 			</div>
 		</section>
 
-		{#if !project.prd}
-			<section class="panel info">
-				<h3>Waiting for the PM agent</h3>
-				<p>
-					This project is in <code>{project.status}</code>. The PM agent will start an
-					interactive Q&amp;A here to turn your idea into a PRD. That flow comes online in
-					the next phase of the BMAD pivot — right now you've got the project record and
-					schema, but the autonomous build loop isn't wired yet.
-				</p>
-				<p class="idea-recap"><strong>Your idea:</strong> {project.idea}</p>
+		{#if project.status === 'draft'}
+			<section class="intake">
+				<h2>Intake — talk to the PM agent</h2>
+				{#if intakeLoading && !conversation}
+					<p class="empty">Starting the conversation…</p>
+				{:else if conversation}
+					<div class="chat">
+						{#each conversation.messages ?? [] as m (m.id)}
+							<div class="bubble" class:user={m.author === 'user'} class:agent={m.author !== 'user'}>
+								<div class="bubble-head">
+									<strong>{m.author === 'user' ? 'You' : 'PM agent'}</strong>
+									<span class="muted">{fmtRelative(m.created_at)}</span>
+								</div>
+								<div class="bubble-content">{m.content}</div>
+							</div>
+						{/each}
+					</div>
+
+					{#if intakeError}<div class="err">{intakeError}</div>{/if}
+
+					{#if conversation.status === 'finalized'}
+						<p class="done-note">
+							Conversation finalised. The PRD has been written — if the project isn't
+							moving yet, click <strong>Finalize PRD</strong> to commit it.
+						</p>
+					{:else}
+						<form class="reply-form" onsubmit={(e) => { e.preventDefault(); sendReply(); }}>
+							<textarea
+								bind:value={replyDraft}
+								rows="3"
+								placeholder="Your answer…"
+								disabled={sending}
+							></textarea>
+							<div class="reply-actions">
+								<button type="submit" disabled={sending || !replyDraft.trim()}>
+									{sending ? 'Sending…' : 'Send'}
+								</button>
+								{#if intakeDone}
+									<button
+										type="button"
+										class="primary"
+										onclick={finalizePRD}
+										disabled={finalizing}>
+										{finalizing ? 'Writing PRD…' : '✓ Finalize PRD & start build'}
+									</button>
+									<span class="muted">PM has enough info to write the PRD. Keep chatting to refine, or finalize when ready.</span>
+								{/if}
+							</div>
+						</form>
+					{/if}
+				{/if}
 			</section>
-		{:else}
+		{:else if project.prd}
 			<section class="panel">
 				<h3>PRD</h3>
 				<pre class="prd">{project.prd}</pre>
@@ -292,18 +413,6 @@
 		border: 1px solid var(--border);
 		border-radius: 6px;
 	}
-	.panel.info {
-		border-left: 3px solid var(--accent);
-	}
-	.panel p { margin: 0.5rem 0; }
-	.idea-recap {
-		margin-top: 0.75rem;
-		padding: 0.6rem;
-		background: var(--bg);
-		border: 1px solid var(--border);
-		border-radius: 4px;
-		font-size: 0.85rem;
-	}
 	.prd {
 		white-space: pre-wrap;
 		background: var(--bg);
@@ -312,6 +421,103 @@
 		padding: 0.75rem;
 		font-size: 0.85rem;
 		overflow-x: auto;
+	}
+	.intake {
+		display: flex;
+		flex-direction: column;
+		gap: 0.75rem;
+	}
+	.chat {
+		display: flex;
+		flex-direction: column;
+		gap: 0.6rem;
+		max-height: 520px;
+		overflow-y: auto;
+		padding: 0.5rem;
+		background: var(--bg-alt);
+		border: 1px solid var(--border);
+		border-radius: 6px;
+	}
+	.bubble {
+		padding: 0.55rem 0.75rem;
+		border-radius: 8px;
+		max-width: 75%;
+	}
+	.bubble.user {
+		align-self: flex-end;
+		background: color-mix(in srgb, var(--accent) 18%, var(--bg));
+		border: 1px solid color-mix(in srgb, var(--accent) 40%, var(--border));
+	}
+	.bubble.agent {
+		align-self: flex-start;
+		background: var(--bg);
+		border: 1px solid var(--border);
+	}
+	.bubble-head {
+		display: flex;
+		gap: 0.5rem;
+		font-size: 0.7rem;
+		color: var(--muted);
+		margin-bottom: 0.25rem;
+	}
+	.bubble-content {
+		white-space: pre-wrap;
+		font-size: 0.9rem;
+		line-height: 1.4;
+	}
+	.reply-form {
+		display: flex;
+		flex-direction: column;
+		gap: 0.5rem;
+	}
+	.reply-form textarea {
+		padding: 0.55rem 0.75rem;
+		background: var(--bg-alt);
+		border: 1px solid var(--border);
+		border-radius: 6px;
+		color: inherit;
+		font: inherit;
+		font-family: inherit;
+		resize: vertical;
+	}
+	.reply-actions {
+		display: flex;
+		gap: 0.5rem;
+		align-items: center;
+		flex-wrap: wrap;
+	}
+	.reply-actions button {
+		padding: 0.45rem 0.85rem;
+		background: var(--bg-alt);
+		border: 1px solid var(--border);
+		border-radius: 6px;
+		cursor: pointer;
+		color: inherit;
+		font-weight: 500;
+	}
+	.reply-actions button.primary {
+		background: var(--accent);
+		color: white;
+		border: none;
+	}
+	.reply-actions button:disabled {
+		opacity: 0.5;
+		cursor: not-allowed;
+	}
+	.done-note {
+		padding: 0.6rem 0.85rem;
+		background: color-mix(in srgb, var(--ok) 12%, var(--bg-alt));
+		border-left: 3px solid var(--ok);
+		border-radius: 4px;
+		font-size: 0.85rem;
+	}
+	.err {
+		padding: 0.5rem 0.75rem;
+		background: rgba(240, 80, 80, 0.15);
+		border-left: 3px solid var(--err);
+		border-radius: 4px;
+		color: var(--err);
+		font-size: 0.85rem;
 	}
 	.epic {
 		padding: 1rem;
