@@ -105,11 +105,15 @@ Testable depuis `/settings` avec le bouton « Tester le webhook ».
 - `/projects` — liste + création de projets (greenfield / brownfield)
 - `/projects/{id}` — détail : phases BMAD live, coût cumulé, édition
   intake, bouton **Reprendre au step suivant** (saute les skills déjà
-  réussies) vs **Relancer BMAD** (tout recommencer)
+  réussies) vs **Relancer BMAD** (tout recommencer), export `.tar.gz`
 - `/costs` — consommation Claude agrégée : par projet / par phase /
   top commandes, projection coût/h, export CSV
 - `/events` + `/audit` — observabilité temps réel
 - `/settings` — état des notifications (webhook Slack) + bouton test
+
+Endpoints d'intégration hors-UI :
+- `GET /metrics` — exposition Prometheus
+- `GET /api/openapi.yaml` — spec OpenAPI 3.1 complète
 
 ---
 
@@ -125,6 +129,8 @@ Testable depuis `/settings` avec le bouton « Tester le webhook ».
 | Intake | `internal/intake/` | Conversation PM avec rubric scripted (agent fallback), `IterationAgent` pour brownfield |
 | Git | `internal/git/` | Clone/create repo via `gh`, OAuth device flow, PAT login, `EnsureStoryPushed` (commit+push+PR idempotent) |
 | Notifications | `internal/notify/` | Webhook Slack opt-in via `HIVE_SLACK_WEBHOOK`, événements : `project.shipped`, `*_failed`, `cost_cap_reached` |
+| Métriques | `internal/metrics/` | Prometheus counters + histograms exposés sur `GET /metrics` (requests, skill cost, durations, events) |
+| OpenAPI | `internal/api/openapi.yaml` | Spec 3.1 complète des ~30 routes, servie sur `GET /api/openapi.yaml` |
 | Dashboard | `web/` | SvelteKit statique embarqué dans le binaire Go |
 
 ---
@@ -140,6 +146,50 @@ sur `ScriptedDev` + `ScriptedReviewer` — agents déterministes qui
 
 Idem quand `gh` n'est pas installé/authentifié : Hive tourne en mode
 local-only (commits locaux, pas de PR).
+
+---
+
+## Rotation des logs
+
+Hive écrit tous ses logs sur stderr (`slog.NewTextHandler` au format
+text). Pas de rotation in-process — le runtime Unix le fait mieux.
+
+### Avec systemd (reco production)
+
+```ini
+[Service]
+ExecStart=/usr/local/bin/hive serve
+StandardOutput=append:/var/log/hive/hive.log
+StandardError=append:/var/log/hive/hive.log
+```
+
+puis config `logrotate` :
+
+```
+/var/log/hive/hive.log {
+    daily
+    rotate 14
+    compress
+    delaycompress
+    missingok
+    notifempty
+    copytruncate
+}
+```
+
+### Avec un simple nohup
+
+```bash
+nohup hive serve >> /var/log/hive/hive.log 2>&1 &
+```
+
+puis le même bloc `logrotate` avec `copytruncate` (Hive ne supporte pas
+`SIGHUP` pour réouvrir le FD, donc copytruncate est le bon choix).
+
+### Dev local
+
+Pas besoin. `hive serve` affiche les logs dans le terminal comme
+prévu ; redirige vers un fichier si tu veux les garder.
 
 ---
 
