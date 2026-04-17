@@ -93,7 +93,7 @@
 	}
 
 	async function removeProject(id: string, label: string) {
-		if (!confirm(`Remove project "${label}"? Its epics, stories, and review history are deleted too.`))
+		if (!confirm(`Supprimer le projet « ${label} » ? Ses epics, stories et historique de revue seront aussi effacés.`))
 			return;
 		try {
 			await apiDelete(`/api/v1/projects/${encodeURIComponent(id)}`);
@@ -117,16 +117,16 @@
 </script>
 
 <ListScaffold
-	title="Projects"
-	subtitle="Each project is an autonomous product build. Describe what you want, the BMAD agents take it from there — PM turns it into a PRD, Architect decomposes, Dev writes, Reviewer validates, until every acceptance criterion passes."
+	title="Projets"
+	subtitle="Chaque projet est une construction autonome. Décris ce que tu veux ; les agents BMAD font le reste — le PM rédige un PRD, l'Architecte décompose, le Dev code, le Relecteur valide, jusqu'à ce que tous les critères d'acceptation passent."
 	{loading}
 	isEmpty={projects.length === 0 && !showForm}
-	emptyText="No projects yet. Describe what you want built."
+	emptyText="Aucun projet pour l'instant. Décris ce que tu veux construire."
 >
 	{#snippet controls()}
 		<div class="toolbar">
 			<button class="btn primary" onclick={() => (showForm = !showForm)}>
-				{showForm ? 'Close' : '+ New project'}
+				{showForm ? 'Fermer' : '+ Nouveau projet'}
 			</button>
 		</div>
 	{/snippet}
@@ -134,36 +134,36 @@
 	{#if showForm}
 		<form class="create-form" onsubmit={createProject}>
 			<label>
-				What do you want to build?
+				Qu'est-ce que tu veux construire ?
 				<textarea
 					rows="3"
-					placeholder="e.g. An app that helps writers draft, edit, and get AI-assisted feedback on their novels."
+					placeholder="Ex. une app qui aide les romanciers à écrire, éditer et recevoir du feedback IA sur leurs textes."
 					bind:value={idea}
 					required
 				></textarea>
-				<small>One clear sentence. The PM agent will ask you follow-ups in the next step.</small>
+				<small>Une phrase claire. L'agent PM te posera des questions de suivi à l'étape suivante.</small>
 			</label>
 			<label>
-				Short name
-				<input type="text" placeholder="auto-generated if empty" bind:value={name} />
+				Nom court
+				<input type="text" placeholder="auto-généré si vide" bind:value={name} />
 			</label>
 			<label>
-				Working directory
-				<input type="text" placeholder="/Users/me/projects/writers-app (optional for now)" bind:value={workdir} />
-				<small>Where the Dev agent will commit code. Can be set later when the build actually starts.</small>
+				Répertoire de travail
+				<input type="text" placeholder="/Users/moi/projects/writers-app (optionnel)" bind:value={workdir} />
+				<small>C'est là que le Dev commitera le code. Peut être défini plus tard.</small>
 			</label>
 			<label>
-				Existing BMAD output path <span class="hint-pill">optional</span>
-				<input type="text" placeholder="/Users/me/bmad-output/writers-app" bind:value={bmadOutputPath} />
-				<small>If you've already run the BMAD method elsewhere (PRD, epics, stories), point at that directory and the Architect agent will skip decomposition and read the existing artefacts.</small>
+				Dossier BMAD existant <span class="hint-pill">optionnel</span>
+				<input type="text" placeholder="/Users/moi/bmad-output/writers-app" bind:value={bmadOutputPath} />
+				<small>Si tu as déjà lancé BMAD ailleurs (PRD, epics, stories), pointe vers ce dossier et l'Architecte réutilisera les artefacts existants.</small>
 			</label>
 			<label>
-				Existing repo <span class="hint-pill">optional</span>
-				<input type="text" placeholder="/Users/me/projects/my-existing-app" bind:value={repoPath} />
-				<small>Add BMAD to an existing codebase. Dev agents work inside this repo instead of scaffolding a fresh one.</small>
+				Repo existant <span class="hint-pill">optionnel</span>
+				<input type="text" placeholder="/Users/moi/projects/mon-app-existante" bind:value={repoPath} />
+				<small>Ajoute BMAD à une base de code existante. Les agents Dev travaillent dans ce repo au lieu de scaffolder à partir de zéro.</small>
 			</label>
 			<button type="submit" disabled={submitting || !idea.trim()}>
-				{submitting ? 'Creating…' : 'Create project'}
+				{submitting ? 'Création…' : 'Créer le projet'}
 			</button>
 			{#if formError}<div class="form-error">{formError}</div>{/if}
 		</form>
@@ -172,7 +172,7 @@
 	<table>
 		<thead>
 			<tr>
-				<th>Project</th><th>Status</th><th>Updated</th><th></th>
+				<th>Projet</th><th>Statut</th><th>Mis à jour</th><th></th>
 			</tr>
 		</thead>
 		<tbody>
@@ -187,7 +187,7 @@
 					<td><span class="badge" style="background:{statusColor(p.status)}">{p.status}</span></td>
 					<td>{fmtRelative(p.updated_at)}</td>
 					<td>
-						<button class="row-del" onclick={() => removeProject(p.id, p.name)} title="Remove">✕</button>
+						<button class="row-del" onclick={() => removeProject(p.id, p.name)} title="Supprimer">✕</button>
 					</td>
 				</tr>
 			{/each}

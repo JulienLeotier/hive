@@ -90,8 +90,43 @@ func (r *Runner) Install(ctx context.Context, workdir string) error {
 	if err := cmd.Run(); err != nil {
 		return fmt.Errorf("bmad install: %w\noutput: %s", err, truncate(combined.String(), 400))
 	}
+	if err := pinLanguage(workdir, "Français"); err != nil {
+		slog.Warn("bmad: could not pin language to French", "error", err)
+	}
 	slog.Info("bmad installed", "workdir", workdir)
 	return nil
+}
+
+// pinLanguage rewrites _bmad/bmm/config.yaml so both
+// communication_language and document_output_language are the given
+// value. BMAD consults these fields at every workflow activation; the
+// installer defaults them to English. Called right after install so
+// every skill invocation afterwards sees French.
+func pinLanguage(workdir, lang string) error {
+	cfgPath := filepath.Join(workdir, "_bmad", "bmm", "config.yaml")
+	data, err := os.ReadFile(cfgPath)
+	if err != nil {
+		return err
+	}
+	out := string(data)
+	for _, key := range []string{"communication_language", "document_output_language"} {
+		out = replaceYAMLScalar(out, key, lang)
+	}
+	return os.WriteFile(cfgPath, []byte(out), 0o644)
+}
+
+// replaceYAMLScalar replaces the value of a top-level scalar key in a
+// simple YAML document. Good enough for the handful of fields BMAD's
+// config exposes; not a full parser.
+func replaceYAMLScalar(yaml, key, value string) string {
+	lines := strings.Split(yaml, "\n")
+	for i, line := range lines {
+		trim := strings.TrimSpace(line)
+		if strings.HasPrefix(trim, key+":") || strings.HasPrefix(trim, key+" :") {
+			lines[i] = key + ": " + value
+		}
+	}
+	return strings.Join(lines, "\n")
 }
 
 // Result carries what Invoke returns: the text Claude emitted (useful
@@ -120,9 +155,16 @@ func (r *Runner) Invoke(ctx context.Context, workdir, goal string, expectedOutpu
 	defer cancel()
 
 	prompt := buildPrompt(goal)
+	// --dangerously-skip-permissions: we are a local single-user tool
+	// sandboxed to the project workdir. BMAD workflows run go build,
+	// go test, npm install, git commit, etc. — acceptEdits auto-signs
+	// file writes but still blocks bash tools, which would stall every
+	// bmad-dev-story iteration. Skip-permissions is the right call
+	// here; if the workdir is ever untrusted the whole BMAD model
+	// breaks anyway.
 	cmd := exec.CommandContext(callCtx, r.cliPath,
 		"--print", "--output-format", "json",
-		"--permission-mode", "acceptEdits")
+		"--dangerously-skip-permissions")
 	cmd.Dir = workdir
 	cmd.Stdin = strings.NewReader(prompt)
 	var stdout, stderr bytes.Buffer
@@ -158,14 +200,20 @@ func (r *Runner) Invoke(ctx context.Context, workdir, goal string, expectedOutpu
 
 // buildPrompt wraps the caller's goal with the non-interactive contract
 // every BMAD skill needs. Kept in one place so rules stay consistent.
+// All human-readable output (summaries, review feedback, logs) MUST
+// be in French — the operator is French-speaking; artefacts generated
+// by the skills (PRD, code, tests) follow BMAD's own
+// document_output_language which we also pin to French via the _bmad
+// config at install time.
 func buildPrompt(goal string) string {
 	var b strings.Builder
-	b.WriteString("You are running inside an autonomous orchestration loop — there is NO human to answer menu prompts. ")
-	b.WriteString("When a BMAD workflow presents an A/P/C or similar menu, always pick the Continue option and proceed. ")
-	b.WriteString("Execute the workflow in a single pass end-to-end; never halt. ")
-	b.WriteString("Use your file-editing tools directly (permission mode is acceptEdits). ")
-	b.WriteString("When the skill finishes, reply with a terse summary (under 10 lines) naming the files you produced.\n\n")
-	b.WriteString("Task:\n")
+	b.WriteString("Tu tournes dans une boucle d'orchestration autonome — il n'y a AUCUN humain pour répondre aux menus. ")
+	b.WriteString("Quand un workflow BMAD présente un menu A/P/C ou équivalent, choisis toujours Continue et avance. ")
+	b.WriteString("Exécute le workflow d'une traite, jamais de halt. ")
+	b.WriteString("Toutes tes réponses textuelles (résumés, feedback, logs) doivent être EN FRANÇAIS. ")
+	b.WriteString("Utilise tes outils d'édition directement — les permissions sont déjà accordées. ")
+	b.WriteString("À la fin, renvoie un résumé court (moins de 10 lignes, en français) listant les fichiers que tu as produits.\n\n")
+	b.WriteString("Tâche :\n")
 	b.WriteString(goal)
 	return b.String()
 }

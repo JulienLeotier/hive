@@ -262,7 +262,7 @@
 	async function regeneratePlan() {
 		const id = $page.params.id ?? '';
 		if (!id) return;
-		if (!confirm('Regenerate the plan? The current epic/story tree will be cleared and the Architect will rebuild it from the PRD. This is only allowed before any dev work has started.')) return;
+		if (!confirm("Régénérer le plan ? L'arbre epics/stories actuel sera effacé et l'Architecte le reconstruira depuis le PRD. Autorisé uniquement avant que le dev n'ait commencé.")) return;
 		regenerating = true;
 		prdError = '';
 		try {
@@ -349,43 +349,43 @@
 </script>
 
 <main>
-	<a class="back" href="/projects">← all projects</a>
+	<a class="back" href="/projects">← tous les projets</a>
 
 	{#if loading}
-		<p class="empty">Loading project…</p>
+		<p class="empty">Chargement du projet…</p>
 	{:else if !project}
-		<p class="empty">Project not found.</p>
+		<p class="empty">Projet introuvable.</p>
 	{:else}
 		<header>
 			<h1>{project.name}</h1>
 			<div class="meta">
 				<span class="badge" style="background:{statusColor(project.status)}">{project.status}</span>
-				<span class="muted">updated {fmtRelative(project.updated_at)}</span>
+				<span class="muted">mis à jour {fmtRelative(project.updated_at)}</span>
 				<code class="id">{project.id}</code>
 			</div>
 			<p class="idea">{project.idea}</p>
 			<nav class="tabs">
-				<a href="/projects/{project.id}/files">📁 Files</a>
+				<a href="/projects/{project.id}/files">📁 Fichiers</a>
 			</nav>
 			{#if project.bmad_output_path || project.repo_path || project.workdir}
 				<dl class="refs">
 					{#if project.workdir}
-						<dt>Workdir</dt><dd><code>{project.workdir}</code></dd>
+						<dt>Répertoire</dt><dd><code>{project.workdir}</code></dd>
 					{/if}
 					{#if project.repo_path}
-						<dt>Existing repo</dt><dd><code>{project.repo_path}</code></dd>
+						<dt>Repo existant</dt><dd><code>{project.repo_path}</code></dd>
 					{/if}
 					{#if project.bmad_output_path}
-						<dt>BMAD output</dt><dd><code>{project.bmad_output_path}</code></dd>
+						<dt>Sortie BMAD</dt><dd><code>{project.bmad_output_path}</code></dd>
 					{/if}
 				</dl>
 			{/if}
 		</header>
 
 		<section class="progress">
-			<h2>Progress</h2>
+			<h2>Avancement</h2>
 			{#if totalACs > 0}
-				<div class="bar" aria-label="acceptance criteria progress">
+				<div class="bar" aria-label="avancement des critères d'acceptation">
 					<div
 						class="bar-fill"
 						class:shipped={project.status === 'shipped'}
@@ -397,23 +397,23 @@
 				</div>
 			{/if}
 			<div class="metrics">
-				<div><strong>{doneStories}/{totalStories}</strong><span>stories done</span></div>
-				<div><strong>{passedACs}/{totalACs}</strong><span>acceptance criteria passed</span></div>
+				<div><strong>{doneStories}/{totalStories}</strong><span>stories terminées</span></div>
+				<div><strong>{passedACs}/{totalACs}</strong><span>critères validés</span></div>
 				<div><strong>{project.epics?.length ?? 0}</strong><span>epics</span></div>
 			</div>
 		</section>
 
 		{#if project.status === 'draft'}
 			<section class="intake">
-				<h2>Intake — talk to the PM agent</h2>
+				<h2>Intake — discussion avec l'agent PM</h2>
 				{#if intakeLoading && !conversation}
-					<p class="empty">Starting the conversation…</p>
+					<p class="empty">Démarrage de la conversation…</p>
 				{:else if conversation}
 					<div class="chat">
 						{#each conversation.messages ?? [] as m (m.id)}
 							<div class="bubble" class:user={m.author === 'user'} class:agent={m.author !== 'user'}>
 								<div class="bubble-head">
-									<strong>{m.author === 'user' ? 'You' : 'PM agent'}</strong>
+									<strong>{m.author === 'user' ? 'Toi' : 'Agent PM'}</strong>
 									<span class="muted">{fmtRelative(m.created_at)}</span>
 								</div>
 								<div class="bubble-content">{m.content}</div>
@@ -425,20 +425,20 @@
 
 					{#if conversation.status === 'finalized'}
 						<p class="done-note">
-							Conversation finalised. The PRD has been written — if the project isn't
-							moving yet, click <strong>Finalize PRD</strong> to commit it.
+							Conversation finalisée. Le PRD a été écrit — si le projet ne
+							démarre pas, clique sur <strong>Finaliser le PRD</strong>.
 						</p>
 					{:else}
 						<form class="reply-form" onsubmit={(e) => { e.preventDefault(); sendReply(); }}>
 							<textarea
 								bind:value={replyDraft}
 								rows="3"
-								placeholder="Your answer…"
+								placeholder="Ta réponse…"
 								disabled={sending}
 							></textarea>
 							<div class="reply-actions">
 								<button type="submit" disabled={sending || !replyDraft.trim()}>
-									{sending ? 'Sending…' : 'Send'}
+									{sending ? 'Envoi…' : 'Envoyer'}
 								</button>
 								{#if intakeDone}
 									<button
@@ -446,9 +446,9 @@
 										class="primary"
 										onclick={finalizePRD}
 										disabled={finalizing}>
-										{finalizing ? 'Writing PRD…' : '✓ Finalize PRD & start build'}
+										{finalizing ? 'Rédaction du PRD…' : '✓ Finaliser le PRD et lancer la construction'}
 									</button>
-									<span class="muted">PM has enough info to write the PRD. Keep chatting to refine, or finalize when ready.</span>
+									<span class="muted">Le PM a assez d'info pour rédiger le PRD. Continue la discussion pour affiner, ou finalise quand tu es prêt.</span>
 								{/if}
 							</div>
 						</form>
@@ -462,22 +462,22 @@
 					<div class="prd-actions">
 						{#if editingPRD}
 							<button type="button" onclick={savePRD} disabled={savingPRD || !prdDraft.trim()}>
-								{savingPRD ? 'Saving…' : 'Save PRD'}
+								{savingPRD ? 'Enregistrement…' : 'Enregistrer le PRD'}
 							</button>
 							<button type="button" onclick={() => (editingPRD = false)} disabled={savingPRD}>
-								Cancel
+								Annuler
 							</button>
 						{:else}
-							<button type="button" onclick={startEditPRD}>✎ Edit</button>
+							<button type="button" onclick={startEditPRD}>✎ Éditer</button>
 							{#if project.status !== 'shipped'}
 								<button
 									type="button"
 									class="warn"
 									onclick={regeneratePlan}
 									disabled={regenerating}
-									title="Wipe the current plan and ask the Architect to rebuild from the PRD. Only allowed before any dev work has started."
+									title="Efface le plan actuel et demande à l'Architecte de le reconstruire depuis le PRD. Seulement avant que le dev n'ait commencé."
 								>
-									{regenerating ? 'Regenerating…' : '↻ Regenerate plan'}
+									{regenerating ? 'Régénération…' : '↻ Régénérer le plan'}
 								</button>
 							{/if}
 						{/if}
@@ -494,7 +494,7 @@
 
 		{#if activity.length > 0}
 			<section class="activity">
-				<h2>Activity <span class="count">{activity.length}</span></h2>
+				<h2>Activité <span class="count">{activity.length}</span></h2>
 				<ul class="feed">
 					{#each activity.slice(0, 50) as e (e.id)}
 						{@const parsed = (parseEvt(e)._parsed ?? {}) as Record<string, unknown>}
@@ -514,15 +514,15 @@
 		{/if}
 
 		<section class="tree">
-			<h2>Work breakdown</h2>
+			<h2>Découpage du travail</h2>
 			{#if !project.epics || project.epics.length === 0}
 				{#if project.status === 'planning'}
 					<p class="planning">
 						<span class="spinner"></span>
-						Architect is decomposing the PRD into epics and stories… this can take a minute.
+						L'Architecte BMAD décompose le PRD en epics et stories… ça peut prendre quelques minutes.
 					</p>
 				{:else}
-					<p class="empty">No epics yet. The Architect agent will emit them once the PRD is locked.</p>
+					<p class="empty">Pas encore d'epics. L'agent Architecte les produira une fois le PRD verrouillé.</p>
 				{/if}
 			{:else}
 				{#each project.epics as epic (epic.id)}
@@ -542,7 +542,7 @@
 											<strong>{story.title}</strong>
 											<span class="badge" style="background:{statusColor(story.status)}">{story.status}</span>
 											{#if story.iterations > 0}
-												<span class="muted">· {story.iterations} iteration{story.iterations > 1 ? 's' : ''}</span>
+												<span class="muted">· {story.iterations} itération{story.iterations > 1 ? 's' : ''}</span>
 											{/if}
 											{#if story.status === 'blocked'}
 												<button
@@ -550,9 +550,9 @@
 													class="retry"
 													onclick={() => retryStory(story.id)}
 													disabled={retrying[story.id]}
-													title="Reset iterations and send this story back to the dev loop"
+													title="Remet le compteur d'itérations à zéro et relance la story dans le dev loop"
 												>
-													{retrying[story.id] ? 'Retrying…' : '↻ Retry'}
+													{retrying[story.id] ? 'Relance…' : '↻ Réessayer'}
 												</button>
 											{/if}
 										</div>
@@ -560,9 +560,9 @@
 											<div
 												class="review-feedback"
 												class:blocked={story.status === 'blocked'}
-												title="Latest reviewer verdict: {story.last_review_verdict}"
+												title="Dernier verdict du relecteur : {story.last_review_verdict}"
 											>
-												<span class="review-label">Reviewer:</span>
+												<span class="review-label">Relecteur :</span>
 												{story.last_review_feedback}
 											</div>
 										{/if}

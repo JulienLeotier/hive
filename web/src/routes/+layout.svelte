@@ -16,16 +16,16 @@
 	// unrelated code but they are no longer part of the product surface.
 	const navGroups = [
 		{
-			label: 'Build',
+			label: 'Construction',
 			items: [
-				{ href: '/', label: 'Home' },
-				{ href: '/projects', label: 'Projects' }
+				{ href: '/', label: 'Accueil' },
+				{ href: '/projects', label: 'Projets' }
 			]
 		},
 		{
-			label: 'Inspect',
+			label: 'Inspection',
 			items: [
-				{ href: '/events', label: 'Events' },
+				{ href: '/events', label: 'Événements' },
 				{ href: '/audit', label: 'Audit' }
 			]
 		}
@@ -68,7 +68,7 @@
 		{#if $apiError}
 			<div class="api-banner" role="alert">
 				<span class="dot"></span>
-				<span class="msg">Backend unreachable — {$apiError}</span>
+				<span class="msg">Serveur injoignable — {$apiError}</span>
 				<button class="dismiss" onclick={() => apiError.set(null)} aria-label="Dismiss">×</button>
 			</div>
 		{/if}

@@ -89,40 +89,40 @@
 	<header class="hero">
 		<h1>Hive</h1>
 		<p class="tagline">
-			Local BMAD product factory — describe what you want built, the agents
-			turn it into a shipped product in your workdir.
+			Usine à produits BMAD en local — décris ce que tu veux construire,
+			les agents BMAD l'emballent en produit livré dans ton workdir.
 		</p>
-		<a href="/projects" class="cta">Start a new project →</a>
+		<a href="/projects" class="cta">Démarrer un nouveau projet →</a>
 	</header>
 
 	<section class="flow">
-		<h2>How it works</h2>
+		<h2>Comment ça marche</h2>
 		<ol class="steps">
-			<li><strong>Idea</strong><span>Tell the PM agent what you want.</span></li>
-			<li><strong>PRD</strong><span>It asks until it has enough, emits a PRD.</span></li>
-			<li><strong>Architect</strong><span>Decomposes into epics, stories, acceptance criteria.</span></li>
-			<li><strong>Dev + Review</strong><span>Claude Code writes, a reviewer checks every AC, loops until green.</span></li>
-			<li><strong>Ship</strong><span>Every commit lands in your workdir. When every AC passes, the project flips to shipped.</span></li>
+			<li><strong>Idée</strong><span>Tu décris ce que tu veux à l'agent PM.</span></li>
+			<li><strong>PRD</strong><span>Il te pose des questions puis rédige le PRD via BMAD.</span></li>
+			<li><strong>Architecte</strong><span>Décompose en epics, stories, critères d'acceptation.</span></li>
+			<li><strong>Dev + Revue</strong><span>Claude Code code, le relecteur vérifie chaque AC, itère jusqu'au vert.</span></li>
+			<li><strong>Livraison</strong><span>Chaque commit atterrit dans ton workdir. Quand toutes les ACs passent, le projet est livré.</span></li>
 		</ol>
 	</section>
 
 	<section class="summary">
-		<h2>Fleet</h2>
+		<h2>Parc de projets</h2>
 		<div class="cards">
-			<div class="card"><strong>{projects.length}</strong><span>projects total</span></div>
-			<div class="card"><strong style="color:var(--warn)">{counts.building + counts.review}</strong><span>building</span></div>
-			<div class="card"><strong style="color:var(--accent)">{counts.planning}</strong><span>planning</span></div>
-			<div class="card"><strong style="color:var(--ok)">{counts.shipped}</strong><span>shipped</span></div>
-			<div class="card"><strong>{counts.draft}</strong><span>draft</span></div>
+			<div class="card"><strong>{projects.length}</strong><span>projets au total</span></div>
+			<div class="card"><strong style="color:var(--warn)">{counts.building + counts.review}</strong><span>en construction</span></div>
+			<div class="card"><strong style="color:var(--accent)">{counts.planning}</strong><span>en planification</span></div>
+			<div class="card"><strong style="color:var(--ok)">{counts.shipped}</strong><span>livrés</span></div>
+			<div class="card"><strong>{counts.draft}</strong><span>brouillons</span></div>
 			{#if counts.failed > 0}
-				<div class="card"><strong style="color:var(--err)">{counts.failed}</strong><span>failed</span></div>
+				<div class="card"><strong style="color:var(--err)">{counts.failed}</strong><span>échoués</span></div>
 			{/if}
 		</div>
 	</section>
 
 	{#if active.length > 0}
 		<section>
-			<h2>Active now</h2>
+			<h2>En cours</h2>
 			<ul class="active-list">
 				{#each active as p (p.id)}
 					<li>
@@ -138,9 +138,9 @@
 	{/if}
 
 	<section>
-		<h2>Recent events</h2>
+		<h2>Événements récents</h2>
 		{#if recentEvents.length === 0}
-			<p class="empty">Quiet. Start a project and come back.</p>
+			<p class="empty">Rien pour l'instant. Lance un projet et reviens.</p>
 		{:else}
 			<ul class="events">
 				{#each recentEvents as e (e.id)}
