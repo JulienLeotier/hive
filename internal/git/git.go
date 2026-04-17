@@ -19,7 +19,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
-	"time"
 )
 
 // GhStatus reports whether the `gh` CLI is installed and the user is
@@ -40,7 +39,7 @@ func CheckGh(ctx context.Context) GhStatus {
 	if err != nil {
 		return GhStatus{Error: "gh n'est pas installé — https://cli.github.com"}
 	}
-	callCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	callCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	cmd := exec.CommandContext(callCtx, path, "api", "user", "--jq", ".login")
 	out, err := cmd.Output()
@@ -79,7 +78,7 @@ func CloneRepo(ctx context.Context, target, workdir string) error {
 			return fmt.Errorf("git: %s n'est pas vide — choisis un autre workdir", workdir)
 		}
 	}
-	callCtx, cancel := context.WithTimeout(ctx, 5*time.Minute)
+	callCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	cmd := exec.CommandContext(callCtx, "gh", "repo", "clone", target, workdir)
 	var combined bytes.Buffer
@@ -124,7 +123,7 @@ func CreateRepo(ctx context.Context, name, workdir, visibility string) (string, 
 		_ = runIn(ctx, workdir, "git", "-c", "user.email=bmad@hive.local",
 			"-c", "user.name=Hive BMAD", "commit", "-m", "chore: initial Hive BMAD scaffold")
 	}
-	callCtx, cancel := context.WithTimeout(ctx, 5*time.Minute)
+	callCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	args := []string{
 		"repo", "create", name,
@@ -173,7 +172,7 @@ func LoginWithToken(ctx context.Context, token string) error {
 	if _, err := exec.LookPath("gh"); err != nil {
 		return fmt.Errorf("gh non installé — https://cli.github.com")
 	}
-	callCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	callCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	cmd := exec.CommandContext(callCtx, "gh", "auth", "login",
 		"--hostname", "github.com", "--git-protocol", "https", "--with-token")
@@ -209,7 +208,7 @@ func ListRepos(ctx context.Context) ([]Repo, error) {
 	if _, err := exec.LookPath("gh"); err != nil {
 		return nil, errors.New("gh non installé")
 	}
-	callCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	callCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	cmd := exec.CommandContext(callCtx, "gh", "repo", "list",
 		"--limit", "200",
@@ -314,7 +313,7 @@ func Logout(ctx context.Context) error {
 	if _, err := exec.LookPath("gh"); err != nil {
 		return nil
 	}
-	callCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	callCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	cmd := exec.CommandContext(callCtx, "gh", "auth", "logout",
 		"--hostname", "github.com")
@@ -329,7 +328,7 @@ func Logout(ctx context.Context) error {
 }
 
 func getRemoteURL(ctx context.Context, workdir string) (string, error) {
-	callCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	callCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	cmd := exec.CommandContext(callCtx, "git", "-C", workdir, "remote", "get-url", "origin")
 	out, err := cmd.Output()
@@ -346,7 +345,7 @@ func getRemoteURL(ctx context.Context, workdir string) (string, error) {
 }
 
 func ghLogin(ctx context.Context) (string, error) {
-	callCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	callCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	cmd := exec.CommandContext(callCtx, "gh", "api", "user")
 	out, err := cmd.Output()
@@ -363,7 +362,7 @@ func ghLogin(ctx context.Context) (string, error) {
 }
 
 func runIn(ctx context.Context, workdir, name string, args ...string) error {
-	callCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	callCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	cmd := exec.CommandContext(callCtx, name, args...)
 	cmd.Dir = workdir
@@ -410,7 +409,7 @@ func EnsureStoryPushed(ctx context.Context, workdir, branch, storyTitle string) 
 	}
 
 	// Stage + commit if there are changes.
-	statusCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	statusCtx, cancel := context.WithCancel(ctx)
 	statusCmd := exec.CommandContext(statusCtx, "git", "-C", workdir, "status", "--porcelain")
 	statusOut, err := statusCmd.Output()
 	cancel()
@@ -436,7 +435,7 @@ func EnsureStoryPushed(ctx context.Context, workdir, branch, storyTitle string) 
 	}
 
 	// Push with upstream if needed.
-	upCtx, upCancel := context.WithTimeout(ctx, 10*time.Second)
+	upCtx, upCancel := context.WithCancel(ctx)
 	upCmd := exec.CommandContext(upCtx, "git", "-C", workdir, "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}")
 	_, upErr := upCmd.Output()
 	upCancel()
@@ -444,7 +443,7 @@ func EnsureStoryPushed(ctx context.Context, workdir, branch, storyTitle string) 
 		// No upstream → push with -u.
 		currentBranch := branch
 		if currentBranch == "" {
-			brCtx, brCancel := context.WithTimeout(ctx, 5*time.Second)
+			brCtx, brCancel := context.WithCancel(ctx)
 			brOut, _ := exec.CommandContext(brCtx, "git", "-C", workdir, "rev-parse", "--abbrev-ref", "HEAD").Output()
 			brCancel()
 			currentBranch = strings.TrimSpace(string(brOut))
@@ -463,7 +462,7 @@ func EnsureStoryPushed(ctx context.Context, workdir, branch, storyTitle string) 
 	if _, err := exec.LookPath("gh"); err != nil {
 		return "", nil // pas de gh → on s'arrête après le push
 	}
-	lookCtx, lookCancel := context.WithTimeout(ctx, 15*time.Second)
+	lookCtx, lookCancel := context.WithCancel(ctx)
 	lookCmd := exec.CommandContext(lookCtx, "gh", "pr", "view", "--json", "url", "--jq", ".url")
 	lookCmd.Dir = workdir
 	if out, err := lookCmd.Output(); err == nil {
@@ -480,7 +479,7 @@ func EnsureStoryPushed(ctx context.Context, workdir, branch, storyTitle string) 
 	if title == "" {
 		title = "BMAD dev-story"
 	}
-	prCtx, prCancel := context.WithTimeout(ctx, 60*time.Second)
+	prCtx, prCancel := context.WithCancel(ctx)
 	defer prCancel()
 	prCmd := exec.CommandContext(prCtx, "gh", "pr", "create",
 		"--fill", "--title", title)
@@ -525,7 +524,8 @@ func httpNewRequest(ctx context.Context, method, urlStr, body string) (*http.Req
 }
 
 func httpDoJSON(req *http.Request, out any) error {
-	client := &http.Client{Timeout: 20 * time.Second}
+	// Pas de timeout client — le ctx fourni par le caller pilote l'arrêt.
+	client := &http.Client{}
 	resp, err := client.Do(req)
 	if err != nil {
 		return err

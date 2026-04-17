@@ -35,7 +35,10 @@ func NewGitCommitter() *GitCommitter {
 	if err != nil {
 		return nil
 	}
-	return &GitCommitter{gitPath: path, timeout: 30 * time.Second}
+	// timeout 0 → hérite du parent ctx. Une story volumineuse peut
+	// produire un commit/push qui prend plus de 30s sur un gros diff ;
+	// on laisse piloter par le parent (cancel UI ou ctx.Done).
+	return &GitCommitter{gitPath: path, timeout: 0}
 }
 
 // EnsureRepo initialises a git repo in workdir if none exists. Also
@@ -101,7 +104,11 @@ func (g *GitCommitter) CommitStory(ctx context.Context, workdir, storyTitle stri
 // run executes a git subcommand in workdir with the configured timeout.
 // Returns the combined stdout/stderr so error messages carry context.
 func (g *GitCommitter) run(ctx context.Context, workdir string, args ...string) ([]byte, error) {
-	callCtx, cancel := context.WithTimeout(ctx, g.timeout)
+	callCtx := ctx
+	cancel := func() {}
+	if g.timeout > 0 {
+		callCtx, cancel = context.WithTimeout(ctx, g.timeout)
+	}
 	defer cancel()
 	cmd := exec.CommandContext(callCtx, g.gitPath, args...)
 	cmd.Dir = workdir

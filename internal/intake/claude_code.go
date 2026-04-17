@@ -37,7 +37,9 @@ func NewClaudeCodeAgent() Agent {
 			"error", err)
 		return fallback
 	}
-	return &ClaudeCodeAgent{cliPath: cli, fallback: fallback, timeout: 30 * time.Second}
+	// timeout 0 → hérite du parent ctx. Même principe que les autres
+	// agents claude-code : pas de cap arbitraire sur l'invocation.
+	return &ClaudeCodeAgent{cliPath: cli, fallback: fallback, timeout: 0}
 }
 
 // Role identifies this agent's conversation slot.
@@ -115,7 +117,11 @@ func (a *ClaudeCodeAgent) FinalPRD(
 // operator's alias is; if no-arg execution fails we retry with --print
 // disabled). Stdin carries the full prompt. Output is the raw CLI stdout.
 func (a *ClaudeCodeAgent) runCLI(ctx context.Context, prompt string) ([]byte, error) {
-	callCtx, cancel := context.WithTimeout(ctx, a.timeout)
+	callCtx := ctx
+	cancel := func() {}
+	if a.timeout > 0 {
+		callCtx, cancel = context.WithTimeout(ctx, a.timeout)
+	}
 	defer cancel()
 
 	// --print sends the response straight to stdout without interactive
