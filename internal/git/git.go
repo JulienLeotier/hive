@@ -17,6 +17,7 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"time"
 )
@@ -374,6 +375,128 @@ func runIn(ctx context.Context, workdir, name string, args ...string) error {
 			name, strings.Join(args, " "), err, truncate(combined.String(), 200))
 	}
 	return nil
+}
+
+// EnsureStoryPushed is the fallback Hive runs after a /bmad-dev-story
+// invocation when we can't find a PR URL in BMAD's output. BMAD is
+// supposed to commit+push+PR by itself, but Claude occasionally skips
+// one of the steps — so we defensively :
+//
+//  1. Check that workdir is a git repo; bail politely if not.
+//  2. If there are uncommitted changes, stage and commit them with a
+//     standard message keyed on the story title.
+//  3. If the branch has no upstream, push with -u to create it.
+//  4. If no PR exists for this branch yet, create it via `gh pr create`
+//     and return its URL.
+//
+// Idempotent : re-running is safe (commit is skipped when workdir is
+// clean, push is skipped when upstream is already set, gh pr create is
+// skipped when one already exists).
+//
+// Returns the PR URL on success, or ("", nil) when the workdir is
+// simply not a git repo (greenfield scaffold, local-only project).
+func EnsureStoryPushed(ctx context.Context, workdir, branch, storyTitle string) (string, error) {
+	if workdir == "" {
+		return "", errors.New("git: empty workdir")
+	}
+	// Not a repo → nothing to do, silently.
+	if _, err := os.Stat(filepath.Join(workdir, ".git")); err != nil {
+		return "", nil //nolint:nilerr // non-repo is a valid state
+	}
+
+	// Ensure the requested branch is checked out (best-effort).
+	if branch != "" {
+		_ = runIn(ctx, workdir, "git", "checkout", "-B", branch)
+	}
+
+	// Stage + commit if there are changes.
+	statusCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	statusCmd := exec.CommandContext(statusCtx, "git", "-C", workdir, "status", "--porcelain")
+	statusOut, err := statusCmd.Output()
+	cancel()
+	if err != nil {
+		return "", fmt.Errorf("git status: %w", err)
+	}
+	if len(strings.TrimSpace(string(statusOut))) > 0 {
+		if err := runIn(ctx, workdir, "git", "add", "-A"); err != nil {
+			return "", err
+		}
+		msg := "feat: " + storyTitle
+		if storyTitle == "" {
+			msg = "chore: BMAD dev-story update"
+		}
+		if err := runIn(ctx, workdir,
+			"git", "-c", "user.email=bmad@hive.local", "-c", "user.name=Hive BMAD",
+			"commit", "-m", msg); err != nil {
+			// Rien à commit (fichiers déjà staged/committés) — on tolère.
+			if !strings.Contains(err.Error(), "nothing to commit") {
+				return "", err
+			}
+		}
+	}
+
+	// Push with upstream if needed.
+	upCtx, upCancel := context.WithTimeout(ctx, 10*time.Second)
+	upCmd := exec.CommandContext(upCtx, "git", "-C", workdir, "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}")
+	_, upErr := upCmd.Output()
+	upCancel()
+	if upErr != nil {
+		// No upstream → push with -u.
+		currentBranch := branch
+		if currentBranch == "" {
+			brCtx, brCancel := context.WithTimeout(ctx, 5*time.Second)
+			brOut, _ := exec.CommandContext(brCtx, "git", "-C", workdir, "rev-parse", "--abbrev-ref", "HEAD").Output()
+			brCancel()
+			currentBranch = strings.TrimSpace(string(brOut))
+		}
+		if currentBranch != "" {
+			if err := runIn(ctx, workdir, "git", "push", "-u", "origin", currentBranch); err != nil {
+				return "", fmt.Errorf("git push: %w", err)
+			}
+		}
+	} else {
+		// Upstream set → plain push.
+		_ = runIn(ctx, workdir, "git", "push")
+	}
+
+	// Does a PR already exist?
+	if _, err := exec.LookPath("gh"); err != nil {
+		return "", nil // pas de gh → on s'arrête après le push
+	}
+	lookCtx, lookCancel := context.WithTimeout(ctx, 15*time.Second)
+	lookCmd := exec.CommandContext(lookCtx, "gh", "pr", "view", "--json", "url", "--jq", ".url")
+	lookCmd.Dir = workdir
+	if out, err := lookCmd.Output(); err == nil {
+		lookCancel()
+		if u := strings.TrimSpace(string(out)); u != "" {
+			return u, nil
+		}
+	} else {
+		lookCancel()
+	}
+
+	// Create a PR.
+	title := storyTitle
+	if title == "" {
+		title = "BMAD dev-story"
+	}
+	prCtx, prCancel := context.WithTimeout(ctx, 60*time.Second)
+	defer prCancel()
+	prCmd := exec.CommandContext(prCtx, "gh", "pr", "create",
+		"--fill", "--title", title)
+	prCmd.Dir = workdir
+	out, err := prCmd.CombinedOutput()
+	if err != nil {
+		return "", fmt.Errorf("gh pr create: %w — %s", err, truncate(string(out), 200))
+	}
+	// Extract PR URL from output.
+	for _, line := range strings.Split(string(out), "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "https://github.com/") && strings.Contains(line, "/pull/") {
+			return line, nil
+		}
+	}
+	return strings.TrimSpace(string(out)), nil
 }
 
 func truncate(s string, n int) string {

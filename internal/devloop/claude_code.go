@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/JulienLeotier/hive/internal/bmad"
+	"github.com/JulienLeotier/hive/internal/git"
 )
 
 // ClaudeCodeDev et ClaudeCodeReviewer lancent les séquences BMAD
@@ -79,6 +80,19 @@ func (d *ClaudeCodeDev) Develop(ctx context.Context, proj ProjectContext, story 
 	}
 	if out.PRURL == "" {
 		out.PRURL = bmad.ExtractPRURL(combined)
+	}
+	// Hive fallback : si BMAD n'a ni créé de PR ni commité, on le fait
+	// nous-mêmes pour éviter que le projet wedge silencieusement avec
+	// du code en local jamais poussé. Idempotent — si tout est déjà
+	// fait, c'est un no-op.
+	if out.PRURL == "" {
+		if url, err := git.EnsureStoryPushed(ctx, workdir, out.Branch, firstLine(combined)); err != nil {
+			slog.Warn("hive fallback git push failed",
+				"workdir", workdir, "error", err)
+		} else if url != "" {
+			out.PRURL = url
+			slog.Info("hive fallback pushed PR", "url", url)
+		}
 	}
 	return out, nil
 }

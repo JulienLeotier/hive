@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 
@@ -226,4 +227,27 @@ func TestGetProjectNotFoundReturns404(t *testing.T) {
 	w := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(w, req)
 	assert.Equal(t, http.StatusNotFound, w.Code)
+}
+
+func TestWorkdirIsSafeToPurge(t *testing.T) {
+	home, _ := os.UserHomeDir()
+	cases := []struct {
+		path string
+		want bool
+	}{
+		{"", false},
+		{"/", false},
+		{"/tmp", false},
+		{"/tmp/hive-workdir-abc", true},
+		{"/var/folders/vf/hm5b_xyz/hive-test", true},
+		{"relative/path", false},
+		{home + "/Projects/hive-demo", home != ""},
+		{"/etc/passwd", false},
+		{"/Users", false},
+	}
+	for _, c := range cases {
+		if got := workdirIsSafeToPurge(c.path); got != c.want {
+			t.Errorf("workdirIsSafeToPurge(%q) = %v, want %v", c.path, got, c.want)
+		}
+	}
 }

@@ -568,7 +568,22 @@ func (s *Server) RecoverStuckPlanning(ctx context.Context) error {
 // `seedDoc` is a text blob we pass to BMAD as the product brief. On
 // first finalize it's the flattened PM chat; on recovery/regenerate
 // it's whatever we have on file (previous PRD, raw idea).
+// runArchitectAsyncFromStep is the resumable sibling of
+// runArchitectAsync. `fromStep` is 0-based : 0 runs the full pipeline,
+// N skips the first N skills (useful when a retry should pick up where
+// the previous run died instead of re-running the expensive early
+// skills like /bmad-create-prd). Ingestion (readFirst, parseBMADTree…)
+// is the same because it only re-reads what BMAD wrote on disk — safe
+// to re-run regardless of fromStep.
+func (s *Server) runArchitectAsyncFromStep(projectID, idea, seedDoc string, fromStep int) {
+	s.runArchitectAsyncInternal(projectID, idea, seedDoc, fromStep)
+}
+
 func (s *Server) runArchitectAsync(projectID, idea, seedDoc string) {
+	s.runArchitectAsyncInternal(projectID, idea, seedDoc, 0)
+}
+
+func (s *Server) runArchitectAsyncInternal(projectID, idea, seedDoc string, fromStep int) {
 	// Ctx cancellable côté UI (via POST /cancel). Timeout généreux
 	// parce que FullPlanningPipeline = 13 skills × 2-5 min chacune.
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Minute)
@@ -661,7 +676,18 @@ func (s *Server) runArchitectAsync(projectID, idea, seedDoc string) {
 		stageLabel = "brownfield-sequence"
 	}
 	obs := s.stepObserver(ctx, projectID, phaseLabel)
-	if _, err := runner.RunSequenceObserved(ctx, workdir, pipeline, obs); err != nil {
+	// Retry-from-step : on peut sauter les N premiers skills quand on
+	// relance après un échec tardif. Ingestion et writes BMAD sont
+	// idempotents (la skill bmad-create-prd détecte un PRD existant,
+	// etc.), mais skipper évite de brûler ~2$ de tokens par skill
+	// déjà-réussi. fromStep=0 = comportement historique.
+	resumed := pipeline
+	if fromStep > 0 && fromStep < len(pipeline) {
+		resumed = pipeline[fromStep:]
+		slog.Info("bmad resume", "project", projectID,
+			"from_step", fromStep, "remaining", len(resumed))
+	}
+	if _, err := runner.RunSequenceObserved(ctx, workdir, resumed, obs); err != nil {
 		fail(stageLabel, err)
 		return
 	}

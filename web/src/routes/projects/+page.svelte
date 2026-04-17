@@ -254,8 +254,13 @@
 	async function removeProject(id: string, label: string) {
 		if (!confirm(`Supprimer le projet « ${label} » ? Ses epics, stories et historique de revue seront aussi effacés.`))
 			return;
+		const purgeWorkdir = confirm(
+			`Veux-tu AUSSI effacer le répertoire de travail sur disque ? ` +
+				`(annuler = garder les fichiers, OK = rm -rf)`
+		);
 		try {
-			await apiDelete(`/api/v1/projects/${encodeURIComponent(id)}`);
+			const qs = purgeWorkdir ? '?purge_workdir=true' : '';
+			await apiDelete(`/api/v1/projects/${encodeURIComponent(id)}${qs}`);
 			await load();
 		} catch (e) {
 			formError = e instanceof Error ? e.message : String(e);

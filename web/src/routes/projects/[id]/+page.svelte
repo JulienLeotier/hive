@@ -151,6 +151,33 @@
 		}
 	}
 
+	async function resumeBuild() {
+		const id = $page.params.id ?? '';
+		// Calcule l'index du premier step non-complété. phases est en
+		// ORDER BY id DESC, on prend donc la séquence la plus récente,
+		// on la remet en ordre chronologique et on compte les 'done'.
+		const ordered = [...phases].reverse();
+		const doneCount = ordered.filter((p) => p.status === 'done').length;
+		if (doneCount === 0) {
+			await retryBuild();
+			return;
+		}
+		retryingBuild = true;
+		actionError = '';
+		try {
+			await apiPost(
+				`/api/v1/projects/${encodeURIComponent(id)}/retry-architect?from_step=${doneCount}`,
+				{}
+			);
+			await load();
+			await loadPhases();
+		} catch (e) {
+			actionError = e instanceof Error ? e.message : String(e);
+		} finally {
+			retryingBuild = false;
+		}
+	}
+
 	function parseEvt(e: ProjectEvent): ProjectEvent {
 		if (e._parsed) return e;
 		try {
@@ -544,8 +571,17 @@
 				<button
 					type="button"
 					class="retry-btn"
+					onclick={resumeBuild}
+					disabled={retryingBuild}
+					title="Saute les steps déjà réussis, reprend au premier non-terminé">
+					{retryingBuild ? 'Reprise…' : '↻ Reprendre au step suivant'}
+				</button>
+				<button
+					type="button"
+					class="retry-btn ghost"
 					onclick={retryBuild}
-					disabled={retryingBuild}>
+					disabled={retryingBuild}
+					title="Relance la séquence depuis le début (coûteux)">
 					{retryingBuild ? 'Relance…' : '↻ Relancer BMAD'}
 				</button>
 			</div>

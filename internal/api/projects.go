@@ -9,6 +9,8 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -699,9 +701,24 @@ func (s *Server) handleRetryArchitect(w http.ResponseWriter, r *http.Request) {
 			seed = flattenConversation(conv)
 		}
 	}
-	go s.runArchitectAsync(p.ID, p.Idea, seed) //nolint:gosec // G118: request ctx dies; the goroutine uses its own 90-min ctx
+	// Resume-from-step : si l'UI demande ?from_step=N, on skip les N
+	// premières skills. Utile quand un pipeline a grillé $3 sur
+	// create-prd et a failed à create-architecture — inutile de tout
+	// re-dépenser, on reprend à l'architect. 0 ou absent = retry from
+	// scratch (comportement par défaut).
+	fromStep := 0
+	if v := r.URL.Query().Get("from_step"); v != "" {
+		if n, perr := strconv.Atoi(v); perr == nil && n > 0 {
+			fromStep = n
+		}
+	}
+	go s.runArchitectAsyncFromStep(p.ID, p.Idea, seed, fromStep) //nolint:gosec // G118: request ctx dies; the goroutine uses its own 90-min ctx
 
-	writeJSON(w, map[string]string{"project_id": p.ID, "status": "retry-scheduled"})
+	writeJSON(w, map[string]any{
+		"project_id": p.ID,
+		"status":     "retry-scheduled",
+		"from_step":  fromStep,
+	})
 }
 
 // handleProjectPhases liste les 50 dernières invocations de skill
@@ -831,6 +848,22 @@ func (s *Server) handleDeleteProject(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	id := r.PathValue("id")
+	purgeWorkdir := r.URL.Query().Get("purge_workdir") == "true"
+
+	// Récupère le workdir AVANT la suppression pour pouvoir le rm -rf
+	// après. Si la lookup échoue on continue : pas de raison de
+	// bloquer le delete juste parce qu'on n'a pas pu trouver la ligne.
+	var workdir string
+	if purgeWorkdir {
+		if p, err := s.projectStore.GetByID(r.Context(), id); err == nil {
+			workdir = p.Workdir
+		}
+	}
+
+	// Annule un run éventuellement en cours avant le delete, sinon la
+	// goroutine continuera à écrire dans une ligne de DB effacée.
+	s.cancelRun(id)
+
 	if err := s.projectStore.Delete(r.Context(), id); err != nil {
 		if strings.Contains(err.Error(), "not found") {
 			writeError(w, http.StatusNotFound, "NOT_FOUND", err.Error())
@@ -839,5 +872,43 @@ func (s *Server) handleDeleteProject(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "DELETE_FAILED", err.Error())
 		return
 	}
-	writeJSON(w, map[string]string{"status": "removed", "id": id})
+
+	purged := false
+	if purgeWorkdir && workdir != "" && workdirIsSafeToPurge(workdir) {
+		if err := os.RemoveAll(workdir); err == nil {
+			purged = true
+		}
+	}
+	writeJSON(w, map[string]any{
+		"status":          "removed",
+		"id":              id,
+		"workdir_purged":  purged,
+		"workdir_skipped": purgeWorkdir && !purged,
+	})
+}
+
+// workdirIsSafeToPurge gate-keeps the rm -rf : we only accept absolute
+// paths under known prefixes (the user's home, /tmp, /var/folders on
+// macOS) and refuse pathologically-short paths like "/" or "/home".
+// A malicious workdir field on an existing project could otherwise
+// nuke the user's whole home directory via `?purge_workdir=true`.
+func workdirIsSafeToPurge(p string) bool {
+	if p == "" || !filepath.IsAbs(p) {
+		return false
+	}
+	clean := filepath.Clean(p)
+	if len(clean) < 8 {
+		return false // "/", "/tmp", "/home" etc.
+	}
+	home, _ := os.UserHomeDir()
+	allowed := []string{"/tmp/", "/var/folders/", "/private/var/folders/"}
+	if home != "" {
+		allowed = append(allowed, home+"/")
+	}
+	for _, prefix := range allowed {
+		if strings.HasPrefix(clean, prefix) && clean != strings.TrimSuffix(prefix, "/") {
+			return true
+		}
+	}
+	return false
 }
