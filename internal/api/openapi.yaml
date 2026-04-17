@@ -1,0 +1,446 @@
+openapi: 3.1.0
+info:
+  title: Hive API
+  version: 1.0.0
+  description: |
+    API REST de Hive, l'usine à produits BMAD locale single-user.
+    Toutes les routes sont non-authentifiées — le serveur injecte un
+    contexte admin local sur chaque requête (localAdminContext).
+    Rate-limitée à 120 req/min par IP (burst).
+  license:
+    name: Apache-2.0
+    url: https://www.apache.org/licenses/LICENSE-2.0
+
+servers:
+  - url: http://localhost:8233
+    description: Instance locale par défaut
+
+tags:
+  - name: projects
+    description: Création, lecture, suppression, export de projets BMAD
+  - name: intake
+    description: Conversation PM (5 questions) pour nourrir le PRD
+  - name: iterate
+    description: Brownfield — ajouter une feature à un projet livré
+  - name: github
+    description: Intégration gh (PAT login, OAuth device flow, repo list)
+  - name: fs
+    description: Folder picker pour workdir/repo_path
+  - name: costs
+    description: Cumul tokens Claude, projection, export CSV
+  - name: settings
+    description: État des notifications Slack
+  - name: observability
+    description: Events, audit, health, metrics
+
+paths:
+  /healthz:
+    get:
+      summary: Liveness probe
+      tags: [observability]
+      responses:
+        '200': { description: Serveur vivant }
+
+  /readyz:
+    get:
+      summary: Readiness probe
+      tags: [observability]
+      responses:
+        '200': { description: DB accessible }
+        '503': { description: DB indisponible }
+
+  /metrics:
+    get:
+      summary: Métriques Prometheus (text/plain)
+      tags: [observability]
+      responses:
+        '200':
+          description: Exposition format v0.0.4 + OpenMetrics
+
+  /api/v1/projects:
+    get:
+      summary: Lister les projets
+      tags: [projects]
+      responses:
+        '200': { description: Liste, $ref: '#/components/responses/ProjectList' }
+    post:
+      summary: Créer un projet
+      tags: [projects]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CreateProjectRequest' }
+      responses:
+        '201':
+          description: Projet créé
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Project' }
+
+  /api/v1/projects/{id}:
+    get:
+      summary: Détail projet + arbre epics/stories/ACs
+      tags: [projects]
+      parameters: [{ $ref: '#/components/parameters/ProjectID' }]
+      responses:
+        '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/Project' } } } }
+        '404': { description: Non trouvé }
+    delete:
+      summary: Supprimer un projet (optionnel rm -rf workdir)
+      tags: [projects]
+      parameters:
+        - $ref: '#/components/parameters/ProjectID'
+        - name: purge_workdir
+          in: query
+          schema: { type: boolean, default: false }
+          description: Si true, efface le workdir sur disque (sous allowlist $HOME / /tmp / /var/folders)
+      responses:
+        '200': { description: Supprimé }
+        '404': { description: Non trouvé }
+
+  /api/v1/projects/{id}/export:
+    get:
+      summary: Export complet (.tar.gz)
+      tags: [projects]
+      parameters: [{ $ref: '#/components/parameters/ProjectID' }]
+      responses:
+        '200':
+          description: Archive contenant project.json + phases.json + intake.json + workdir/
+          content:
+            application/gzip: {}
+
+  /api/v1/projects/{id}/phases:
+    get:
+      summary: 50 dernières invocations BMAD
+      tags: [projects]
+      parameters: [{ $ref: '#/components/parameters/ProjectID' }]
+      responses:
+        '200': { description: OK, content: { application/json: { schema: { type: array, items: { $ref: '#/components/schemas/PhaseStep' } } } } }
+
+  /api/v1/projects/{id}/cancel:
+    post:
+      summary: Annuler le run en cours (pipeline BMAD)
+      tags: [projects]
+      parameters: [{ $ref: '#/components/parameters/ProjectID' }]
+      responses: { '200': { description: Annulé } }
+
+  /api/v1/projects/{id}/retry-architect:
+    post:
+      summary: Relancer le pipeline (optionnellement depuis un step donné)
+      tags: [projects]
+      parameters:
+        - $ref: '#/components/parameters/ProjectID'
+        - name: from_step
+          in: query
+          schema: { type: integer, minimum: 0 }
+          description: Skip les N premières skills (utile pour reprendre après un crash tardif)
+      responses: { '200': { description: Retry planifié } }
+
+  /api/v1/projects/{id}/regenerate-plan:
+    post:
+      summary: Effacer l'arbre epic/story et relancer la planification
+      tags: [projects]
+      parameters: [{ $ref: '#/components/parameters/ProjectID' }]
+      responses: { '202': { description: Plan régénéré en background } }
+
+  /api/v1/projects/{id}/retrospective:
+    post:
+      summary: Forcer une rétrospective BMAD sur le projet
+      tags: [projects]
+      parameters: [{ $ref: '#/components/parameters/ProjectID' }]
+      responses: { '202': { description: Rétrospective schedulée } }
+
+  /api/v1/projects/{id}/prd:
+    patch:
+      summary: Modifier le PRD d'un projet non-shippé
+      tags: [projects]
+      parameters: [{ $ref: '#/components/parameters/ProjectID' }]
+      requestBody:
+        required: true
+        content: { application/json: { schema: { type: object, properties: { prd: { type: string } } } } }
+      responses: { '200': { description: PRD mis à jour } }
+
+  /api/v1/projects/{id}/stories/{story_id}/retry:
+    post:
+      summary: Reset une story bloquée pour que le devloop la reprenne
+      tags: [projects]
+      parameters:
+        - $ref: '#/components/parameters/ProjectID'
+        - name: story_id
+          in: path
+          required: true
+          schema: { type: string }
+      responses: { '200': { description: Story reset } }
+
+  /api/v1/projects/{id}/intake:
+    get:
+      summary: Récupérer la conversation PM (intake)
+      tags: [intake]
+      parameters: [{ $ref: '#/components/parameters/ProjectID' }]
+      responses: { '200': { description: Conversation } }
+
+  /api/v1/projects/{id}/intake/messages:
+    post:
+      summary: Envoyer un message à l'agent PM
+      tags: [intake]
+      parameters: [{ $ref: '#/components/parameters/ProjectID' }]
+      requestBody: { required: true, content: { application/json: { schema: { type: object, properties: { content: { type: string } } } } } }
+      responses: { '200': { description: Réponse agent + done flag } }
+
+  /api/v1/projects/{id}/intake/message:
+    patch:
+      summary: Éditer un message d'intake déjà envoyé
+      tags: [intake]
+      parameters: [{ $ref: '#/components/parameters/ProjectID' }]
+      requestBody: { required: true, content: { application/json: { schema: { type: object, properties: { id: { type: integer }, content: { type: string } } } } } }
+      responses: { '200': { description: Message mis à jour } }
+
+  /api/v1/projects/{id}/intake/finalize:
+    post:
+      summary: Finaliser l'intake et lancer le pipeline BMAD
+      tags: [intake]
+      parameters: [{ $ref: '#/components/parameters/ProjectID' }]
+      responses: { '202': { description: Architect lancé en background } }
+
+  /api/v1/projects/{id}/iterate:
+    get:
+      summary: Récupérer la conversation d'itération (brownfield)
+      tags: [iterate]
+      parameters: [{ $ref: '#/components/parameters/ProjectID' }]
+      responses: { '200': { description: Conversation } }
+
+  /api/v1/projects/{id}/iterate/messages:
+    post:
+      summary: Envoyer un message à l'agent d'itération
+      tags: [iterate]
+      parameters: [{ $ref: '#/components/parameters/ProjectID' }]
+      requestBody: { required: true, content: { application/json: { schema: { type: object, properties: { content: { type: string } } } } } }
+      responses: { '200': { description: Réponse agent } }
+
+  /api/v1/projects/{id}/iterate/finalize:
+    post:
+      summary: Finaliser l'itération et lancer le brownfield pipeline
+      tags: [iterate]
+      parameters: [{ $ref: '#/components/parameters/ProjectID' }]
+      responses: { '202': { description: IterationPipeline lancé } }
+
+  /api/v1/projects/{id}/files:
+    get:
+      summary: Lister les fichiers du workdir
+      tags: [projects]
+      parameters: [{ $ref: '#/components/parameters/ProjectID' }]
+      responses: { '200': { description: Liste récursive } }
+
+  /api/v1/projects/{id}/files/content:
+    get:
+      summary: Lire le contenu d'un fichier du workdir
+      tags: [projects]
+      parameters:
+        - $ref: '#/components/parameters/ProjectID'
+        - name: path
+          in: query
+          required: true
+          schema: { type: string }
+      responses: { '200': { description: Contenu fichier } }
+
+  /api/v1/gh/status:
+    get:
+      summary: État de la CLI gh (installé, auth, login)
+      tags: [github]
+      responses: { '200': { description: GhStatus } }
+
+  /api/v1/gh/login:
+    post:
+      summary: Login par PAT
+      tags: [github]
+      requestBody: { required: true, content: { application/json: { schema: { type: object, properties: { token: { type: string } } } } } }
+      responses: { '200': { description: Logged in }, '400': { description: Token invalide } }
+
+  /api/v1/gh/logout:
+    post:
+      summary: Logout de gh
+      tags: [github]
+      responses: { '200': { description: Logged out } }
+
+  /api/v1/gh/repos:
+    get:
+      summary: Lister les repos accessibles
+      tags: [github]
+      responses: { '200': { description: Array Repo } }
+
+  /api/v1/gh/device/start:
+    post:
+      summary: Lancer OAuth device flow
+      tags: [github]
+      responses: { '200': { description: DeviceStart (user_code + verification_uri + device_code) } }
+
+  /api/v1/gh/device/poll:
+    post:
+      summary: Poll du device code jusqu'à autorisation
+      tags: [github]
+      requestBody: { required: true, content: { application/json: { schema: { type: object, properties: { device_code: { type: string } } } } } }
+      responses:
+        '200': { description: Token obtenu et persisté dans gh }
+        '202': { description: En attente (authorization_pending ou slow_down) }
+        '400': { description: Token expiré ou refusé }
+
+  /api/v1/fs/home:
+    get:
+      summary: Home directory du user
+      tags: [fs]
+      responses: { '200': { description: { path } } }
+
+  /api/v1/fs/list:
+    get:
+      summary: Lister un répertoire local (folder picker)
+      tags: [fs]
+      parameters:
+        - name: path
+          in: query
+          required: true
+          schema: { type: string }
+      responses: { '200': { description: Entries } }
+
+  /api/v1/costs:
+    get:
+      summary: Résumé coûts agrégé (par projet, phase, commande)
+      tags: [costs]
+      responses: { '200': { description: CostSummary } }
+
+  /api/v1/costs.csv:
+    get:
+      summary: Export CSV des coûts (3 sections concaténées)
+      tags: [costs]
+      responses:
+        '200':
+          description: CSV text
+          content: { text/csv: {} }
+
+  /api/v1/settings/notify:
+    get:
+      summary: État du webhook Slack
+      tags: [settings]
+      responses: { '200': { description: NotifySettings } }
+
+  /api/v1/settings/notify/test:
+    post:
+      summary: Tester l'envoi vers Slack
+      tags: [settings]
+      responses:
+        '200': { description: Envoyé }
+        '400': { description: Non configuré }
+        '502': { description: Slack a rejeté ou est injoignable }
+
+  /api/v1/events:
+    get:
+      summary: Lister les événements
+      tags: [observability]
+      parameters:
+        - name: type
+          in: query
+          schema: { type: string }
+        - name: limit
+          in: query
+          schema: { type: integer, default: 50 }
+      responses: { '200': { description: Liste Event } }
+    post:
+      summary: Publier un event manuel (debug)
+      tags: [observability]
+      requestBody: { required: true, content: { application/json: { schema: { type: object, properties: { type: { type: string }, payload: { type: object } } } } } }
+      responses: { '201': { description: Publié } }
+
+  /api/v1/audit:
+    get:
+      summary: Journal d'audit (actions sensibles)
+      tags: [observability]
+      responses: { '200': { description: Liste AuditEntry } }
+
+components:
+  parameters:
+    ProjectID:
+      name: id
+      in: path
+      required: true
+      schema: { type: string, example: prj_01ABC }
+
+  responses:
+    ProjectList:
+      description: Liste des projets
+      content:
+        application/json:
+          schema:
+            type: array
+            items: { $ref: '#/components/schemas/Project' }
+
+  schemas:
+    CreateProjectRequest:
+      type: object
+      required: [idea]
+      properties:
+        name: { type: string }
+        idea: { type: string }
+        workdir: { type: string }
+        bmad_output_path: { type: string }
+        repo_path: { type: string }
+        clone_repo: { type: string, description: "URL ou owner/name à cloner" }
+        create_repo: { type: string, description: "Nom du nouveau repo à créer" }
+        repo_visibility: { type: string, enum: [private, public, internal] }
+        cost_cap_usd: { type: number, description: "Plafond coût en USD, 0 ou omis = illimité" }
+
+    Project:
+      type: object
+      properties:
+        id: { type: string }
+        name: { type: string }
+        idea: { type: string }
+        status: { type: string, enum: [draft, planning, building, shipped, failed] }
+        workdir: { type: string }
+        repo_url: { type: string, nullable: true }
+        is_existing: { type: boolean }
+        prd: { type: string, nullable: true }
+        total_cost_usd: { type: number }
+        cost_cap_usd: { type: number }
+        failure_stage: { type: string, nullable: true }
+        failure_error: { type: string, nullable: true }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+        epics: { type: array, items: { $ref: '#/components/schemas/Epic' } }
+
+    Epic:
+      type: object
+      properties:
+        id: { type: string }
+        title: { type: string }
+        description: { type: string }
+        status: { type: string }
+        stories: { type: array, items: { $ref: '#/components/schemas/Story' } }
+
+    Story:
+      type: object
+      properties:
+        id: { type: string }
+        title: { type: string }
+        description: { type: string }
+        status: { type: string, enum: [ready-for-dev, in-progress, dev, review, ready-for-done, done, blocked] }
+        iterations: { type: integer }
+        branch: { type: string, nullable: true }
+        pr_url: { type: string, nullable: true }
+        acceptance_criteria: { type: array, items: { type: string } }
+
+    PhaseStep:
+      type: object
+      properties:
+        id: { type: integer }
+        phase: { type: string, enum: [planning, iteration, story, review, retrospective] }
+        command: { type: string, example: /bmad-create-prd }
+        status: { type: string, enum: [running, done, failed] }
+        started_at: { type: string }
+        finished_at: { type: string }
+        input_tokens: { type: integer }
+        output_tokens: { type: integer }
+        cost_usd: { type: number }
+        reply_preview: { type: string }
+        error: { type: string }
+
+  securitySchemes: {}

@@ -141,6 +141,7 @@ func (s *Server) routes() {
 	s.mux.Handle("GET /api/v1/gh/repos", http.HandlerFunc(s.handleGhRepos))
 	s.mux.Handle("POST /api/v1/gh/device/start", http.HandlerFunc(s.handleGhDeviceStart))
 	s.mux.Handle("POST /api/v1/gh/device/poll", http.HandlerFunc(s.handleGhDevicePoll))
+	s.mux.Handle("GET /api/openapi.yaml", http.HandlerFunc(s.handleOpenAPI))
 	s.mux.Handle("GET /api/v1/costs", http.HandlerFunc(s.handleCostSummary))
 	s.mux.Handle("GET /api/v1/costs.csv", http.HandlerFunc(s.handleCostSummaryCSV))
 	s.mux.Handle("GET /api/v1/projects/{id}/export", http.HandlerFunc(s.handleExportProject))
