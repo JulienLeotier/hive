@@ -1,12 +1,15 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/JulienLeotier/hive/internal/architect"
 	"github.com/JulienLeotier/hive/internal/project"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -160,6 +163,65 @@ func TestRetryStoryRejectsNonBlocked(t *testing.T) {
 	srv.Handler().ServeHTTP(w, req)
 
 	assert.Equal(t, http.StatusConflict, w.Code, "can't retry a story that isn't blocked")
+}
+
+func TestRecoverStuckPlanningRekicksArchitect(t *testing.T) {
+	srv := setupServer(t)
+	store := project.NewStore(srv.db())
+	srv.WithProjectStore(store).architectAgentOverride = architect.NewScripted()
+
+	// Seed a project that looks exactly like one orphaned mid-architect:
+	// status=planning, prd saved, no epics.
+	const prd = `# PRD
+
+## Summary
+
+idea body
+
+## Audience & problem
+
+users
+
+## Core flows
+
+do things
+
+## Constraints & non-goals
+
+none
+
+## Tech notes
+
+Go
+
+## Definition of done
+
+tests pass
+`
+	p, err := store.Create(context.Background(), "default", "a test idea", project.CreateOpts{Name: "orphan"})
+	require.NoError(t, err)
+	_, err = srv.db().Exec(`UPDATE projects SET prd = ?, status = ? WHERE id = ?`,
+		prd, project.StatusPlanning, p.ID)
+	require.NoError(t, err)
+
+	require.NoError(t, srv.RecoverStuckPlanning(context.Background()))
+
+	// runArchitectAsync is a goroutine; give it a moment to finish with
+	// the scripted agent (synchronous CPU work).
+	deadline := time.Now().Add(5 * time.Second)
+	var status string
+	for time.Now().Before(deadline) {
+		require.NoError(t, srv.db().QueryRow(`SELECT status FROM projects WHERE id = ?`, p.ID).Scan(&status))
+		if status == string(project.StatusBuilding) {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	assert.Equal(t, string(project.StatusBuilding), status, "stuck planning project must advance to building")
+
+	var epicCount int
+	require.NoError(t, srv.db().QueryRow(`SELECT COUNT(*) FROM epics WHERE project_id = ?`, p.ID).Scan(&epicCount))
+	assert.Greater(t, epicCount, 0, "architect must have emitted at least one epic")
 }
 
 func TestGetProjectNotFoundReturns404(t *testing.T) {

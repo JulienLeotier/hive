@@ -132,6 +132,47 @@ func (s *Server) handleIntakeFinalize(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// RecoverStuckPlanning re-kicks the Architect for every project parked
+// in status=`planning` that has a saved PRD but no epic tree. This
+// handles the case where the server was killed mid-architect: the
+// detached goroutine dies with the process, leaving the project in a
+// state the UI can't recover from. Safe to call more than once — the
+// Architect dispatcher is idempotent on existing trees.
+func (s *Server) RecoverStuckPlanning(ctx context.Context) error {
+	if s.projectStore == nil {
+		return nil
+	}
+	rows, err := s.db().QueryContext(ctx,
+		`SELECT p.id, p.idea, COALESCE(p.prd, '')
+		 FROM projects p
+		 WHERE p.status = ?
+		   AND p.prd IS NOT NULL AND p.prd <> ''
+		   AND NOT EXISTS (SELECT 1 FROM epics e WHERE e.project_id = p.id)`,
+		project.StatusPlanning,
+	)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	type stuck struct{ id, idea, prd string }
+	var list []stuck
+	for rows.Next() {
+		var s stuck
+		if err := rows.Scan(&s.id, &s.idea, &s.prd); err != nil {
+			return err
+		}
+		list = append(list, s)
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	for _, st := range list {
+		slog.Info("recovering stuck planning project", "project", st.id)
+		go s.runArchitectAsync(st.id, st.idea, st.prd)
+	}
+	return nil
+}
+
 // runArchitectAsync executes Architect.Run detached from the caller and
 // emits dashboard events so the UI can track progress. It uses a fresh
 // 10-minute background context — the request context is already gone by

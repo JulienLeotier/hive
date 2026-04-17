@@ -295,6 +295,13 @@ var serveCmd = &cobra.Command{
 			WithProjectStore(project.NewStore(store.DB)).
 			WithIntakeStore(intake.NewStore(store.DB))
 
+		// Pick up any projects that were mid-architect when the previous
+		// server process died. See Server.RecoverStuckPlanning — runs the
+		// Architect again in a detached goroutine so the UI unblocks.
+		if err := apiSrv.RecoverStuckPlanning(supervisorCtx); err != nil {
+			slog.Warn("architect crash-recovery sweep failed", "error", err)
+		}
+
 		// Story 21.1: wire OIDC provider if configured.
 		if cfg.OIDC != nil && cfg.OIDC.Issuer != "" {
 			provider, err := auth.NewOIDCProvider(context.Background(), auth.OIDCConfig{
