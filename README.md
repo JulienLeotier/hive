@@ -83,8 +83,33 @@ make serve   # build complet puis ./hive serve
 ```
 
 Ouvre <http://localhost:8233> et crée ton premier projet. L'intégration
-GitHub se fait via un token personnel collé dans l'UI (login PAT) —
-scopes recommandés : `repo`, `workflow`, `read:org`.
+GitHub se fait soit via un token personnel collé dans l'UI (login PAT,
+scopes recommandés : `repo`, `workflow`, `read:org`), soit via OAuth
+device flow en cliquant « Se connecter via navigateur ».
+
+Pour recevoir des notifications Slack sur les événements critiques
+(ship, échec pipeline, plafond coût atteint) :
+
+```bash
+export HIVE_SLACK_WEBHOOK=https://hooks.slack.com/services/...
+./hive serve
+```
+
+Testable depuis `/settings` avec le bouton « Tester le webhook ».
+
+---
+
+## Dashboard
+
+- `/` — accueil, état global
+- `/projects` — liste + création de projets (greenfield / brownfield)
+- `/projects/{id}` — détail : phases BMAD live, coût cumulé, édition
+  intake, bouton **Reprendre au step suivant** (saute les skills déjà
+  réussies) vs **Relancer BMAD** (tout recommencer)
+- `/costs` — consommation Claude agrégée : par projet / par phase /
+  top commandes, projection coût/h, export CSV
+- `/events` + `/audit` — observabilité temps réel
+- `/settings` — état des notifications (webhook Slack) + bouton test
 
 ---
 
@@ -92,13 +117,14 @@ scopes recommandés : `repo`, `workflow`, `read:org`.
 
 | Couche | Emplacement | Rôle |
 |---|---|---|
-| API REST + WS | `internal/api/` | Routes `/api/v1/projects/*`, `/intake/*`, `/iterate/*`, `/phases`, `/cancel`, `/retry-architect`, `/fs/*`, `/gh/*` + hub WebSocket |
-| BMAD runner | `internal/bmad/` | `Install()` (npx bmad-method), `Invoke()` (`claude --print --dangerously-skip-permissions`), `RunSequenceObserved()` (liste de slash-commands + callbacks progress/cost) |
-| Workflow BMAD | `internal/bmad/workflow.go` | Les 6 séquences officielles (Analysis, Planning, Solutioning, ImplementationInit, Story, Review, Retrospective) + FullPlanningPipeline et IterationPipeline |
-| Dev loop | `internal/devloop/` | Supervisor polling `building` projects, parallélisme borné (3 projets), invocation des skills dev/review BMAD per story, crash recovery |
+| API REST + WS | `internal/api/` | Routes `/api/v1/projects/*`, `/intake/*`, `/iterate/*`, `/phases`, `/cancel`, `/retry-architect` (avec `?from_step=N`), `/fs/*`, `/gh/*`, `/costs`, `/settings/notify/*` + hub WebSocket |
+| BMAD runner | `internal/bmad/` | `Install()` (npx bmad-method), `Invoke()` (`claude --print --dangerously-skip-permissions`), `RunSequenceObserved()` (liste de slash-commands + callbacks progress/cost). Coverage 74%. |
+| Workflow BMAD | `internal/bmad/workflow.go` | Les séquences officielles (Analysis, Planning, Solutioning, ImplementationInit, Story, Review, Retrospective) + FullPlanningPipeline et IterationPipeline |
+| Dev loop | `internal/devloop/` | Supervisor polling `building` projects, parallélisme borné (3 projets), invocation des skills dev/review BMAD per story, crash recovery, fallback git direct quand BMAD ne pousse pas de PR |
 | Project store | `internal/project/` | CRUD + epic/story/AC tree sur SQLite |
 | Intake | `internal/intake/` | Conversation PM avec rubric scripted (agent fallback), `IterationAgent` pour brownfield |
-| Git | `internal/git/`, `internal/devloop/git.go` | Clone/create repo via `gh`, auth status, local git init pour le bootstrap |
+| Git | `internal/git/` | Clone/create repo via `gh`, OAuth device flow, PAT login, `EnsureStoryPushed` (commit+push+PR idempotent) |
+| Notifications | `internal/notify/` | Webhook Slack opt-in via `HIVE_SLACK_WEBHOOK`, événements : `project.shipped`, `*_failed`, `cost_cap_reached` |
 | Dashboard | `web/` | SvelteKit statique embarqué dans le binaire Go |
 
 ---
@@ -119,17 +145,23 @@ local-only (commits locaux, pas de PR).
 
 ## Tests end-to-end
 
-Script qui lance une vraie build BMAD contre Claude + gh :
+Deux scripts qui lancent une vraie build BMAD contre Claude + gh :
 
 ```bash
+# Greenfield : crée un nouveau projet « CLI compliment aléatoire »
 HIVE_E2E_TIMEOUT=3600 ./scripts/claude-e2e.sh
+
+# Brownfield : clone un repo existant et ajoute une feature (--version)
+HIVE_BROWNFIELD_REPO=owner/repo ./scripts/claude-e2e-brownfield.sh
 ```
 
-Le script instancie un hive jetable sur :18233, crée un mini projet
-(« CLI qui sort un compliment aléatoire »), laisse BMAD tourner son
-pipeline complet et vérifie que le projet flippe en `shipped`.
-Observable dans le dashboard à `http://localhost:18233` pendant
-l'exécution.
+Chaque script instancie un hive jetable, drive intake → finalize →
+attend `shipped`. Observable dans le dashboard pendant l'exécution.
+Compte ~$5–15 en tokens Claude par run (ou équivalent quota Pro/Max
+si tu tournes via Claude Code en subscription).
+
+En dev sans claude : `HIVE_DEV_AGENT=scripted ./hive serve` pour
+exercer le flow avec les agents déterministes fallback.
 
 ---
 

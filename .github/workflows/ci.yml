@@ -49,27 +49,26 @@ jobs:
           # pipeline (idea → PRD → plan → code → review → ship).
           # Excludes api (integration tests) and storage (Postgres
           # paths need a live server, covered in the postgres job).
+          # bmad/ tests the Runner + workflow sequences via a fake
+          # claude stub — no CLI required.
           go test -race -timeout 2m -coverprofile=coverage.out \
-            ./internal/architect/... \
+            ./internal/bmad/... \
             ./internal/devloop/... \
             ./internal/event/... \
             ./internal/intake/... \
             ./internal/project/...
           go tool cover -func=coverage.out | tail -n1
 
-      - name: Assert core coverage >= 40%
+      - name: Assert core coverage >= 55%
         run: |
-          # Threshold is 40% post-pivot because a chunk of the BMAD
-          # core is Claude-CLI adapters (claude_code.go in devloop+
-          # intake+architect) whose happy path is gated behind the
-          # claude_e2e build tag and doesn't count in unit coverage.
-          # project/ is a thin data-access layer exercised
-          # transitively by architect/ + intake/ + api/ tests. Raise
-          # back once those adapters get contract-style tests against
-          # a fake CLI.
+          # Threshold bumped from 40% → 55% after internal/bmad went
+          # from 0% to 74% coverage (P40). The remaining gap on 55%
+          # is mostly claude_code.go adapters in devloop/intake whose
+          # happy path requires the real `claude` CLI and is only
+          # exercised under the claude_e2e build tag.
           total=$(go tool cover -func=coverage.out | tail -n1 | awk '{print $3}' | tr -d '%')
           echo "core coverage: ${total}%"
-          awk -v c="$total" 'BEGIN { exit (c+0 >= 40) ? 0 : 1 }'
+          awk -v c="$total" 'BEGIN { exit (c+0 >= 55) ? 0 : 1 }'
 
       - name: Full test suite
         run: go test -race -timeout 5m ./...
