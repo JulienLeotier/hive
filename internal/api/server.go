@@ -95,6 +95,12 @@ func (s *Server) routes() {
 	s.mux.Handle("POST /api/v1/gh/login", http.HandlerFunc(s.handleGhLogin))
 	s.mux.Handle("POST /api/v1/gh/logout", http.HandlerFunc(s.handleGhLogout))
 	s.mux.Handle("GET /api/v1/gh/repos", http.HandlerFunc(s.handleGhRepos))
+
+	// Folder picker local : le formulaire projet s'en sert pour
+	// laisser l'opérateur choisir workdir / repo_path via un modal au
+	// lieu de taper le chemin à la main.
+	s.mux.Handle("GET /api/v1/fs/home", http.HandlerFunc(s.handleFSHome))
+	s.mux.Handle("GET /api/v1/fs/list", http.HandlerFunc(s.handleFSList))
 	s.mux.Handle("DELETE /api/v1/projects/{id}", http.HandlerFunc(s.handleDeleteProject))
 
 	// BMAD PM intake — the Q&A that turns the idea into a PRD.

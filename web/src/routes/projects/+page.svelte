@@ -2,6 +2,7 @@
 	import { apiGet, apiPost, apiDelete } from '$lib/api';
 	import { fmtRelative } from '$lib/format';
 	import { createReconnectingWS, wsURL } from '$lib/ws';
+	import FolderPicker from '$lib/FolderPicker.svelte';
 	import ListScaffold from '$lib/ListScaffold.svelte';
 
 	type Project = {
@@ -226,17 +227,23 @@
 			</label>
 			<label>
 				Répertoire de travail
-				<input type="text" placeholder="/Users/moi/projects/writers-app (optionnel)" bind:value={workdir} />
+				<FolderPicker bind:value={workdir}
+					placeholder="/Users/moi/projects/writers-app (optionnel)"
+					label="Choisir le répertoire de travail" />
 				<small>C'est là que le Dev commitera le code. Peut être défini plus tard.</small>
 			</label>
 			<label>
 				Dossier BMAD existant <span class="hint-pill">optionnel</span>
-				<input type="text" placeholder="/Users/moi/bmad-output/writers-app" bind:value={bmadOutputPath} />
+				<FolderPicker bind:value={bmadOutputPath}
+					placeholder="/Users/moi/bmad-output/writers-app"
+					label="Choisir le dossier BMAD existant" />
 				<small>Si tu as déjà lancé BMAD ailleurs (PRD, epics, stories), pointe vers ce dossier et l'Architecte réutilisera les artefacts existants.</small>
 			</label>
 			<label>
 				Repo existant (chemin local) <span class="hint-pill">optionnel</span>
-				<input type="text" placeholder="/Users/moi/projects/mon-app-existante" bind:value={repoPath} />
+				<FolderPicker bind:value={repoPath}
+					placeholder="/Users/moi/projects/mon-app-existante"
+					label="Choisir un repo local existant" />
 				<small>Ajoute BMAD à une base de code existante. Les agents Dev travaillent dans ce repo au lieu de scaffolder à partir de zéro.</small>
 			</label>
 
