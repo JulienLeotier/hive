@@ -2,6 +2,12 @@ module github.com/JulienLeotier/hive
 
 go 1.25.0
 
+// govulncheck 2026-04: stdlib advisories GO-2026-{4599,4600,4601,4602,4866,
+// 4870,4946,4947} are fixed in Go 1.26.2. Pinning the toolchain so the
+// module builds against the patched stdlib even on dev machines running
+// an older 1.26.0.
+toolchain go1.26.2
+
 require (
 	github.com/golang-jwt/jwt/v5 v5.3.1
 	github.com/gorilla/websocket v1.5.3
