@@ -55,8 +55,33 @@
 		epics?: Epic[];
 	};
 
+	type ProjectEvent = {
+		id: number;
+		type: string;
+		source: string;
+		payload: string;
+		created_at: string;
+		_parsed?: Record<string, unknown>;
+	};
+
 	let project = $state<Project | null>(null);
 	let loading = $state(true);
+	let activity = $state<ProjectEvent[]>([]);
+
+	function parseEvt(e: ProjectEvent): ProjectEvent {
+		if (e._parsed) return e;
+		try {
+			e._parsed = JSON.parse(e.payload ?? '{}') as Record<string, unknown>;
+		} catch {
+			e._parsed = {};
+		}
+		return e;
+	}
+
+	function evtBelongsToProject(e: ProjectEvent, pid: string): boolean {
+		parseEvt(e);
+		return (e._parsed?.project_id as string | undefined) === pid;
+	}
 
 	// Intake state
 	let conversation = $state<Conversation | null>(null);
@@ -76,6 +101,17 @@
 			/* banner */
 		} finally {
 			loading = false;
+		}
+	}
+
+	async function loadActivity() {
+		const id = $page.params.id ?? '';
+		if (!id) return;
+		try {
+			const raw = (await apiGet<ProjectEvent[]>(`/api/v1/events?limit=200`)) ?? [];
+			activity = raw.filter((e) => evtBelongsToProject(e, id));
+		} catch {
+			/* banner */
 		}
 	}
 
@@ -135,9 +171,13 @@
 	// not hammering SQLite for no reason.
 	$effect(() => {
 		load();
+		loadActivity();
 		const fast = project?.status === 'building' || project?.status === 'review';
 		const intervalMs = fast ? 2000 : 10000;
-		const i = setInterval(load, intervalMs);
+		const i = setInterval(() => {
+			load();
+			loadActivity();
+		}, intervalMs);
 		return () => clearInterval(i);
 	});
 
@@ -149,19 +189,14 @@
 			url: wsURL('/ws'),
 			onmessage: (msg) => {
 				try {
-					const evt = JSON.parse(msg.data) as { type?: string; payload?: string };
+					const evt = JSON.parse(msg.data) as ProjectEvent;
 					if (!evt.type) return;
-					if (!evt.type.startsWith('story.') && evt.type !== 'project.shipped') return;
-					// Payload is a JSON string on the wire; parse and match project_id.
 					const pid = $page.params.id ?? '';
-					let payloadProject = '';
-					try {
-						const p = JSON.parse(evt.payload ?? '{}') as { project_id?: string };
-						payloadProject = p.project_id ?? '';
-					} catch {
-						return;
-					}
-					if (payloadProject && payloadProject === pid) load();
+					if (!evtBelongsToProject(evt, pid)) return;
+					// Prepend to activity feed, dedupe by id, cap at 200.
+					activity = [evt, ...activity.filter((x) => x.id !== evt.id)].slice(0, 200);
+					// Story/project status changes should also re-fetch the tree.
+					if (evt.type.startsWith('story.') || evt.type === 'project.shipped') load();
 				} catch {
 					/* ignore non-JSON frames */
 				}
@@ -179,6 +214,14 @@
 
 	function isActive(s: string): boolean {
 		return s === 'dev' || s === 'review' || s === 'in_progress';
+	}
+
+	function eventColor(t: string): string {
+		if (t === 'project.shipped' || t === 'story.reviewed') return 'var(--ok)';
+		if (t === 'story.blocked' || t.endsWith('.failed')) return 'var(--err)';
+		if (t === 'story.review_failed') return 'var(--warn)';
+		if (t.startsWith('story.')) return 'var(--accent)';
+		return 'var(--muted)';
 	}
 
 	function statusColor(s: string): string {
@@ -337,6 +380,27 @@
 			<section class="panel">
 				<h3>PRD</h3>
 				<pre class="prd">{project.prd}</pre>
+			</section>
+		{/if}
+
+		{#if activity.length > 0}
+			<section class="activity">
+				<h2>Activity <span class="count">{activity.length}</span></h2>
+				<ul class="feed">
+					{#each activity.slice(0, 50) as e (e.id)}
+						{@const parsed = (parseEvt(e)._parsed ?? {}) as Record<string, unknown>}
+						<li>
+							<span class="t" style="color:{eventColor(e.type)}">{e.type}</span>
+							<span class="muted">{fmtRelative(e.created_at)}</span>
+							{#if typeof parsed.story === 'string'}
+								<span class="story-ref">{parsed.story}</span>
+							{/if}
+							{#if typeof parsed.feedback === 'string' && parsed.feedback}
+								<span class="feedback">{parsed.feedback}</span>
+							{/if}
+						</li>
+					{/each}
+				</ul>
 			</section>
 		{/if}
 
@@ -624,6 +688,47 @@
 		display: flex;
 		flex-direction: column;
 		gap: 0.5rem;
+	}
+	.activity .count {
+		font-size: 0.75rem;
+		color: var(--muted);
+		font-weight: 400;
+		margin-left: 0.25rem;
+	}
+	.feed {
+		list-style: none;
+		padding: 0;
+		margin: 0;
+		display: flex;
+		flex-direction: column;
+		gap: 0.3rem;
+		max-height: 280px;
+		overflow-y: auto;
+		background: var(--bg-alt);
+		border: 1px solid var(--border);
+		border-radius: 6px;
+		padding: 0.5rem 0.75rem;
+	}
+	.feed li {
+		display: flex;
+		gap: 0.6rem;
+		align-items: baseline;
+		font-size: 0.82rem;
+		line-height: 1.4;
+	}
+	.feed .t { font-weight: 600; min-width: 11rem; }
+	.feed .story-ref {
+		font-family: ui-monospace, monospace;
+		font-size: 0.78rem;
+		color: var(--text);
+	}
+	.feed .feedback {
+		color: var(--muted);
+		font-style: italic;
+		white-space: nowrap;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		max-width: 38rem;
 	}
 	.stories li {
 		padding: 0.6rem 0.75rem;
