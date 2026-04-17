@@ -262,12 +262,23 @@ func (s *Server) runArchitectAsync(projectID, idea, seedDoc string) {
 		return
 	}
 
-	// On applique à la lettre la séquence Planning + Solutioning +
-	// sprint-planning telle que décrite dans les docs BMAD-METHOD :
-	// 10 slash-commands dans l'ordre, chacune dans sa propre
-	// invocation `claude --print` (BMAD recommande "fresh chat each").
-	// Voir internal/bmad/workflow.go:PlanningSequence.
-	if _, err := runner.RunSequence(ctx, workdir, bmad.PlanningSequence); err != nil {
+	// On applique à la lettre le pipeline Analysis + Planning +
+	// Solutioning + Implementation-init tel que décrit dans les docs
+	// BMAD-METHOD. Soit en tout, dans l'ordre :
+	//
+	//   Phase 1 Analysis    : bmad-agent-analyst, bmad-product-brief
+	//   Phase 2 Planning    : bmad-agent-pm, bmad-create-prd,
+	//                         bmad-validate-prd,
+	//                         bmad-agent-ux-designer, bmad-create-ux-design
+	//   Phase 3 Solutioning : bmad-agent-architect, bmad-create-architecture,
+	//                         bmad-agent-pm, bmad-create-epics-and-stories,
+	//                         bmad-agent-architect,
+	//                         bmad-check-implementation-readiness
+	//   Phase 4 init        : bmad-agent-dev, bmad-sprint-planning
+	//
+	// Chaque slash-command tourne dans une invocation `claude --print`
+	// séparée (doc BMAD : « fresh chat each »).
+	if _, err := runner.RunSequence(ctx, workdir, bmad.FullPlanningPipeline); err != nil {
 		fail("planning-sequence", err)
 		return
 	}

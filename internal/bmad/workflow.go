@@ -13,43 +13,76 @@ import (
 
 // Les séquences ci-dessous reproduisent scrupuleusement le workflow
 // officiel BMAD-METHOD (github.com/bmad-code-org/BMAD-METHOD, Phases
-// 2 + 3 + 4). Chaque slash-command est exécutée dans sa propre
-// invocation `claude --print` — BMAD indique explicitement que chaque
-// skill doit tourner dans un chat neuf.
+// 1 à 4). Chaque slash-command est exécutée dans sa propre invocation
+// `claude --print` — la doc BMAD indique explicitement que chaque
+// skill doit tourner dans un chat neuf (« fresh chat each »).
 
-// PlanningSequence enchaîne les phases Planning + Solutioning + l'init
-// d'Implementation (sprint-planning) :
-//
-//	 1. bmad-agent-pm             (active le PM)
-//	 2. bmad-create-prd           (PRD)
-//	 3. bmad-agent-architect      (active l'Architecte)
-//	 4. bmad-create-architecture  (Architecture)
-//	 5. bmad-agent-pm             (repasse PM)
-//	 6. bmad-create-epics-and-stories
-//	 7. bmad-agent-architect      (repasse Architecte)
-//	 8. bmad-check-implementation-readiness
-//	 9. bmad-agent-dev            (active le Dev)
-//	10. bmad-sprint-planning      (initialise sprint-status.yaml)
+// AnalysisSequence (Phase 1) — on active l'agent Analyst puis on
+// produit un product brief à partir de l'idée du user + l'intake
+// chat. `bmad-brainstorming` est optionnelle et interactive, on la
+// saute en mode non-interactive ; même raison pour les trois
+// research skills. Le brief produit nourrit la skill create-prd qui
+// suit en Phase 2.
+var AnalysisSequence = []string{
+	"/bmad-agent-analyst",
+	"/bmad-product-brief",
+}
+
+// PlanningSequence (Phase 2) — PM prend la main, rédige le PRD,
+// valide, puis passe le relais au designer UX (bmad considère l'UX
+// comme systématique ; la skill elle-même saute le travail quand le
+// projet est sans UI).
 var PlanningSequence = []string{
 	"/bmad-agent-pm",
 	"/bmad-create-prd",
+	"/bmad-validate-prd",
+	"/bmad-agent-ux-designer",
+	"/bmad-create-ux-design",
+}
+
+// SolutioningSequence (Phase 3) — Architecte rédige l'architecture,
+// PM décompose en epics et stories, Architecte valide la readiness.
+// Suit exactement la doc BMAD : « bmad-agent-architect +
+// bmad-create-architecture ; bmad-agent-pm +
+// bmad-create-epics-and-stories ; bmad-agent-architect +
+// bmad-check-implementation-readiness ».
+var SolutioningSequence = []string{
 	"/bmad-agent-architect",
 	"/bmad-create-architecture",
 	"/bmad-agent-pm",
 	"/bmad-create-epics-and-stories",
 	"/bmad-agent-architect",
 	"/bmad-check-implementation-readiness",
+}
+
+// ImplementationInitSequence (Phase 4 init) — le Dev prend la main
+// et initialise sprint-status.yaml via bmad-sprint-planning.
+var ImplementationInitSequence = []string{
 	"/bmad-agent-dev",
 	"/bmad-sprint-planning",
 }
 
+// FullPlanningPipeline concatène Analysis + Planning + Solutioning +
+// ImplementationInit. C'est ce que Hive lance à partir du finalize
+// intake, une seule fois par projet.
+var FullPlanningPipeline = concat(
+	AnalysisSequence,
+	PlanningSequence,
+	SolutioningSequence,
+	ImplementationInitSequence,
+)
+
 // StorySequence est le cycle de build per-story de la Phase 4 BMAD.
-// Doc BMAD : "Build cycle (per story, fresh chat each): create-story,
-// dev-story, code-review". On scinde code-review parce que Hive le
-// traite comme un agent séparé (ReviewerAgent).
+// Doc BMAD : « Build cycle (per story, fresh chat each): create-story,
+// dev-story, code-review ». On scinde code-review parce que Hive le
+// traite comme un agent séparé (ReviewerAgent), et on ajoute
+// bmad-qa-generate-e2e-tests au bout du cycle dev pour que la story
+// livre ses tests e2e (BMAD le fait spontanément sur certains
+// projets).
 var StorySequence = []string{
 	"/bmad-create-story",
 	"/bmad-dev-story",
+	"/bmad-qa-generate-e2e-tests",
 }
 
 // ReviewSequence : juste l'étape de revue, tenue à part parce que
@@ -60,10 +93,32 @@ var ReviewSequence = []string{
 }
 
 // RetrospectiveSequence s'exécute à la fin de chaque epic per les
-// docs BMAD ("bmad-agent-dev + bmad-retrospective").
+// docs BMAD (« bmad-agent-dev + bmad-retrospective »).
 var RetrospectiveSequence = []string{
 	"/bmad-agent-dev",
 	"/bmad-retrospective",
+}
+
+// CorrectCourseSequence reste à disposition : quand le loop
+// dev/review se coince (max iterations atteint, review refuse de
+// valider), on peut lancer /bmad-correct-course pour que BMAD re-cadre
+// la story. Laissé disponible aux callers qui voudraient la câbler
+// dans leur gestion d'erreur — non appelée automatiquement pour
+// l'instant.
+var CorrectCourseSequence = []string{
+	"/bmad-correct-course",
+}
+
+func concat(slices ...[]string) []string {
+	total := 0
+	for _, s := range slices {
+		total += len(s)
+	}
+	out := make([]string, 0, total)
+	for _, s := range slices {
+		out = append(out, s...)
+	}
+	return out
 }
 
 // RunSequence exécute une liste de slash-commands dans l'ordre, une
