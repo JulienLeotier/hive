@@ -18,10 +18,23 @@ import (
 // serveur reset les buckets, acceptable pour un outil local.
 
 const (
-	rateLimitBurst  = 120          // tokens max par IP
+	rateLimitBurst  = 1200         // tokens max par IP (= 20 req/sec burst)
 	rateLimitRefill = time.Minute  // refill la totalité du bucket en 1 min
 	rateLimitGC     = 10 * time.Minute
 )
+
+// localhostIPs sont exemptes de rate limit. Hive est un outil local
+// single-user : l'operateur legitime hit localhost, et le dashboard
+// Svelte peut burst sur events pendant un run BMAD (load+loadPhases+
+// loadActivity sur chaque WS event x dizaines d'events/seconde).
+// Rate-limiter cette IP casse l'UX pour rien. Les autres IPs (proxy,
+// exposition accidentelle) restent cappees a rateLimitBurst/min.
+var localhostIPs = map[string]bool{
+	"127.0.0.1":             true,
+	"::1":                   true,
+	"localhost":             true,
+	"0:0:0:0:0:0:0:1":       true,
+}
 
 type bucket struct {
 	tokens   float64
@@ -96,6 +109,11 @@ func min64(a, b float64) float64 {
 func rateLimitMiddleware(l *rateLimiter, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		ip := clientIP(r)
+		// Localhost : aucun rate limit. Cas d'usage standard de Hive.
+		if localhostIPs[ip] {
+			next.ServeHTTP(w, r)
+			return
+		}
 		if !l.allow(ip) {
 			w.Header().Set("Retry-After", "60")
 			w.WriteHeader(http.StatusTooManyRequests)

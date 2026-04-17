@@ -42,14 +42,10 @@ func TestRateLimitMiddleware429(t *testing.T) {
 	})
 	h := rateLimitMiddleware(l, next)
 
+	// Prime le bucket en le vidant via l'API directe (plus rapide et
+	// déterministe qu'un loop HTTP qui laisse le temps de refill).
 	for i := 0; i < rateLimitBurst; i++ {
-		req := httptest.NewRequest("GET", "/x", nil)
-		req.RemoteAddr = "10.0.0.1:11111"
-		w := httptest.NewRecorder()
-		h.ServeHTTP(w, req)
-		if w.Code != 200 {
-			t.Fatalf("req %d: want 200, got %d", i, w.Code)
-		}
+		l.allow("10.0.0.1")
 	}
 	req := httptest.NewRequest("GET", "/x", nil)
 	req.RemoteAddr = "10.0.0.1:11111"
@@ -60,6 +56,27 @@ func TestRateLimitMiddleware429(t *testing.T) {
 	}
 	if w.Header().Get("Retry-After") != "60" {
 		t.Fatalf("Retry-After missing: %q", w.Header().Get("Retry-After"))
+	}
+}
+
+func TestRateLimitMiddlewareExemptsLocalhost(t *testing.T) {
+	l := newRateLimiter()
+	// Vide le bucket de 127.0.0.1 si c'était limité.
+	for i := 0; i < rateLimitBurst*2; i++ {
+		l.allow("127.0.0.1")
+	}
+	next := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+	h := rateLimitMiddleware(l, next)
+
+	// Même après avoir épuisé le bucket, 127.0.0.1 doit toujours passer.
+	req := httptest.NewRequest("GET", "/x", nil)
+	req.RemoteAddr = "127.0.0.1:5555"
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+	if w.Code != 200 {
+		t.Fatalf("localhost exemption cassée: got %d", w.Code)
 	}
 }
 
