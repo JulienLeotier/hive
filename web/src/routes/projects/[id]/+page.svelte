@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { onMount } from 'svelte';
 	import { page } from '$app/stores';
 	import { apiGet, apiPost } from '$lib/api';
 	import { fmtRelative } from '$lib/format';
@@ -316,17 +317,33 @@
 	// seconds (devloop ticks + Claude Code finishes a story), so we poll
 	// fast. Draft/shipped projects barely change; poll slowly so we're
 	// not hammering SQLite for no reason.
-	$effect(() => {
+	//
+	// IMPORTANT : ce $effect NE doit PAS lire `project` directement,
+	// sinon il se ré-exécute à chaque rafraîchissement (project est
+	// ré-assigné par load()), créant une boucle infinie → 429 en
+	// cascade. On passe par un $derived qui retourne un primitive
+	// (number), qui n'est comparé par valeur : status 'building' →
+	// 'building' → pas de re-run.
+	let pollIntervalMs = $derived.by(() => {
+		const fast = project?.status === 'building' || project?.status === 'review' || project?.status === 'planning';
+		return fast ? 2000 : 10000;
+	});
+
+	// Chargement initial (one-shot, hors boucle réactive).
+	onMount(() => {
 		load();
 		loadActivity();
 		loadPhases();
-		const fast = project?.status === 'building' || project?.status === 'review' || project?.status === 'planning';
-		const intervalMs = fast ? 2000 : 10000;
+	});
+
+	// Interval polling — ré-armé uniquement quand pollIntervalMs change.
+	$effect(() => {
+		const ms = pollIntervalMs;
 		const i = setInterval(() => {
 			load();
 			loadActivity();
 			loadPhases();
-		}, intervalMs);
+		}, ms);
 		return () => clearInterval(i);
 	});
 
