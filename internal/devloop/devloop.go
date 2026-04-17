@@ -174,6 +174,25 @@ func (s *Supervisor) emit(ctx context.Context, eventType string, payload any) {
 // Start runs the supervisor loop until ctx is cancelled. Non-blocking on
 // the caller — spins a goroutine.
 func (s *Supervisor) Start(ctx context.Context) {
+	// Crash recovery: any story left in dev/review belongs to an
+	// iteration that was in flight when the last supervisor went down.
+	// The dev/review handlers are not durable — on restart they'd never
+	// resume and the project would wedge. Rewind those stories to
+	// pending (keeping their iteration counter) so we retry them on the
+	// next tick. We don't touch iteration counts because the work may
+	// have partially landed on disk and the reviewer will catch it.
+	if _, err := s.db.ExecContext(ctx,
+		`UPDATE stories
+		 SET status = ?, updated_at = datetime('now')
+		 WHERE status IN (?, ?)
+		   AND epic_id IN (SELECT id FROM epics WHERE project_id IN (
+		       SELECT id FROM projects WHERE status = ?
+		   ))`,
+		storyStatusPending, storyStatusDev, storyStatusReview,
+		projectStatusBuilding,
+	); err != nil {
+		slog.Warn("devloop: crash-recovery sweep failed", "error", err)
+	}
 	go func() {
 		t := time.NewTicker(s.interval)
 		defer t.Stop()

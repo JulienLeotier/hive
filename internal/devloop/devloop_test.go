@@ -118,6 +118,40 @@ func TestSupervisorBlocksStoryAfterMaxIterations(t *testing.T) {
 	assert.Equal(t, MaxIterations, iterations, "iteration counter capped at MaxIterations")
 }
 
+// TestSupervisorRecoversStuckStoriesOnStart models a crash mid-review:
+// a story was left in status=`review` for a project in `building`. The
+// supervisor must rewind it to pending on Start so the next tick picks
+// it up, instead of leaving the project wedged forever.
+func TestSupervisorRecoversStuckStoriesOnStart(t *testing.T) {
+	st, err := storage.Open(t.TempDir())
+	require.NoError(t, err)
+	defer st.Close()
+
+	workdir := filepath.Join(t.TempDir(), "work")
+	_ = seedProject(t, st.DB, workdir)
+	// Force the seeded story into `review` to mimic a crashed in-flight
+	// iteration.
+	_, err = st.DB.Exec(`UPDATE stories SET status = 'review', iterations = 1 WHERE id = 'sty_1'`)
+	require.NoError(t, err)
+
+	sup := NewSupervisor(st.DB, NewScriptedDev(), NewScriptedReviewer(), time.Second)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	sup.Start(ctx)
+	// Give the goroutine a moment to run the sweep + first tick. The
+	// sweep runs synchronously before the goroutine spawns, so by now
+	// the story is either still pending (if the tick hasn't fired yet)
+	// or already done (if it has). Both outcomes prove recovery worked.
+	time.Sleep(200 * time.Millisecond)
+
+	var status string
+	require.NoError(t, st.DB.QueryRow(`SELECT status FROM stories WHERE id = 'sty_1'`).Scan(&status))
+	assert.Contains(t, []string{"pending", "dev", "review", "done"}, status,
+		"stuck `review` must have been rewound out of the orphan state")
+	assert.NotEqual(t, "review", status, "the original stuck state must have been cleared")
+}
+
 func TestSupervisorIgnoresNonBuildingProjects(t *testing.T) {
 	st, err := storage.Open(t.TempDir())
 	require.NoError(t, err)
