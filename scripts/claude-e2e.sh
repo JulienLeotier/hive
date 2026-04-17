@@ -144,7 +144,8 @@ while [ "$(date +%s)" -lt "$DEADLINE" ]; do
 			exit 1 ;;
 	esac
 	# Print blocked stories as they happen so we notice a wedged loop.
-	BLOCKED=$(echo "$SUMMARY" | jq -r '.data.epics[].stories[]? | select(.status=="blocked") | .title' | head -5)
+	# Null-guarded: .data.epics is null while still in `planning`.
+	BLOCKED=$(echo "$SUMMARY" | jq -r '(.data.epics // [])[] | (.stories // [])[] | select(.status=="blocked") | .title' 2>/dev/null | head -5 || true)
 	if [ -n "$BLOCKED" ]; then
 		echo "  blocked stories: $BLOCKED"
 	fi
