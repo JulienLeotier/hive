@@ -153,6 +153,7 @@ func (s *Server) routes() {
 	// lieu de taper le chemin à la main.
 	s.mux.Handle("GET /api/v1/fs/home", http.HandlerFunc(s.handleFSHome))
 	s.mux.Handle("GET /api/v1/fs/list", http.HandlerFunc(s.handleFSList))
+	s.mux.Handle("POST /api/v1/fs/mkdir", http.HandlerFunc(s.handleFSMkdir))
 	s.mux.Handle("DELETE /api/v1/projects/{id}", http.HandlerFunc(s.handleDeleteProject))
 
 	// BMAD PM intake — the Q&A that turns the idea into a PRD.

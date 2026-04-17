@@ -1,7 +1,9 @@
 package api
 
 import (
+	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -134,4 +136,63 @@ func (s *Server) handleFSList(w http.ResponseWriter, r *http.Request) {
 		Home:    home,
 		Entries: entries,
 	})
+}
+
+// handleFSMkdir crée un sous-dossier dans un parent absolu. Utilisé par
+// le folder picker pour que l'opérateur puisse créer un dossier dédié
+// à son projet sans quitter l'UI (ex. "je clique ~/Documents puis
+// + Nouveau dossier > todolist → workdir = ~/Documents/todolist").
+//
+// Sécurité : le parent DOIT être un chemin absolu, le nom DOIT être
+// un basename simple (pas de "../", pas de "/", pas de nom caché).
+// On refuse de créer un dossier qui existerait déjà pour éviter
+// qu'un clic accidentel réutilise un workdir existant avec du
+// contenu perso.
+func (s *Server) handleFSMkdir(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Parent string `json:"parent"`
+		Name   string `json:"name"`
+	}
+	if err := json.NewDecoder(io.LimitReader(r.Body, 1<<14)).Decode(&body); err != nil {
+		writeError(w, http.StatusBadRequest, "BAD_REQUEST", err.Error())
+		return
+	}
+	parent := strings.TrimSpace(body.Parent)
+	name := strings.TrimSpace(body.Name)
+	if parent == "" || name == "" {
+		writeError(w, http.StatusBadRequest, "MISSING_FIELDS", "parent et name requis")
+		return
+	}
+	if !filepath.IsAbs(parent) {
+		writeError(w, http.StatusBadRequest, "BAD_PATH", "parent doit être absolu")
+		return
+	}
+	// Refuse les noms qui sortent du parent (../) ou contiennent un /
+	// ou démarrent par un . (dossiers cachés pas souhaités ici).
+	if strings.ContainsAny(name, "/\\") || name == "." || name == ".." || strings.HasPrefix(name, ".") {
+		writeError(w, http.StatusBadRequest, "BAD_NAME",
+			"nom de dossier invalide (pas de / pas de .. pas de dossier caché)")
+		return
+	}
+	// Longueur raisonnable.
+	if len(name) > 128 {
+		writeError(w, http.StatusBadRequest, "BAD_NAME", "nom trop long (max 128 caractères)")
+		return
+	}
+	// Parent doit exister et être un dossier.
+	if info, err := os.Stat(parent); err != nil || !info.IsDir() {
+		writeError(w, http.StatusBadRequest, "BAD_PARENT", "parent introuvable ou n'est pas un dossier")
+		return
+	}
+	full := filepath.Join(parent, name)
+	if _, err := os.Stat(full); err == nil {
+		writeError(w, http.StatusConflict, "ALREADY_EXISTS",
+			"ce dossier existe déjà, choisis un autre nom")
+		return
+	}
+	if err := os.Mkdir(full, 0o755); err != nil {
+		writeError(w, http.StatusInternalServerError, "MKDIR_FAILED", err.Error())
+		return
+	}
+	writeJSON(w, map[string]string{"path": full})
 }

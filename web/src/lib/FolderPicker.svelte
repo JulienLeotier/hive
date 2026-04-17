@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { apiGet } from '$lib/api';
+	import { apiGet, apiPost } from '$lib/api';
 
 	type FsEntry = { name: string; path: string; is_dir: boolean };
 	type FsList = { path: string; parent?: string; home: string; entries: FsEntry[] };
@@ -18,6 +18,13 @@
 	let listing = $state<FsList | null>(null);
 	let loading = $state(false);
 	let error = $state('');
+
+	// État inline "créer nouveau dossier". Tant que newFolderMode=false,
+	// on ne montre que le bouton "+ Nouveau dossier". Une fois actif,
+	// on affiche un input avec un nom par défaut éditable.
+	let newFolderMode = $state(false);
+	let newFolderName = $state('');
+	let creating = $state(false);
 
 	async function show() {
 		open = true;
@@ -49,6 +56,58 @@
 
 	function cancel() {
 		open = false;
+		newFolderMode = false;
+		newFolderName = '';
+	}
+
+	function startNewFolder() {
+		newFolderMode = true;
+		// Suggère un nom par défaut au choix de l'operateur.
+		newFolderName = '';
+		error = '';
+		// Focus le champ après le render.
+		setTimeout(() => {
+			document.getElementById('new-folder-input')?.focus();
+		}, 0);
+	}
+
+	function cancelNewFolder() {
+		newFolderMode = false;
+		newFolderName = '';
+	}
+
+	async function confirmNewFolder() {
+		const name = newFolderName.trim();
+		if (!name || !listing) return;
+		creating = true;
+		error = '';
+		try {
+			const res = await apiPost<{ path: string }>('/api/v1/fs/mkdir', {
+				parent: listing.path,
+				name
+			});
+			newFolderMode = false;
+			newFolderName = '';
+			// Après création, on navigue dans le nouveau dossier puis on
+			// le propose en sélection courante — 2 clics épargnés.
+			if (res?.path) {
+				await navigate(res.path);
+			}
+		} catch (e) {
+			error = e instanceof Error ? e.message : String(e);
+		} finally {
+			creating = false;
+		}
+	}
+
+	function newFolderKeydown(ev: KeyboardEvent) {
+		if (ev.key === 'Enter') {
+			ev.preventDefault();
+			confirmNewFolder();
+		} else if (ev.key === 'Escape') {
+			ev.preventDefault();
+			cancelNewFolder();
+		}
 	}
 
 	// Breadcrumb : segments cliquables du path courant.
@@ -107,6 +166,41 @@
 							class="quick"
 							onclick={() => navigate(cur.parent!)}>⬆ Dossier parent</button>
 					{/if}
+
+					{#if newFolderMode}
+						<div class="new-folder-row">
+							<span class="icon">📁</span>
+							<input
+								id="new-folder-input"
+								type="text"
+								class="new-folder-input"
+								placeholder="nom-du-projet"
+								bind:value={newFolderName}
+								onkeydown={newFolderKeydown}
+								disabled={creating} />
+							<button type="button"
+								class="nf-btn primary"
+								onclick={confirmNewFolder}
+								disabled={creating || !newFolderName.trim()}>
+								{creating ? '…' : 'Créer'}
+							</button>
+							<button type="button"
+								class="nf-btn"
+								onclick={cancelNewFolder}
+								disabled={creating}>
+								Annuler
+							</button>
+						</div>
+					{:else}
+						<button
+							type="button"
+							class="quick new-folder"
+							onclick={startNewFolder}
+							title="Crée un sous-dossier dans le dossier courant">
+							➕ Nouveau dossier
+						</button>
+					{/if}
+
 					<ul>
 						{#each listing.entries as e (e.path)}
 							<li>
@@ -175,6 +269,46 @@
 	.name { font-family: ui-monospace, monospace; font-size: 0.85rem; }
 	.quick { display: block; width: 100%; text-align: left; padding: 0.3rem 0.5rem; background: transparent; border: 1px dashed var(--border); border-radius: 3px; color: var(--muted); cursor: pointer; font: inherit; font-size: 0.8rem; margin-bottom: 0.15rem; }
 	.quick:hover { color: var(--accent); border-color: var(--accent); }
+	.new-folder { color: var(--accent); border-color: var(--accent); }
+	.new-folder-row {
+		display: flex;
+		align-items: center;
+		gap: 0.35rem;
+		padding: 0.3rem 0.5rem;
+		background: color-mix(in srgb, var(--accent) 8%, transparent);
+		border: 1px solid var(--accent);
+		border-radius: 3px;
+		margin-bottom: 0.15rem;
+	}
+	.new-folder-input {
+		flex: 1;
+		padding: 0.25rem 0.5rem;
+		background: var(--bg);
+		border: 1px solid var(--border);
+		border-radius: 3px;
+		color: inherit;
+		font: inherit;
+		font-family: ui-monospace, monospace;
+		font-size: 0.85rem;
+	}
+	.new-folder-input:focus { outline: 1px solid var(--accent); border-color: var(--accent); }
+	.nf-btn {
+		padding: 0.25rem 0.65rem;
+		background: var(--bg);
+		border: 1px solid var(--border);
+		border-radius: 3px;
+		cursor: pointer;
+		color: inherit;
+		font: inherit;
+		font-size: 0.78rem;
+	}
+	.nf-btn.primary {
+		background: var(--accent);
+		color: white;
+		border-color: var(--accent);
+		font-weight: 600;
+	}
+	.nf-btn:disabled { opacity: 0.5; cursor: not-allowed; }
 	.empty { color: var(--muted); font-style: italic; padding: 0.5rem; }
 
 	footer { display: flex; justify-content: space-between; align-items: center; gap: 0.5rem; padding: 0.5rem 1rem; background: var(--bg-alt); border-top: 1px solid var(--border); }
