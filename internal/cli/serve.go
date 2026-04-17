@@ -318,7 +318,10 @@ var serveCmd = &cobra.Command{
 		keyMgr := api.NewKeyManager(store.DB)
 		users := auth.NewUserStore(store.DB)
 
-		apiSrv := api.NewServer(mgr, bus, breakers, keyMgr).WithUsers(users).WithTriggerManager(triggerMgr)
+		apiSrv := api.NewServer(mgr, bus, breakers, keyMgr).
+			WithUsers(users).
+			WithTriggerManager(triggerMgr).
+			WithWebhookDispatcher(webhookDisp)
 
 		// Story 19.2: honour the `federation.share:` list so only whitelisted
 		// capabilities appear at /api/v1/capabilities.

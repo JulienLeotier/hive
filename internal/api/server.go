@@ -13,11 +13,13 @@ import (
 	"sync"
 	"time"
 
+	"github.com/JulienLeotier/hive/internal/adapter"
 	"github.com/JulienLeotier/hive/internal/agent"
 	"github.com/JulienLeotier/hive/internal/auth"
 	"github.com/JulienLeotier/hive/internal/event"
 	"github.com/JulienLeotier/hive/internal/knowledge"
 	"github.com/JulienLeotier/hive/internal/resilience"
+	"github.com/JulienLeotier/hive/internal/webhook"
 	"github.com/JulienLeotier/hive/internal/workflow"
 )
 
@@ -43,6 +45,7 @@ type Server struct {
 	federationShared []string // capabilities exposed to federated peers (empty = all)
 	oidc             *auth.OIDCProvider
 	triggerMgr       *workflow.TriggerManager // optional — enables workflow fire + retry endpoints
+	webhookDisp      *webhook.Dispatcher      // optional — enables webhook CRUD endpoints
 	mux              *http.ServeMux
 }
 
@@ -71,6 +74,13 @@ func (s *Server) WithUsers(users *auth.UserStore) *Server {
 // endpoint returns 503.
 func (s *Server) WithTriggerManager(tm *workflow.TriggerManager) *Server {
 	s.triggerMgr = tm
+	return s
+}
+
+// WithWebhookDispatcher wires the webhook dispatcher so the API exposes
+// CRUD endpoints for configured outbound webhooks.
+func (s *Server) WithWebhookDispatcher(d *webhook.Dispatcher) *Server {
+	s.webhookDisp = d
 	return s
 }
 
@@ -175,8 +185,9 @@ func (s *Server) routes() {
 	// discovery, add a dedicated public sub-endpoint with only the capability
 	// names (no counts, no versions).
 	s.mux.Handle("GET /api/v1/capabilities", auth.RBACMiddleware("system", "read")(http.HandlerFunc(s.handleListCapabilities)))
-	// Write endpoint: viewers get 403.
+	// Write endpoints: viewers get 403.
 	s.mux.Handle("POST /api/v1/agents", auth.RBACMiddleware("agents", "write")(http.HandlerFunc(s.handleCreateAgent)))
+	s.mux.Handle("DELETE /api/v1/agents/{name}", auth.RBACMiddleware("agents", "write")(http.HandlerFunc(s.handleDeleteAgent)))
 	// Story 2.1 AC: "agents can emit custom events via the adapter protocol".
 	// POST /api/v1/events lets an adapter push a (type, payload) into the bus.
 	s.mux.Handle("POST /api/v1/events", auth.RBACMiddleware("events", "write")(http.HandlerFunc(s.handleEmitEvent)))
@@ -201,6 +212,128 @@ func (s *Server) routes() {
 	// failed task. Both require the "workflows" / "tasks" write role.
 	s.mux.Handle("POST /api/v1/workflows/{name}/runs", auth.RBACMiddleware("workflows", "write")(http.HandlerFunc(s.handleFireWorkflow)))
 	s.mux.Handle("POST /api/v1/tasks/{id}/retry", auth.RBACMiddleware("tasks", "write")(http.HandlerFunc(s.handleRetryTask)))
+
+	// Webhook CRUD. Outbound integrations (Slack, generic, github). GET is
+	// handled by the dashboard read path; POST/DELETE route through the
+	// dispatcher so SSRF validation stays centralised.
+	s.mux.Handle("GET /api/v1/webhooks", auth.RBACMiddleware("system", "read")(http.HandlerFunc(s.handleListWebhooks)))
+	s.mux.Handle("POST /api/v1/webhooks", auth.RBACMiddleware("system", "write")(http.HandlerFunc(s.handleCreateWebhook)))
+	s.mux.Handle("DELETE /api/v1/webhooks/{name}", auth.RBACMiddleware("system", "write")(http.HandlerFunc(s.handleDeleteWebhook)))
+
+	// Agent playground. Lets an operator send an ad-hoc task to a registered
+	// agent without going through a workflow. Handy for verifying
+	// connectivity/capabilities after registration.
+	s.mux.Handle("POST /api/v1/agents/{name}/invoke", auth.RBACMiddleware("agents", "write")(http.HandlerFunc(s.handleInvokeAgent)))
+}
+
+// handleListWebhooks returns every configured webhook. URLs are decrypted on
+// the way out.
+func (s *Server) handleListWebhooks(w http.ResponseWriter, r *http.Request) {
+	if s.webhookDisp == nil {
+		writeError(w, http.StatusServiceUnavailable, "NO_WEBHOOK_DISPATCHER",
+			"webhook subsystem is not configured on this node")
+		return
+	}
+	cfgs, err := s.webhookDisp.List(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "LIST_FAILED", err.Error())
+		return
+	}
+	writeJSON(w, cfgs)
+}
+
+// handleCreateWebhook registers a new outbound webhook. Body: {name, url,
+// type, event_filter}. The dispatcher rejects SSRF-dangerous URLs and
+// encrypts the URL at rest when HIVE_MASTER_KEY is set.
+func (s *Server) handleCreateWebhook(w http.ResponseWriter, r *http.Request) {
+	if s.webhookDisp == nil {
+		writeError(w, http.StatusServiceUnavailable, "NO_WEBHOOK_DISPATCHER",
+			"webhook subsystem is not configured on this node")
+		return
+	}
+	var body struct {
+		Name        string `json:"name"`
+		URL         string `json:"url"`
+		Type        string `json:"type"`
+		EventFilter string `json:"event_filter"`
+	}
+	if err := json.NewDecoder(io.LimitReader(r.Body, 1<<16)).Decode(&body); err != nil {
+		writeError(w, http.StatusBadRequest, "BAD_REQUEST", err.Error())
+		return
+	}
+	if body.Name == "" || body.URL == "" || body.Type == "" {
+		writeError(w, http.StatusBadRequest, "MISSING_FIELDS", "name, url, and type are required")
+		return
+	}
+	cfg, err := s.webhookDisp.Add(r.Context(), body.Name, body.URL, body.Type, body.EventFilter)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "ADD_FAILED", err.Error())
+		return
+	}
+	w.WriteHeader(http.StatusCreated)
+	writeJSON(w, cfg)
+}
+
+// handleDeleteWebhook removes a webhook by name.
+func (s *Server) handleDeleteWebhook(w http.ResponseWriter, r *http.Request) {
+	name := r.PathValue("name")
+	if name == "" {
+		writeError(w, http.StatusBadRequest, "MISSING_NAME", "webhook name is required")
+		return
+	}
+	res, err := s.db().ExecContext(r.Context(), `DELETE FROM webhooks WHERE name = ?`, name)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "DELETE_FAILED", err.Error())
+		return
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		writeError(w, http.StatusNotFound, "NOT_FOUND", "webhook not found")
+		return
+	}
+	writeJSON(w, map[string]string{"status": "removed", "name": name})
+}
+
+// handleInvokeAgent forwards an ad-hoc task to a registered agent through
+// its adapter. Body: {type, input}. Returns the TaskResult produced by the
+// agent. Used by the dashboard agent playground.
+func (s *Server) handleInvokeAgent(w http.ResponseWriter, r *http.Request) {
+	name := r.PathValue("name")
+	if name == "" {
+		writeError(w, http.StatusBadRequest, "MISSING_NAME", "agent name is required")
+		return
+	}
+	a, err := s.agentMgr.GetByName(r.Context(), name)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "NOT_FOUND", err.Error())
+		return
+	}
+	var body struct {
+		Type  string `json:"type"`
+		Input any    `json:"input"`
+	}
+	if err := json.NewDecoder(io.LimitReader(r.Body, 1<<16)).Decode(&body); err != nil {
+		writeError(w, http.StatusBadRequest, "BAD_REQUEST", err.Error())
+		return
+	}
+	if body.Type == "" {
+		writeError(w, http.StatusBadRequest, "MISSING_TYPE", "task type is required")
+		return
+	}
+	ad, err := adapter.BuildAdapter(adapter.AgentSpec{
+		Name: a.Name, Type: a.Type, Config: a.Config, Capabilities: a.Capabilities,
+	})
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "ADAPTER_BUILD_FAILED", err.Error())
+		return
+	}
+	taskID := fmt.Sprintf("playground_%d", time.Now().UnixNano())
+	result, err := ad.Invoke(r.Context(), adapter.Task{ID: taskID, Type: body.Type, Input: body.Input})
+	if err != nil {
+		writeError(w, http.StatusBadGateway, "INVOKE_FAILED", err.Error())
+		return
+	}
+	writeJSON(w, result)
 }
 
 // handleFireWorkflow triggers a registered workflow by name with an optional
@@ -355,12 +488,53 @@ func (s *Server) roleResolver(next http.Handler) http.Handler {
 	})
 }
 
-// handleCreateAgent is a placeholder write endpoint proving the RBAC flow —
-// reject "viewer", allow "operator"/"admin". Real registration still happens
-// via the CLI (`hive add-agent`); this exists so the authenticated write path
-// is testable end-to-end.
+// handleCreateAgent registers an agent from an HTTP request. The request body
+// is {name, type, url} — the manager health-checks the URL and calls /declare
+// to fetch capabilities before persisting. Callers that need to register
+// local (path-based) agents should use the CLI; the HTTP path is HTTP-only.
 func (s *Server) handleCreateAgent(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, map[string]string{"status": "accepted"})
+	var body struct {
+		Name string `json:"name"`
+		Type string `json:"type"`
+		URL  string `json:"url"`
+	}
+	if err := json.NewDecoder(io.LimitReader(r.Body, 1<<16)).Decode(&body); err != nil {
+		writeError(w, http.StatusBadRequest, "BAD_REQUEST", err.Error())
+		return
+	}
+	if body.Name == "" || body.Type == "" || body.URL == "" {
+		writeError(w, http.StatusBadRequest, "MISSING_FIELDS",
+			"name, type, and url are required")
+		return
+	}
+	a, err := s.agentMgr.Register(r.Context(), body.Name, body.Type, body.URL)
+	if err != nil {
+		// Health-check / declare failures surface as 502 so a caller can tell
+		// them apart from real 500s (DB write failures).
+		writeError(w, http.StatusBadGateway, "REGISTER_FAILED", err.Error())
+		return
+	}
+	w.WriteHeader(http.StatusCreated)
+	writeJSON(w, a)
+}
+
+// handleDeleteAgent removes an agent by name and requeues any of its
+// in-flight tasks (per Manager.Remove semantics).
+func (s *Server) handleDeleteAgent(w http.ResponseWriter, r *http.Request) {
+	name := r.PathValue("name")
+	if name == "" {
+		writeError(w, http.StatusBadRequest, "MISSING_NAME", "agent name is required")
+		return
+	}
+	if err := s.agentMgr.Remove(r.Context(), name); err != nil {
+		if strings.Contains(err.Error(), "not found") {
+			writeError(w, http.StatusNotFound, "NOT_FOUND", err.Error())
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "DELETE_FAILED", err.Error())
+		return
+	}
+	writeJSON(w, map[string]string{"status": "removed", "name": name})
 }
 
 // handleEmitEvent lets an authenticated agent push a custom event. Story 2.1.

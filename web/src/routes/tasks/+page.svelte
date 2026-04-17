@@ -1,11 +1,12 @@
 <script lang="ts">
-	import { apiGet } from '$lib/api';
+	import { apiGet, apiPost } from '$lib/api';
 	import { createReconnectingWS, wsURL } from '$lib/ws';
 	import { fmtDuration, truncate } from '$lib/format';
 	import type { Task } from '$lib/types';
 
 	let tasks = $state<Task[]>([]);
 	let loading = $state(true);
+	let retryError = $state('');
 
 	async function loadTasks() {
 		try {
@@ -14,6 +15,16 @@
 			/* banner shown by apiGet */
 		} finally {
 			loading = false;
+		}
+	}
+
+	async function retryTask(id: string) {
+		retryError = '';
+		try {
+			await apiPost(`/api/v1/tasks/${encodeURIComponent(id)}/retry`, {});
+			await loadTasks();
+		} catch (e) {
+			retryError = e instanceof Error ? e.message : String(e);
 		}
 	}
 
@@ -77,6 +88,7 @@
 <main>
 	<h1>Tasks</h1>
 
+	{#if retryError}<div class="retry-error">{retryError}</div>{/if}
 	{#if loading}
 		<p class="empty">Loading…</p>
 	{:else if tasks.length === 0}
@@ -102,6 +114,7 @@
 							<th>Duration</th>
 							<th>Result</th>
 							<th>Created</th>
+							<th></th>
 						</tr>
 					</thead>
 					<tbody>
@@ -114,6 +127,11 @@
 								<td>{fmtDuration(t.duration_seconds)}</td>
 								<td class="result" title={t.result_summary ?? ''}>{truncate(t.result_summary ?? '', 60) || '—'}</td>
 								<td>{t.created_at}</td>
+								<td>
+									{#if t.status === 'failed' || t.status === 'completed'}
+										<button class="retry" onclick={() => retryTask(t.id)} title="Re-queue this task">↻</button>
+									{/if}
+								</td>
 							</tr>
 						{/each}
 					</tbody>
@@ -193,5 +211,28 @@
 		overflow: hidden;
 		text-overflow: ellipsis;
 		white-space: nowrap;
+	}
+	.retry {
+		padding: 0.15rem 0.5rem;
+		background: transparent;
+		border: 1px solid #cbd5e1;
+		border-radius: 3px;
+		cursor: pointer;
+		font-size: 0.9rem;
+		color: #475569;
+	}
+	.retry:hover {
+		background: #f1f5f9;
+		border-color: #3b82f6;
+		color: #3b82f6;
+	}
+	.retry-error {
+		padding: 0.5rem 0.75rem;
+		background: #fee2e2;
+		border-left: 3px solid #ef4444;
+		border-radius: 4px;
+		color: #991b1b;
+		margin-bottom: 1rem;
+		font-size: 0.85rem;
 	}
 </style>

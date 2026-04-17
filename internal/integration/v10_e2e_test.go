@@ -146,12 +146,14 @@ func TestV10RBACEnforcement(t *testing.T) {
 	srv.Handler().ServeHTTP(w, req)
 	assert.Equal(t, http.StatusForbidden, w.Code)
 
-	// Operator POST → 200
+	// Operator POST — passes RBAC. Empty body now surfaces a 400 from the
+	// handler validating name/type/url; the invariant that matters here is
+	// "no 403" (operator got through role resolution).
 	req = httptest.NewRequest("POST", "/api/v1/agents", nil)
 	req.Header.Set("Authorization", "Bearer "+operatorKey)
 	w = httptest.NewRecorder()
 	srv.Handler().ServeHTTP(w, req)
-	assert.Equal(t, http.StatusOK, w.Code)
+	assert.NotEqual(t, http.StatusForbidden, w.Code)
 }
 
 // TestV10MultiTenantIsolation checks that filter-by-tenant queries only return

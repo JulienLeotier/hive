@@ -16,6 +16,7 @@
 			label: 'Orchestration',
 			items: [
 				{ href: '/agents', label: 'Agents' },
+				{ href: '/playground', label: 'Playground' },
 				{ href: '/workflows', label: 'Workflows' },
 				{ href: '/tasks', label: 'Tasks' },
 				{ href: '/events', label: 'Events' }
@@ -41,7 +42,8 @@
 			label: 'Operations',
 			items: [
 				{ href: '/cluster', label: 'Cluster' },
-				{ href: '/federation', label: 'Federation' }
+				{ href: '/federation', label: 'Federation' },
+				{ href: '/webhooks', label: 'Webhooks' }
 			]
 		},
 		{

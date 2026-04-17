@@ -30,3 +30,37 @@ export async function apiGet<T = unknown>(url: string): Promise<T | null> {
 		throw e;
 	}
 }
+
+// apiSend is the shared mutation path for POST/DELETE. Errors are surfaced
+// to the caller (so forms can show inline feedback) and also replayed to
+// the banner for resource failures that aren't form-specific (500s etc).
+async function apiSend<T>(method: string, url: string, body?: unknown): Promise<T> {
+	const init: RequestInit = {
+		method,
+		headers: body === undefined ? undefined : { 'Content-Type': 'application/json' },
+		body: body === undefined ? undefined : JSON.stringify(body)
+	};
+	const r = await fetch(url, init);
+	const text = await r.text();
+	let json: { data?: T; error?: { code?: string; message?: string } } = {};
+	if (text) {
+		try {
+			json = JSON.parse(text);
+		} catch {
+			throw new Error(`${r.status}: ${text.slice(0, 200)}`);
+		}
+	}
+	if (!r.ok || json.error) {
+		const msg = json.error?.message ?? `${r.status} ${r.statusText}`;
+		throw new Error(msg);
+	}
+	return (json.data ?? (undefined as unknown)) as T;
+}
+
+export function apiPost<T = unknown>(url: string, body: unknown): Promise<T> {
+	return apiSend<T>('POST', url, body);
+}
+
+export function apiDelete<T = unknown>(url: string): Promise<T> {
+	return apiSend<T>('DELETE', url);
+}
