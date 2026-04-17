@@ -174,6 +174,17 @@ func (s *Server) handleGhLogin(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, git.CheckGh(r.Context()))
 }
 
+// handleGhRepos retourne la liste des repos accessibles à l'opérateur
+// pour alimenter l'autocomplete du champ clone.
+func (s *Server) handleGhRepos(w http.ResponseWriter, r *http.Request) {
+	repos, err := git.ListRepos(r.Context())
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "GH_LIST_FAILED", err.Error())
+		return
+	}
+	writeJSON(w, repos)
+}
+
 // handleGhLogout supprime l'auth gh locale.
 func (s *Server) handleGhLogout(w http.ResponseWriter, r *http.Request) {
 	if err := git.Logout(r.Context()); err != nil {

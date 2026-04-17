@@ -30,7 +30,11 @@
 
 	// Intégration GitHub
 	type GhStatus = { installed: boolean; authenticated: boolean; login?: string; error?: string };
+	type GhRepo = { name_with_owner: string; description?: string; url: string; private: boolean; updated_at?: string };
 	let ghStatus = $state<GhStatus | null>(null);
+	let ghRepos = $state<GhRepo[]>([]);
+	let ghReposLoading = $state(false);
+	let ghReposError = $state('');
 	let githubMode = $state<'none' | 'clone' | 'create'>('none');
 	let cloneRepoTarget = $state('');
 	let createRepoName = $state('');
@@ -43,6 +47,29 @@
 			/* silent — UI reste en mode 'none' */
 		}
 	}
+
+	// Charge la liste des repos à la demande (quand l'utilisateur
+	// bascule en mode clone), pas au load initial : `gh repo list`
+	// coûte une requête réseau.
+	async function loadGhRepos() {
+		if (ghReposLoading || ghRepos.length > 0) return;
+		ghReposLoading = true;
+		ghReposError = '';
+		try {
+			ghRepos = (await apiGet<GhRepo[]>('/api/v1/gh/repos')) ?? [];
+		} catch (e) {
+			ghReposError = e instanceof Error ? e.message : String(e);
+		} finally {
+			ghReposLoading = false;
+		}
+	}
+
+	// Trigger le load quand le mode passe à clone.
+	$effect(() => {
+		if (githubMode === 'clone' && ghStatus?.authenticated) {
+			loadGhRepos();
+		}
+	});
 
 	// Login GitHub par PAT depuis l'UI.
 	let ghToken = $state('');
@@ -264,11 +291,28 @@
 					Cloner un repo GitHub existant
 				</label>
 				{#if githubMode === 'clone'}
-					<input type="text"
-						class="gh-input"
-						placeholder="user/repo ou https://github.com/user/repo"
-						bind:value={cloneRepoTarget}
-						required />
+					<div class="gh-clone">
+						<input type="text"
+							class="gh-input"
+							list="gh-repo-list"
+							placeholder={ghReposLoading
+								? 'Chargement des repos…'
+								: 'Choisis un repo ou tape user/repo'}
+							bind:value={cloneRepoTarget}
+							required />
+						<datalist id="gh-repo-list">
+							{#each ghRepos as r (r.name_with_owner)}
+								<option value={r.name_with_owner}>
+									{r.description ?? ''}{r.private ? ' (privé)' : ''}
+								</option>
+							{/each}
+						</datalist>
+						{#if ghReposError}
+							<small class="gh-hint" style="color:var(--err)">{ghReposError}</small>
+						{:else if ghRepos.length > 0}
+							<small class="gh-hint">{ghRepos.length} repos disponibles — tape pour filtrer</small>
+						{/if}
+					</div>
 				{/if}
 
 				<label class="radio" class:disabled={!ghStatus?.authenticated}>
@@ -447,6 +491,8 @@
 		color: inherit;
 		font: inherit;
 	}
+	.gh-clone { display: flex; flex-direction: column; gap: 0.3rem; }
+	.gh-clone .gh-input { font-family: ui-monospace, monospace; font-size: 0.85rem; }
 	.gh-create { display: flex; gap: 0.5rem; }
 	.gh-create input { flex: 1; }
 	.gh-hint { color: var(--muted); font-size: 0.78rem; line-height: 1.4; }

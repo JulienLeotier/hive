@@ -187,6 +187,56 @@ func LoginWithToken(ctx context.Context, token string) error {
 	return nil
 }
 
+// Repo résume un repo GitHub accessible à l'utilisateur courant,
+// formaté pour l'UI (sélecteur de clone).
+type Repo struct {
+	NameWithOwner string `json:"name_with_owner"`
+	Description   string `json:"description,omitempty"`
+	URL           string `json:"url"`
+	Private       bool   `json:"private"`
+	UpdatedAt     string `json:"updated_at,omitempty"`
+}
+
+// ListRepos invoque `gh repo list` et retourne jusqu'à 200 repos
+// visibles du user, triés par date de mise à jour (gh fait le sort
+// lui-même). Sert à l'UI pour proposer un autocomplete dans le champ
+// clone au lieu d'obliger l'opérateur à taper l'URL à la main.
+func ListRepos(ctx context.Context) ([]Repo, error) {
+	if _, err := exec.LookPath("gh"); err != nil {
+		return nil, errors.New("gh non installé")
+	}
+	callCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(callCtx, "gh", "repo", "list",
+		"--limit", "200",
+		"--json", "nameWithOwner,description,url,isPrivate,updatedAt")
+	out, err := cmd.Output()
+	if err != nil {
+		return nil, fmt.Errorf("gh repo list: %w", err)
+	}
+	var raw []struct {
+		NameWithOwner string `json:"nameWithOwner"`
+		Description   string `json:"description"`
+		URL           string `json:"url"`
+		IsPrivate     bool   `json:"isPrivate"`
+		UpdatedAt     string `json:"updatedAt"`
+	}
+	if err := json.Unmarshal(out, &raw); err != nil {
+		return nil, fmt.Errorf("parse gh repo list: %w", err)
+	}
+	repos := make([]Repo, 0, len(raw))
+	for _, r := range raw {
+		repos = append(repos, Repo{
+			NameWithOwner: r.NameWithOwner,
+			Description:   r.Description,
+			URL:           r.URL,
+			Private:       r.IsPrivate,
+			UpdatedAt:     r.UpdatedAt,
+		})
+	}
+	return repos, nil
+}
+
 // Logout supprime l'auth gh locale (`gh auth logout --hostname github.com`).
 func Logout(ctx context.Context) error {
 	if _, err := exec.LookPath("gh"); err != nil {
