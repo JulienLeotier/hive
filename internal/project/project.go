@@ -54,8 +54,17 @@ type Project struct {
 	// pipeline BMAD (brownfield: /bmad-document-project + /bmad-edit-prd)
 	// et le greeting du PM qui demande ce qu'on veut AJOUTER plutôt
 	// que demander l'idée from scratch.
-	IsExisting bool      `json:"is_existing"`
-	Status     string    `json:"status"`
+	IsExisting bool `json:"is_existing"`
+	// TotalCostUSD : cumul des cost_usd retournés par chaque
+	// invocation claude pour ce projet. Affiché dans le dashboard
+	// pour que l'opérateur voit sa facture grossir.
+	TotalCostUSD float64 `json:"total_cost_usd"`
+	// FailureStage / FailureError : non vides quand le pipeline BMAD
+	// a planté. Le dashboard affiche une bannière d'erreur + un
+	// bouton Retry pointant vers le stage concerné.
+	FailureStage string    `json:"failure_stage,omitempty"`
+	FailureError string    `json:"failure_error,omitempty"`
+	Status       string    `json:"status"`
 	TenantID  string    `json:"tenant_id"`
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
@@ -173,6 +182,8 @@ func (s *Store) List(ctx context.Context, tenant string, limit int) ([]Project, 
 	q := `SELECT id, name, idea, COALESCE(prd, ''), COALESCE(workdir, ''),
 	             COALESCE(bmad_output_path, ''), COALESCE(repo_path, ''),
 	             COALESCE(repo_url, ''), COALESCE(is_existing, 0),
+	             COALESCE(total_cost_usd, 0), COALESCE(failure_stage, ''),
+	             COALESCE(failure_error, ''),
 	             status, tenant_id, created_at, updated_at
 	      FROM projects`
 	args := []any{}
@@ -196,6 +207,7 @@ func (s *Store) List(ctx context.Context, tenant string, limit int) ([]Project, 
 		var isExisting int
 		if err := rows.Scan(&p.ID, &p.Name, &p.Idea, &p.PRD, &p.Workdir,
 			&p.BMADOutputPath, &p.RepoPath, &p.RepoURL, &isExisting,
+			&p.TotalCostUSD, &p.FailureStage, &p.FailureError,
 			&p.Status, &p.TenantID, &created, &updated); err != nil {
 			return nil, err
 		}
@@ -219,10 +231,13 @@ func (s *Store) GetByID(ctx context.Context, id string) (*Project, error) {
 		`SELECT id, name, idea, COALESCE(prd, ''), COALESCE(workdir, ''),
 		        COALESCE(bmad_output_path, ''), COALESCE(repo_path, ''),
 		        COALESCE(repo_url, ''), COALESCE(is_existing, 0),
+		        COALESCE(total_cost_usd, 0), COALESCE(failure_stage, ''),
+		        COALESCE(failure_error, ''),
 		        status, tenant_id, created_at, updated_at
 		 FROM projects WHERE id = ?`, id,
 	).Scan(&p.ID, &p.Name, &p.Idea, &p.PRD, &p.Workdir,
 		&p.BMADOutputPath, &p.RepoPath, &p.RepoURL, &isExisting,
+		&p.TotalCostUSD, &p.FailureStage, &p.FailureError,
 		&p.Status, &p.TenantID, &created, &updated)
 	p.IsExisting = isExisting == 1
 	if err == sql.ErrNoRows {

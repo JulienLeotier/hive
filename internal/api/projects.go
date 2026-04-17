@@ -313,6 +313,131 @@ func (s *Server) handleRegeneratePlan(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, map[string]any{"project_id": id, "status": project.StatusPlanning})
 }
 
+// handleCancelRun annule le pipeline BMAD en cours sur un projet.
+// Ferme le ctx de la goroutine runArchitectAsync / runIterationAsync ;
+// les `claude --print` en cours reçoivent SIGKILL via exec.CommandContext.
+// Le projet passe en status `failed` avec failure_stage=cancelled.
+func (s *Server) handleCancelRun(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if id == "" {
+		writeError(w, http.StatusBadRequest, "BAD_REQUEST", "project id required")
+		return
+	}
+	if !s.cancelRun(id) {
+		writeError(w, http.StatusConflict, "NO_RUN",
+			"aucun build BMAD en cours pour ce projet")
+		return
+	}
+	_, _ = s.db().ExecContext(r.Context(),
+		`UPDATE projects SET status = ?, failure_stage = 'cancelled',
+		 failure_error = 'Build annulé par l''opérateur',
+		 updated_at = datetime('now') WHERE id = ?`,
+		project.StatusFailed, id)
+	if s.eventBus != nil {
+		_, _ = s.eventBus.Publish(r.Context(), "project.cancelled", "api",
+			map[string]string{"project_id": id})
+	}
+	writeJSON(w, map[string]string{"project_id": id, "status": "cancelled"})
+}
+
+// handleRetryArchitect relance le pipeline BMAD depuis le début pour
+// un projet qui s'est planté (status=failed OU coincé en planning).
+// Efface failure_stage/error et re-fire runArchitectAsync ou
+// runIterationAsync selon is_existing.
+func (s *Server) handleRetryArchitect(w http.ResponseWriter, r *http.Request) {
+	if s.projectStore == nil {
+		writeError(w, http.StatusServiceUnavailable, "NO_PROJECT_STORE", "")
+		return
+	}
+	id := r.PathValue("id")
+	p, err := s.projectStore.GetByID(r.Context(), id)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "NOT_FOUND", err.Error())
+		return
+	}
+	// Sécurité : n'accepte que les projets échoués ou bloqués en
+	// planning. Un projet building qui a des stories done ne doit
+	// pas se faire écraser le PRD par un retry.
+	if p.Status != project.StatusFailed && p.Status != project.StatusPlanning {
+		writeError(w, http.StatusConflict, "BAD_STATE",
+			"retry autorisé uniquement sur les projets failed ou planning")
+		return
+	}
+	// Cancel un run éventuellement zombie avant de relancer.
+	s.cancelRun(p.ID)
+	_, _ = s.db().ExecContext(r.Context(),
+		`UPDATE projects SET status = ?, failure_stage = NULL,
+		 failure_error = NULL, updated_at = datetime('now') WHERE id = ?`,
+		project.StatusPlanning, p.ID)
+
+	// On récupère la conversation d'intake pour reseed le brief.
+	var seed string
+	if s.intakeStore != nil {
+		if conv, _ := s.intakeStore.GetOrStart(r.Context(), p.ID, p.Idea, s.intakeAgentFor(p)); conv != nil {
+			seed = flattenConversation(conv)
+		}
+	}
+	go s.runArchitectAsync(p.ID, p.Idea, seed) //nolint:gosec // G118: request ctx dies; the goroutine uses its own 90-min ctx
+
+	writeJSON(w, map[string]string{"project_id": p.ID, "status": "retry-scheduled"})
+}
+
+// handleProjectPhases liste les 50 dernières invocations de skill
+// BMAD pour un projet : commande, statut (running/done/failed),
+// durée, tokens, coût. Le dashboard s'en sert pour afficher un feed
+// temps réel « skill 4/13 en cours : /bmad-create-architecture ».
+func (s *Server) handleProjectPhases(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if id == "" {
+		writeError(w, http.StatusBadRequest, "BAD_REQUEST", "project id required")
+		return
+	}
+	type step struct {
+		ID           int64   `json:"id"`
+		Phase        string  `json:"phase"`
+		Command      string  `json:"command"`
+		StartedAt    string  `json:"started_at"`
+		FinishedAt   string  `json:"finished_at,omitempty"`
+		Status       string  `json:"status"`
+		InputTokens  int     `json:"input_tokens"`
+		OutputTokens int     `json:"output_tokens"`
+		CostUSD      float64 `json:"cost_usd"`
+		Preview      string  `json:"reply_preview,omitempty"`
+		Error        string  `json:"error,omitempty"`
+	}
+	rows, err := s.db().QueryContext(r.Context(),
+		`SELECT id, phase, command, started_at, COALESCE(finished_at, ''),
+		        status, input_tokens, output_tokens, cost_usd,
+		        COALESCE(reply_preview, ''), COALESCE(error_text, '')
+		 FROM bmad_phase_steps WHERE project_id = ?
+		 ORDER BY id DESC LIMIT 50`, id)
+	if err != nil {
+		if strings.Contains(err.Error(), "no such table") {
+			writeJSON(w, []step{})
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "QUERY_FAILED", err.Error())
+		return
+	}
+	defer rows.Close()
+	var out []step
+	for rows.Next() {
+		var s step
+		if err := rows.Scan(&s.ID, &s.Phase, &s.Command, &s.StartedAt,
+			&s.FinishedAt, &s.Status, &s.InputTokens, &s.OutputTokens,
+			&s.CostUSD, &s.Preview, &s.Error); err != nil {
+			writeError(w, http.StatusInternalServerError, "SCAN_FAILED", err.Error())
+			return
+		}
+		out = append(out, s)
+	}
+	if err := rows.Err(); err != nil {
+		writeError(w, http.StatusInternalServerError, "SCAN_FAILED", err.Error())
+		return
+	}
+	writeJSON(w, out)
+}
+
 // handleRetryStory clears a blocked story's iteration counter so the
 // devloop picks it back up on the next tick. Without this endpoint, a
 // story that exhausts MaxIterations leaves the whole project wedged —

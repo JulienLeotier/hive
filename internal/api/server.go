@@ -8,12 +8,14 @@
 package api
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"io"
 	"net/http"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/JulienLeotier/hive/internal/auth"
@@ -42,18 +44,58 @@ type Server struct {
 	intakeAgentOverride intake.Agent
 	envLookup           func(string) string
 	mux                 *http.ServeMux
+	// runCancels garde une cancel-func par projet en cours de build.
+	// Quand l'utilisateur clique Annuler, on appelle la func qui
+	// propage le ctx.Done() à tous les `claude --print` détachés en
+	// cours et stoppe la séquence proprement.
+	runMu      sync.Mutex
+	runCancels map[string]context.CancelFunc
 }
 
 // NewServer builds the HTTP API. eventBus is the only required dep —
 // everything else flows from it or is wired with the With* helpers.
 func NewServer(eventBus *event.Bus) *Server {
 	s := &Server{
-		eventBus:  eventBus,
-		mux:       http.NewServeMux(),
-		envLookup: os.Getenv,
+		eventBus:   eventBus,
+		mux:        http.NewServeMux(),
+		envLookup:  os.Getenv,
+		runCancels: map[string]context.CancelFunc{},
 	}
 	s.routes()
 	return s
+}
+
+// registerRun enregistre une cancel-func pour un projet. Si un run
+// était déjà en cours, il est canceled pour éviter deux pipelines
+// concurrents sur le même projet (ça casserait sprint-status.yaml).
+func (s *Server) registerRun(projectID string, cancel context.CancelFunc) {
+	s.runMu.Lock()
+	defer s.runMu.Unlock()
+	if prev, ok := s.runCancels[projectID]; ok {
+		prev()
+	}
+	s.runCancels[projectID] = cancel
+}
+
+// clearRun retire le registre à la fin d'un run.
+func (s *Server) clearRun(projectID string) {
+	s.runMu.Lock()
+	defer s.runMu.Unlock()
+	delete(s.runCancels, projectID)
+}
+
+// cancelRun appelle le cancel-func courant si un run tourne. Retourne
+// true si un cancel a effectivement été fait.
+func (s *Server) cancelRun(projectID string) bool {
+	s.runMu.Lock()
+	defer s.runMu.Unlock()
+	cancel, ok := s.runCancels[projectID]
+	if !ok {
+		return false
+	}
+	cancel()
+	delete(s.runCancels, projectID)
+	return true
 }
 
 // WithProjectStore wires the BMAD project CRUD.
@@ -124,6 +166,9 @@ func (s *Server) routes() {
 	// Claude Code has actually written from inside the dashboard.
 	s.mux.Handle("GET /api/v1/projects/{id}/files", http.HandlerFunc(s.handleListFiles))
 	s.mux.Handle("GET /api/v1/projects/{id}/files/content", http.HandlerFunc(s.handleFileContent))
+	s.mux.Handle("GET /api/v1/projects/{id}/phases", http.HandlerFunc(s.handleProjectPhases))
+	s.mux.Handle("POST /api/v1/projects/{id}/cancel", http.HandlerFunc(s.handleCancelRun))
+	s.mux.Handle("POST /api/v1/projects/{id}/retry-architect", http.HandlerFunc(s.handleRetryArchitect))
 }
 
 // Handler returns the HTTP handler. Local-mode hive: the middleware

@@ -131,10 +131,15 @@ func replaceYAMLScalar(yaml, key, value string) string {
 
 // Result carries what Invoke returns: the text Claude emitted (useful
 // for logs + dashboard activity) and the absolute paths of any
-// expected output files that landed on disk.
+// expected output files that landed on disk. Le coût + tokens sont
+// extraits de l'envelope JSON du claude CLI pour que l'appelant
+// puisse les agréger par projet.
 type Result struct {
-	Text    string
-	Outputs []string
+	Text         string
+	Outputs      []string
+	InputTokens  int
+	OutputTokens int
+	CostUSD      float64
 }
 
 // PhaseStep représente une skill exécutée pendant RunPhase : la
@@ -216,15 +221,25 @@ func (r *Runner) Invoke(ctx context.Context, workdir, goal string, expectedOutpu
 	}
 
 	var envelope struct {
-		Result  string `json:"result"`
-		IsError bool   `json:"is_error"`
+		Result       string  `json:"result"`
+		IsError      bool    `json:"is_error"`
+		TotalCostUSD float64 `json:"total_cost_usd"`
+		Usage        struct {
+			InputTokens  int `json:"input_tokens"`
+			OutputTokens int `json:"output_tokens"`
+		} `json:"usage"`
 	}
 	if err := json.Unmarshal(stdout.Bytes(), &envelope); err != nil {
 		return Result{}, fmt.Errorf("parse envelope: %w\nraw: %s",
 			err, truncate(stdout.String(), 300))
 	}
 	if envelope.IsError {
-		return Result{Text: envelope.Result},
+		return Result{
+				Text:         envelope.Result,
+				InputTokens:  envelope.Usage.InputTokens,
+				OutputTokens: envelope.Usage.OutputTokens,
+				CostUSD:      envelope.TotalCostUSD,
+			},
 			fmt.Errorf("skill reported error: %s", truncate(envelope.Result, 300))
 	}
 
@@ -235,7 +250,13 @@ func (r *Runner) Invoke(ctx context.Context, workdir, goal string, expectedOutpu
 			landed = append(landed, abs)
 		}
 	}
-	return Result{Text: envelope.Result, Outputs: landed}, nil
+	return Result{
+		Text:         envelope.Result,
+		Outputs:      landed,
+		InputTokens:  envelope.Usage.InputTokens,
+		OutputTokens: envelope.Usage.OutputTokens,
+		CostUSD:      envelope.TotalCostUSD,
+	}, nil
 }
 
 // buildPrompt wraps the caller's goal with the non-interactive contract

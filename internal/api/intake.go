@@ -216,11 +216,18 @@ func (s *Server) iterationAgent() intake.Agent {
 // Les epics/stories existants sont conservés en DB ; les nouveaux
 // seront ingérés en sortie via le même parseur json-hive.
 func (s *Server) runIterationAsync(projectID, idea, seedDoc string) {
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Minute)
 	defer cancel()
+	s.registerRun(projectID, cancel)
+	defer s.clearRun(projectID)
 
 	fail := func(stage string, err error) {
 		slog.Warn("iteration pipeline failed", "project", projectID, "stage", stage, "error", err)
+		_, _ = s.db().ExecContext(ctx,
+			`UPDATE projects SET failure_stage = ?, failure_error = ?,
+			 status = ?, updated_at = datetime('now')
+			 WHERE id = ?`,
+			stage, err.Error(), project.StatusFailed, projectID)
 		if s.eventBus != nil {
 			_, _ = s.eventBus.Publish(ctx, "project.iteration_failed", "api", map[string]any{
 				"project_id": projectID, "stage": stage, "error": err.Error(),
@@ -270,7 +277,8 @@ func (s *Server) runIterationAsync(projectID, idea, seedDoc string) {
 		return
 	}
 
-	if _, err := runner.RunSequence(ctx, workdir, bmad.IterationPipeline); err != nil {
+	obs := s.stepObserver(ctx, projectID, "iteration-feature")
+	if _, err := runner.RunSequenceObserved(ctx, workdir, bmad.IterationPipeline, obs); err != nil {
 		fail("iteration-pipeline", err)
 		return
 	}
@@ -458,33 +466,34 @@ func flattenConversation(conv *intake.Conversation) string {
 	return strings.TrimSpace(b.String())
 }
 
-// RecoverStuckPlanning re-kicks the Architect for every project parked
-// in status=`planning` that has a saved PRD but no epic tree. This
-// handles the case where the server was killed mid-architect: the
-// detached goroutine dies with the process, leaving the project in a
-// state the UI can't recover from. Safe to call more than once — the
-// Architect dispatcher is idempotent on existing trees.
+// RecoverStuckPlanning re-kicks the BMAD pipeline for every project
+// left in limbo : status=planning (crashed mid-pipeline) ou failed
+// (dernier run abort). Idempotent — BMAD et le store sont safe
+// contre la ré-exécution. Safe à appeler plusieurs fois depuis
+// serve.go au démarrage.
 func (s *Server) RecoverStuckPlanning(ctx context.Context) error {
 	if s.projectStore == nil {
 		return nil
 	}
+	// On récupère aussi les projets failed : un user peut relancer
+	// explicitement via le bouton Retry, mais si on vient de crasher
+	// en plein pipeline la reprise auto est pratique.
 	rows, err := s.db().QueryContext(ctx,
-		`SELECT p.id, p.idea, COALESCE(p.prd, '')
+		`SELECT p.id, p.idea
 		 FROM projects p
-		 WHERE p.status = ?
-		   AND p.prd IS NOT NULL AND p.prd <> ''
+		 WHERE p.status IN (?, ?)
 		   AND NOT EXISTS (SELECT 1 FROM epics e WHERE e.project_id = p.id)`,
-		project.StatusPlanning,
+		project.StatusPlanning, project.StatusFailed,
 	)
 	if err != nil {
 		return err
 	}
 	defer rows.Close()
-	type stuck struct{ id, idea, prd string }
+	type stuck struct{ id, idea string }
 	var list []stuck
 	for rows.Next() {
 		var s stuck
-		if err := rows.Scan(&s.id, &s.idea, &s.prd); err != nil {
+		if err := rows.Scan(&s.id, &s.idea); err != nil {
 			return err
 		}
 		list = append(list, s)
@@ -493,8 +502,18 @@ func (s *Server) RecoverStuckPlanning(ctx context.Context) error {
 		return err
 	}
 	for _, st := range list {
-		slog.Info("recovering stuck planning project", "project", st.id)
-		go s.runArchitectAsync(st.id, st.idea, st.prd) //nolint:gosec // G118: boot-time recovery; no request ctx exists here
+		slog.Info("recovering stuck project", "project", st.id)
+		var seed string
+		if s.intakeStore != nil {
+			// Reseed depuis la conversation d'intake pour que BMAD
+			// ait le brief quand il relance create-prd/edit-prd.
+			if p, _ := s.projectStore.GetByID(ctx, st.id); p != nil {
+				if conv, _ := s.intakeStore.GetOrStart(ctx, p.ID, p.Idea, s.intakeAgentFor(p)); conv != nil {
+					seed = flattenConversation(conv)
+				}
+			}
+		}
+		go s.runArchitectAsync(st.id, st.idea, seed) //nolint:gosec // G118: boot-time recovery; no request ctx exists here
 	}
 	return nil
 }
@@ -514,11 +533,23 @@ func (s *Server) RecoverStuckPlanning(ctx context.Context) error {
 // first finalize it's the flattened PM chat; on recovery/regenerate
 // it's whatever we have on file (previous PRD, raw idea).
 func (s *Server) runArchitectAsync(projectID, idea, seedDoc string) {
-	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Minute)
+	// Ctx cancellable côté UI (via POST /cancel). Timeout généreux
+	// parce que FullPlanningPipeline = 13 skills × 2-5 min chacune.
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Minute)
 	defer cancel()
+	s.registerRun(projectID, cancel)
+	defer s.clearRun(projectID)
 
 	fail := func(stage string, err error) {
 		slog.Warn("bmad pipeline failed", "project", projectID, "stage", stage, "error", err)
+		// Persiste le stage d'échec + l'erreur sur le projet : le
+		// dashboard peut afficher une bannière "build failed à l'étape
+		// create-prd" avec un bouton Retry.
+		_, _ = s.db().ExecContext(ctx,
+			`UPDATE projects SET failure_stage = ?, failure_error = ?,
+			 status = ?, updated_at = datetime('now')
+			 WHERE id = ?`,
+			stage, err.Error(), project.StatusFailed, projectID)
 		if s.eventBus != nil {
 			_, _ = s.eventBus.Publish(ctx, "project.architect_failed", "api", map[string]any{
 				"project_id": projectID,
@@ -527,6 +558,11 @@ func (s *Server) runArchitectAsync(projectID, idea, seedDoc string) {
 			})
 		}
 	}
+	// Au démarrage on efface une éventuelle erreur précédente (cas d'un
+	// retry manuel ou d'une reprise crash-recovery).
+	_, _ = s.db().ExecContext(ctx,
+		`UPDATE projects SET failure_stage = NULL, failure_error = NULL WHERE id = ?`,
+		projectID)
 
 	if s.eventBus != nil {
 		_, _ = s.eventBus.Publish(ctx, "project.architect_started", "api",
@@ -581,12 +617,15 @@ func (s *Server) runArchitectAsync(projectID, idea, seedDoc string) {
 	//    lit le code existant et étend le PRD au lieu d'en créer un
 	//    de zéro.
 	pipeline := bmad.FullPlanningPipeline
+	phaseLabel := "planning"
 	stageLabel := "planning-sequence"
 	if proj.IsExisting {
 		pipeline = bmad.IterationPipeline
+		phaseLabel = "iteration"
 		stageLabel = "brownfield-sequence"
 	}
-	if _, err := runner.RunSequence(ctx, workdir, pipeline); err != nil {
+	obs := s.stepObserver(ctx, projectID, phaseLabel)
+	if _, err := runner.RunSequenceObserved(ctx, workdir, pipeline, obs); err != nil {
 		fail(stageLabel, err)
 		return
 	}
@@ -760,6 +799,95 @@ func readFirst(workdir string, rels ...string) (string, error) {
 		}
 	}
 	return "", fmt.Errorf("no BMAD output at any of %v", rels)
+}
+
+// stepObserver construit un bmad.StepObserver qui :
+//   - insère une row `bmad_phase_steps` en `running` au start ;
+//   - la finalise avec status=done/failed + tokens + cost au finish ;
+//   - met à jour projects.total_cost_usd pour que le dashboard
+//     puisse afficher le cumul ;
+//   - émet un événement project.bmad_step (start + finish) pour que
+//     le WS push la progression en temps réel.
+//
+// Les insertions échouées ne plantent pas le pipeline — au pire le
+// dashboard n'a pas l'entrée, mais BMAD continue d'avancer.
+func (s *Server) stepObserver(ctx context.Context, projectID, phase string) bmad.StepObserver {
+	return bmad.StepObserver{
+		OnStart: func(index, total int, command string) {
+			res, err := s.db().ExecContext(ctx,
+				`INSERT INTO bmad_phase_steps (project_id, phase, command, status)
+				 VALUES (?, ?, ?, 'running')`,
+				projectID, phase, command)
+			if err != nil {
+				slog.Warn("bmad step log insert failed", "project", projectID, "cmd", command, "error", err)
+				return
+			}
+			id, _ := res.LastInsertId()
+			if s.eventBus != nil {
+				_, _ = s.eventBus.Publish(ctx, "project.bmad_step_started", "api", map[string]any{
+					"project_id": projectID,
+					"phase":      phase,
+					"step_id":    id,
+					"index":      index,
+					"total":      total,
+					"command":    command,
+				})
+			}
+		},
+		OnFinish: func(index, total int, command string, res bmad.Result, err error) {
+			status := "done"
+			errText := ""
+			if err != nil {
+				status = "failed"
+				errText = err.Error()
+			}
+			preview := res.Text
+			if len(preview) > 600 {
+				preview = preview[:600] + "…"
+			}
+			// Mise à jour : on cible la dernière step `running` de la
+			// commande + projet + phase. Marche dans 99% des cas ; en
+			// concurrence extrême (deux goroutines concurrentes) on
+			// pourrait écrire sur la mauvaise ligne mais on bloque
+			// déjà les pipelines en parallèle via la map
+			// cancellations, donc ce cas n'arrive pas.
+			if _, dbErr := s.db().ExecContext(ctx,
+				`UPDATE bmad_phase_steps
+				 SET finished_at = datetime('now'),
+				     status = ?, input_tokens = ?, output_tokens = ?,
+				     cost_usd = ?, reply_preview = ?, error_text = ?
+				 WHERE id = (
+				   SELECT id FROM bmad_phase_steps
+				   WHERE project_id = ? AND phase = ? AND command = ? AND status = 'running'
+				   ORDER BY started_at DESC LIMIT 1
+				 )`,
+				status, res.InputTokens, res.OutputTokens, res.CostUSD, preview, errText,
+				projectID, phase, command,
+			); dbErr != nil {
+				slog.Warn("bmad step log finish failed", "project", projectID, "cmd", command, "error", dbErr)
+			}
+			if res.CostUSD > 0 {
+				_, _ = s.db().ExecContext(ctx,
+					`UPDATE projects SET total_cost_usd = total_cost_usd + ?,
+					 updated_at = datetime('now') WHERE id = ?`,
+					res.CostUSD, projectID)
+			}
+			if s.eventBus != nil {
+				_, _ = s.eventBus.Publish(ctx, "project.bmad_step_finished", "api", map[string]any{
+					"project_id":    projectID,
+					"phase":         phase,
+					"index":         index,
+					"total":         total,
+					"command":       command,
+					"status":        status,
+					"cost_usd":      res.CostUSD,
+					"input_tokens":  res.InputTokens,
+					"output_tokens": res.OutputTokens,
+					"error":         errText,
+				})
+			}
+		},
+	}
 }
 
 // intakeAgent returns the PM agent to drive a conversation. Honours

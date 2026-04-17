@@ -164,18 +164,45 @@ func concat(slices ...[]string) []string {
 	return out
 }
 
+// StepObserver est notifié à l'entrée et à la sortie de chaque
+// invocation de skill pendant RunSequence. Le supervisor s'en sert
+// pour persister la progression + émettre des événements WebSocket
+// "skill X/Y started", "skill done", etc. Les deux callbacks sont
+// optionnels.
+type StepObserver struct {
+	// OnStart reçoit l'index (1-based) et la commande qui va démarrer.
+	OnStart func(index, total int, command string)
+	// OnFinish reçoit l'index, la commande, le résultat et l'erreur
+	// éventuelle. Sert à persister tokens/cost/status=done|failed.
+	OnFinish func(index, total int, command string, res Result, err error)
+}
+
 // RunSequence exécute une liste de slash-commands dans l'ordre, une
 // invocation `claude --print` par commande. Retourne l'historique —
 // useful pour log + événements dashboard. Stoppe à la première
 // erreur et renvoie ce qui a été fait jusque-là.
 func (r *Runner) RunSequence(ctx context.Context, workdir string, cmds []string) ([]PhaseStep, error) {
+	return r.RunSequenceObserved(ctx, workdir, cmds, StepObserver{})
+}
+
+// RunSequenceObserved est le même flux, instrumenté via un
+// StepObserver. Les observers nil sont tolérés : RunSequence est une
+// shorthand qui passe un StepObserver vide.
+func (r *Runner) RunSequenceObserved(ctx context.Context, workdir string, cmds []string, obs StepObserver) ([]PhaseStep, error) {
 	if r == nil {
 		return nil, errors.New("bmad: runner indisponible")
 	}
 	var history []PhaseStep
-	for _, cmd := range cmds {
+	total := len(cmds)
+	for i, cmd := range cmds {
+		if obs.OnStart != nil {
+			obs.OnStart(i+1, total, cmd)
+		}
 		res, err := r.Invoke(ctx, workdir, cmd, nil)
 		history = append(history, PhaseStep{Command: cmd, Reply: res.Text})
+		if obs.OnFinish != nil {
+			obs.OnFinish(i+1, total, cmd, res, err)
+		}
 		if err != nil {
 			return history, fmt.Errorf("exec %s: %w", cmd, err)
 		}
