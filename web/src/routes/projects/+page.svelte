@@ -28,6 +28,22 @@
 	let bmadOutputPath = $state('');
 	let repoPath = $state('');
 
+	// Intégration GitHub
+	type GhStatus = { installed: boolean; authenticated: boolean; login?: string; error?: string };
+	let ghStatus = $state<GhStatus | null>(null);
+	let githubMode = $state<'none' | 'clone' | 'create'>('none');
+	let cloneRepoTarget = $state('');
+	let createRepoName = $state('');
+	let repoVisibility = $state<'private' | 'public'>('private');
+
+	async function loadGhStatus() {
+		try {
+			ghStatus = await apiGet<GhStatus>('/api/v1/gh/status');
+		} catch {
+			/* silent — UI reste en mode 'none' */
+		}
+	}
+
 	async function load() {
 		try {
 			projects = (await apiGet<Project[]>('/api/v1/projects')) ?? [];
@@ -51,6 +67,7 @@
 
 	$effect(() => {
 		load();
+		loadGhStatus();
 		const i = setInterval(load, 15000);
 		const ws = createReconnectingWS({
 			url: wsURL('/ws'),
@@ -75,15 +92,20 @@
 		formError = '';
 		submitting = true;
 		try {
-			const p = (await apiPost('/api/v1/projects', {
+			const payload: Record<string, string> = {
 				name,
 				idea,
 				workdir,
 				bmad_output_path: bmadOutputPath,
 				repo_path: repoPath
-			})) as Project;
-			// Send the user straight to the detail page — Phase 2 will start
-			// the PM agent's Q&A from there.
+			};
+			if (githubMode === 'clone' && cloneRepoTarget.trim()) {
+				payload.clone_repo = cloneRepoTarget.trim();
+			} else if (githubMode === 'create' && createRepoName.trim()) {
+				payload.create_repo = createRepoName.trim();
+				payload.repo_visibility = repoVisibility;
+			}
+			const p = (await apiPost('/api/v1/projects', payload)) as Project;
 			window.location.href = `/projects/${encodeURIComponent(p.id)}`;
 		} catch (e) {
 			formError = e instanceof Error ? e.message : String(e);
@@ -158,10 +180,69 @@
 				<small>Si tu as déjà lancé BMAD ailleurs (PRD, epics, stories), pointe vers ce dossier et l'Architecte réutilisera les artefacts existants.</small>
 			</label>
 			<label>
-				Repo existant <span class="hint-pill">optionnel</span>
+				Repo existant (chemin local) <span class="hint-pill">optionnel</span>
 				<input type="text" placeholder="/Users/moi/projects/mon-app-existante" bind:value={repoPath} />
 				<small>Ajoute BMAD à une base de code existante. Les agents Dev travaillent dans ce repo au lieu de scaffolder à partir de zéro.</small>
 			</label>
+
+			<fieldset class="gh">
+				<legend>
+					Intégration GitHub
+					{#if ghStatus?.authenticated}
+						<span class="gh-pill ok" title="Authentifié via gh">✓ {ghStatus.login}</span>
+					{:else if ghStatus?.installed}
+						<span class="gh-pill warn" title={ghStatus.error}>
+							⚠ Lance <code>gh auth login</code>
+						</span>
+					{:else if ghStatus}
+						<span class="gh-pill warn" title={ghStatus.error}>gh non installé</span>
+					{/if}
+				</legend>
+
+				<label class="radio">
+					<input type="radio" name="ghmode" value="none" bind:group={githubMode} />
+					Aucune — projet local uniquement
+				</label>
+				<label class="radio" class:disabled={!ghStatus?.authenticated}>
+					<input type="radio" name="ghmode" value="clone"
+						bind:group={githubMode}
+						disabled={!ghStatus?.authenticated} />
+					Cloner un repo GitHub existant
+				</label>
+				{#if githubMode === 'clone'}
+					<input type="text"
+						class="gh-input"
+						placeholder="user/repo ou https://github.com/user/repo"
+						bind:value={cloneRepoTarget}
+						required />
+				{/if}
+
+				<label class="radio" class:disabled={!ghStatus?.authenticated}>
+					<input type="radio" name="ghmode" value="create"
+						bind:group={githubMode}
+						disabled={!ghStatus?.authenticated} />
+					Créer un nouveau repo GitHub
+				</label>
+				{#if githubMode === 'create'}
+					<div class="gh-create">
+						<input type="text"
+							placeholder="nom-du-repo"
+							bind:value={createRepoName}
+							required />
+						<select bind:value={repoVisibility}>
+							<option value="private">Privé</option>
+							<option value="public">Public</option>
+						</select>
+					</div>
+				{/if}
+
+				{#if githubMode !== 'none' && !workdir.trim()}
+					<small class="gh-hint">
+						Le workdir ci-dessus est requis : c'est là que Hive va cloner ou initialiser le repo.
+					</small>
+				{/if}
+			</fieldset>
+
 			<button type="submit" disabled={submitting || !idea.trim()}>
 				{submitting ? 'Création…' : 'Créer le projet'}
 			</button>
@@ -268,6 +349,53 @@
 		text-transform: uppercase;
 		letter-spacing: 0.05em;
 	}
+	.gh {
+		border: 1px solid var(--border);
+		border-radius: 6px;
+		padding: 0.75rem 1rem;
+		background: var(--bg);
+		display: flex;
+		flex-direction: column;
+		gap: 0.4rem;
+	}
+	.gh legend {
+		font-size: 0.78rem;
+		color: var(--muted);
+		text-transform: uppercase;
+		letter-spacing: 0.05em;
+		padding: 0 0.25rem;
+	}
+	.gh-pill {
+		display: inline-block;
+		margin-left: 0.4rem;
+		padding: 0.05rem 0.5rem;
+		border-radius: 999px;
+		font-size: 0.7rem;
+		font-weight: 500;
+		text-transform: none;
+		letter-spacing: 0;
+	}
+	.gh-pill.ok { background: color-mix(in srgb, var(--ok) 25%, transparent); color: var(--ok); }
+	.gh-pill.warn { background: color-mix(in srgb, var(--warn) 25%, transparent); color: var(--warn); }
+	.radio {
+		flex-direction: row !important;
+		align-items: center;
+		gap: 0.4rem;
+		font-size: 0.85rem;
+		color: var(--text);
+	}
+	.radio.disabled { opacity: 0.5; }
+	.gh-input, .gh-create input, .gh-create select {
+		padding: 0.45rem 0.65rem;
+		background: var(--bg-alt);
+		border: 1px solid var(--border);
+		border-radius: 4px;
+		color: inherit;
+		font: inherit;
+	}
+	.gh-create { display: flex; gap: 0.5rem; }
+	.gh-create input { flex: 1; }
+	.gh-hint { color: var(--warn); }
 	.form-error {
 		padding: 0.5rem 0.75rem;
 		background: rgba(240, 80, 80, 0.15);

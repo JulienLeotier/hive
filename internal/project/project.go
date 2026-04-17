@@ -45,11 +45,15 @@ type Project struct {
 	Workdir        string    `json:"workdir,omitempty"`
 	BMADOutputPath string    `json:"bmad_output_path,omitempty"`
 	RepoPath       string    `json:"repo_path,omitempty"`
-	Status         string    `json:"status"`
-	TenantID       string    `json:"tenant_id"`
-	CreatedAt      time.Time `json:"created_at"`
-	UpdatedAt      time.Time `json:"updated_at"`
-	Epics          []Epic    `json:"epics,omitempty"`
+	// RepoURL : URL canonique du repo GitHub quand Hive a cloné ou
+	// créé le repo via gh. Affichée dans le dashboard et utilisée
+	// par le workflow BMAD pour les commentaires de PR.
+	RepoURL   string    `json:"repo_url,omitempty"`
+	Status    string    `json:"status"`
+	TenantID  string    `json:"tenant_id"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+	Epics     []Epic    `json:"epics,omitempty"`
 }
 
 // Epic is one top-level work chunk inside a project, produced by the
@@ -115,6 +119,9 @@ type CreateOpts struct {
 	Workdir        string
 	BMADOutputPath string
 	RepoPath       string
+	// RepoURL : URL canonique du repo GitHub (définie quand Hive a
+	// cloné ou créé le repo depuis l'UI). Persistée dans projects.
+	RepoURL string
 }
 
 // Create persists a new project in `draft` state. Name falls back to a
@@ -134,9 +141,9 @@ func (s *Store) Create(ctx context.Context, tenant, idea string, opts CreateOpts
 	id := "prj_" + ulid.MustNew(ulid.Timestamp(time.Now()), rand.Reader).String()
 
 	_, err := s.db.ExecContext(ctx,
-		`INSERT INTO projects (id, name, idea, workdir, bmad_output_path, repo_path, status, tenant_id)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-		id, name, idea, opts.Workdir, opts.BMADOutputPath, opts.RepoPath, StatusDraft, tenant,
+		`INSERT INTO projects (id, name, idea, workdir, bmad_output_path, repo_path, repo_url, status, tenant_id)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		id, name, idea, opts.Workdir, opts.BMADOutputPath, opts.RepoPath, opts.RepoURL, StatusDraft, tenant,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("inserting project: %w", err)
@@ -152,6 +159,7 @@ func (s *Store) List(ctx context.Context, tenant string, limit int) ([]Project, 
 	}
 	q := `SELECT id, name, idea, COALESCE(prd, ''), COALESCE(workdir, ''),
 	             COALESCE(bmad_output_path, ''), COALESCE(repo_path, ''),
+	             COALESCE(repo_url, ''),
 	             status, tenant_id, created_at, updated_at
 	      FROM projects`
 	args := []any{}
@@ -173,7 +181,7 @@ func (s *Store) List(ctx context.Context, tenant string, limit int) ([]Project, 
 		var p Project
 		var created, updated string
 		if err := rows.Scan(&p.ID, &p.Name, &p.Idea, &p.PRD, &p.Workdir,
-			&p.BMADOutputPath, &p.RepoPath,
+			&p.BMADOutputPath, &p.RepoPath, &p.RepoURL,
 			&p.Status, &p.TenantID, &created, &updated); err != nil {
 			return nil, err
 		}
@@ -194,10 +202,11 @@ func (s *Store) GetByID(ctx context.Context, id string) (*Project, error) {
 	err := s.db.QueryRowContext(ctx,
 		`SELECT id, name, idea, COALESCE(prd, ''), COALESCE(workdir, ''),
 		        COALESCE(bmad_output_path, ''), COALESCE(repo_path, ''),
+		        COALESCE(repo_url, ''),
 		        status, tenant_id, created_at, updated_at
 		 FROM projects WHERE id = ?`, id,
 	).Scan(&p.ID, &p.Name, &p.Idea, &p.PRD, &p.Workdir,
-		&p.BMADOutputPath, &p.RepoPath,
+		&p.BMADOutputPath, &p.RepoPath, &p.RepoURL,
 		&p.Status, &p.TenantID, &created, &updated)
 	if err == sql.ErrNoRows {
 		return nil, fmt.Errorf("project %s not found", id)

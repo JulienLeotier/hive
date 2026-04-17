@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/JulienLeotier/hive/internal/auth"
+	"github.com/JulienLeotier/hive/internal/git"
 	"github.com/JulienLeotier/hive/internal/project"
 )
 
@@ -66,6 +67,13 @@ func (s *Server) handleCreateProject(w http.ResponseWriter, r *http.Request) {
 		Workdir        string `json:"workdir"`
 		BMADOutputPath string `json:"bmad_output_path"`
 		RepoPath       string `json:"repo_path"`
+		// Options GitHub — exclusives. Au plus une des trois :
+		//   - CloneRepo : URL ou owner/name à cloner dans workdir.
+		//   - CreateRepo : nom du nouveau repo à créer via gh.
+		//   - (les deux vides) : pas d'intégration GitHub.
+		CloneRepo        string `json:"clone_repo"`
+		CreateRepo       string `json:"create_repo"`
+		RepoVisibility   string `json:"repo_visibility"` // public|private|internal
 	}
 	if err := json.NewDecoder(io.LimitReader(r.Body, 1<<16)).Decode(&body); err != nil {
 		writeError(w, http.StatusBadRequest, "BAD_REQUEST", err.Error())
@@ -76,12 +84,51 @@ func (s *Server) handleCreateProject(w http.ResponseWriter, r *http.Request) {
 			"idea is required — describe what you want built in plain language")
 		return
 	}
+	if body.CloneRepo != "" && body.CreateRepo != "" {
+		writeError(w, http.StatusBadRequest, "CONFLICTING_GIT_OPTIONS",
+			"choisis entre cloner un repo existant OU en créer un nouveau, pas les deux")
+		return
+	}
+
+	repoURL := ""
+	workdir := body.Workdir
+
+	switch {
+	case body.CloneRepo != "":
+		if workdir == "" {
+			writeError(w, http.StatusBadRequest, "MISSING_WORKDIR",
+				"workdir est requis quand on clone un repo")
+			return
+		}
+		if err := git.CloneRepo(r.Context(), body.CloneRepo, workdir); err != nil {
+			writeError(w, http.StatusBadRequest, "GIT_CLONE_FAILED", err.Error())
+			return
+		}
+		if url, err := git.RemoteURL(r.Context(), workdir); err == nil {
+			repoURL = url
+		}
+
+	case body.CreateRepo != "":
+		if workdir == "" {
+			writeError(w, http.StatusBadRequest, "MISSING_WORKDIR",
+				"workdir est requis quand on crée un repo")
+			return
+		}
+		url, err := git.CreateRepo(r.Context(), body.CreateRepo, workdir, body.RepoVisibility)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "GIT_CREATE_FAILED", err.Error())
+			return
+		}
+		repoURL = url
+	}
+
 	tenant, _ := auth.TenantFromContext(r.Context())
 	p, err := s.projectStore.Create(r.Context(), tenant, body.Idea, project.CreateOpts{
 		Name:           body.Name,
-		Workdir:        body.Workdir,
+		Workdir:        workdir,
 		BMADOutputPath: body.BMADOutputPath,
 		RepoPath:       body.RepoPath,
+		RepoURL:        repoURL,
 	})
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "CREATE_FAILED", err.Error())
@@ -89,6 +136,14 @@ func (s *Server) handleCreateProject(w http.ResponseWriter, r *http.Request) {
 	}
 	w.WriteHeader(http.StatusCreated)
 	writeJSON(w, p)
+}
+
+// handleGhStatus expose l'état de la CLI `gh` (installée,
+// authentifiée, login). Utilisé par le formulaire de création pour
+// montrer / masquer les options GitHub et guider le user vers
+// `gh auth login` si besoin.
+func (s *Server) handleGhStatus(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, git.CheckGh(r.Context()))
 }
 
 // handleUpdatePRD lets the operator tweak the saved PRD text. Allowed

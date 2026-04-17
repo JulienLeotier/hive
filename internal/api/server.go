@@ -91,6 +91,7 @@ func (s *Server) routes() {
 	s.mux.Handle("GET /api/v1/projects", http.HandlerFunc(s.handleListProjects))
 	s.mux.Handle("GET /api/v1/projects/{id}", http.HandlerFunc(s.handleGetProject))
 	s.mux.Handle("POST /api/v1/projects", http.HandlerFunc(s.handleCreateProject))
+	s.mux.Handle("GET /api/v1/gh/status", http.HandlerFunc(s.handleGhStatus))
 	s.mux.Handle("DELETE /api/v1/projects/{id}", http.HandlerFunc(s.handleDeleteProject))
 
 	// BMAD PM intake — the Q&A that turns the idea into a PRD.
