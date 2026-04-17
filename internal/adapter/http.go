@@ -9,6 +9,8 @@ import (
 	"math/rand"
 	"net/http"
 	"time"
+
+	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 )
 
 // rand2 returns a pseudo-random float in [0,1). A package-private helper keeps
@@ -38,12 +40,15 @@ type RetryPolicy struct {
 	OnAttempt func(attempt int, wait time.Duration, lastErr error)
 }
 
-// NewHTTPAdapter creates an adapter for an HTTP-based agent.
+// NewHTTPAdapter creates an adapter for an HTTP-based agent. The HTTP client
+// is wrapped in otelhttp.Transport so outgoing /declare, /invoke, /health
+// calls propagate the current trace context to the remote agent.
 func NewHTTPAdapter(baseURL string) *HTTPAdapter {
 	return &HTTPAdapter{
 		BaseURL: baseURL,
 		HTTPClient: &http.Client{
-			Timeout: 30 * time.Second,
+			Timeout:   30 * time.Second,
+			Transport: otelhttp.NewTransport(http.DefaultTransport),
 		},
 	}
 }

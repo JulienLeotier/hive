@@ -14,6 +14,9 @@ import (
 	"github.com/JulienLeotier/hive/internal/event"
 	"github.com/JulienLeotier/hive/internal/market"
 	"github.com/JulienLeotier/hive/internal/task"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
 )
 
 // pickAgent selects the agent for a task type using the workflow's allocation
@@ -212,6 +215,15 @@ type RunResult struct {
 
 // Run executes a workflow end-to-end following DAG order with parallel level execution.
 func (e *Engine) Run(ctx context.Context, cfg *Config) (*RunResult, error) {
+	ctx, span := otel.Tracer("hive/workflow").Start(ctx, "workflow.run",
+	)
+	span.SetAttributes(
+		attribute.String("workflow.name", cfg.Name),
+		attribute.Int("workflow.tasks", len(cfg.Tasks)),
+		attribute.String("workflow.allocation", cfg.Allocation),
+	)
+	defer span.End()
+
 	// Respect per-workflow concurrency cap (Story 2.5) and allocation strategy (Story 18.2).
 	e.concurrency = cfg.Concurrency
 	e.allocation = cfg.Allocation
@@ -219,8 +231,11 @@ func (e *Engine) Run(ctx context.Context, cfg *Config) (*RunResult, error) {
 	// 1. Create workflow record
 	wf, err := e.workflowStore.Create(ctx, cfg.Name, cfg)
 	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "create workflow")
 		return nil, fmt.Errorf("creating workflow: %w", err)
 	}
+	span.SetAttributes(attribute.String("workflow.id", wf.ID))
 
 	// 2. Mark as running
 	_ = e.workflowStore.UpdateStatus(ctx, wf.ID, StatusRunning)

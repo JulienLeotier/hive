@@ -28,10 +28,12 @@ import (
 	"github.com/JulienLeotier/hive/internal/resilience"
 	"github.com/JulienLeotier/hive/internal/storage"
 	"github.com/JulienLeotier/hive/internal/task"
+	"github.com/JulienLeotier/hive/internal/tracing"
 	"github.com/JulienLeotier/hive/internal/webhook"
 	"github.com/JulienLeotier/hive/internal/workflow"
 	"github.com/JulienLeotier/hive/internal/ws"
 	"github.com/spf13/cobra"
+	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 )
 
 var serveCmd = &cobra.Command{
@@ -53,6 +55,21 @@ var serveCmd = &cobra.Command{
 				task.RoutingMode = cfg.Cluster.Routing
 			}
 		}
+
+		// OpenTelemetry: initialise before anything else so HTTP/adapter
+		// instrumentation has a TracerProvider to register with. No-op when
+		// observability.traces is absent and OTEL_EXPORTER_OTLP_ENDPOINT is
+		// unset, so dev deployments pay nothing.
+		traceShutdown, err := tracing.Setup(context.Background(), buildTracingConfig(cfg.Observability))
+		if err != nil {
+			slog.Warn("tracing setup failed — continuing without traces", "error", err)
+			traceShutdown = func(context.Context) error { return nil }
+		}
+		defer func() {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			_ = traceShutdown(ctx)
+		}()
 
 		// Story 22.1: dispatch storage backend from config.
 		store, err := storage.Open2(storage.Backend{
@@ -391,9 +408,17 @@ var serveCmd = &cobra.Command{
 		mux.Handle("/", dashboard.Handler())
 
 		addr := fmt.Sprintf(":%d", cfg.Port)
+		// otelhttp.NewHandler creates a span per incoming request carrying
+		// method/route/status so a trace backend can stitch a customer's
+		// journey across every Hive call without additional glue.
+		tracedMux := otelhttp.NewHandler(mux, "hive.http",
+			otelhttp.WithSpanNameFormatter(func(_ string, r *http.Request) string {
+				return r.Method + " " + r.URL.Path
+			}))
+
 		httpSrv := &http.Server{
 			Addr:    addr,
-			Handler: api.SecurityHeaders(mux),
+			Handler: api.SecurityHeaders(tracedMux),
 			// Slowloris guard: cap how long a client has to send its request
 			// headers. Without this, an attacker can hold a connection open
 			// indefinitely by dribbling out bytes and exhaust the listener.
@@ -498,6 +523,23 @@ func buildEmailConfig(cfg *config.NotificationsBlock) notify.EmailConfig {
 		StartTLS:    e.StartTLS,
 		SMTPSOnly:   e.SMTPSOnly,
 		TimeoutSecs: e.TimeoutSecs,
+	}
+}
+
+// buildTracingConfig resolves the YAML observability.traces block into the
+// shape tracing.Setup expects. Returns a zero Config when the block is
+// missing, which makes tracing.Setup a no-op.
+func buildTracingConfig(cfg *config.ObservabilityBlock) tracing.Config {
+	if cfg == nil || cfg.Traces == nil {
+		return tracing.Config{}
+	}
+	t := cfg.Traces
+	return tracing.Config{
+		Enabled:        t.Enabled,
+		Endpoint:       t.Endpoint,
+		Protocol:       t.Protocol,
+		SampleRatio:    t.SampleRatio,
+		ServiceVersion: t.Version,
 	}
 }
 

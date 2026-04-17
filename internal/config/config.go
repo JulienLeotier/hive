@@ -29,6 +29,25 @@ type Config struct {
 	Retention   *RetentionBlock  `yaml:"retention,omitempty"`
 	Autonomy      *AutonomyBlock      `yaml:"autonomy,omitempty"`
 	Notifications *NotificationsBlock `yaml:"notifications,omitempty"`
+	Observability *ObservabilityBlock `yaml:"observability,omitempty"`
+}
+
+// ObservabilityBlock wires traces (+ room for logs/metrics v2 later) out to
+// an OTLP collector. OTEL_EXPORTER_OTLP_ENDPOINT is respected when the
+// endpoint field is empty so standard OTel tooling keeps working.
+type ObservabilityBlock struct {
+	Traces *TracesBlock `yaml:"traces,omitempty"`
+}
+
+// TracesBlock configures the trace exporter. Protocol defaults to grpc.
+// SampleRatio defaults to 1.0 (every trace exported) — drop to 0.01 in
+// high-volume deployments.
+type TracesBlock struct {
+	Enabled     bool    `yaml:"enabled,omitempty"`
+	Endpoint    string  `yaml:"endpoint,omitempty"`
+	Protocol    string  `yaml:"protocol,omitempty"`
+	SampleRatio float64 `yaml:"sample_ratio,omitempty"`
+	Version     string  `yaml:"service_version,omitempty"`
 }
 
 // NotificationsBlock configures out-of-band alert channels for ops-shaped
