@@ -37,12 +37,13 @@
 		goto('/login');
 	}
 
-	// BMAD-mode nav. The tool is local, single-user, single-project-at-a-time.
-	// Three columns: Build (what you launch), Fleet (who executes), Inspect
-	// (what happened). Everything else (federation, billing, marketplace,
-	// webhooks, clustering) was cut in the cleanup pass — those were
-	// enterprise-SaaS concerns that don't fit the autonomous-product-factory
-	// vision.
+	// BMAD-mode nav. The product is a local, single-user product factory:
+	// one idea in, one shipped product out. Everything in Build drives a
+	// project; Inspect is the debug/observability catch-all for when
+	// something goes sideways. The "Fleet" group (agents/playground/
+	// knowledge) belonged to the pre-pivot multi-agent platform and is
+	// gone from nav — the route files stay for now to avoid touching
+	// unrelated code but they are no longer part of the product surface.
 	const navGroups = [
 		{
 			label: 'Build',
@@ -52,19 +53,9 @@
 			]
 		},
 		{
-			label: 'Fleet',
-			items: [
-				{ href: '/agents', label: 'Agents' },
-				{ href: '/playground', label: 'Playground' },
-				{ href: '/knowledge', label: 'Knowledge' }
-			]
-		},
-		{
 			label: 'Inspect',
 			items: [
-				{ href: '/tasks', label: 'Tasks' },
 				{ href: '/events', label: 'Events' },
-				{ href: '/costs', label: 'Costs' },
 				{ href: '/audit', label: 'Audit' }
 			]
 		}
