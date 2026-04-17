@@ -23,7 +23,10 @@ func TestOpenRunsMigrations(t *testing.T) {
 	require.NoError(t, err)
 	defer store.Close()
 
-	tables := []string{"agents", "events", "tasks", "workflows", "api_keys", "schema_versions"}
+	// Tables post-pivot : BMAD product factory, pas l'ancien multi-agent.
+	// Les tables agents/tasks/workflows/api_keys ont été droppées en
+	// migration 025.
+	tables := []string{"projects", "epics", "stories", "events", "audit_log", "schema_versions", "bmad_phase_steps"}
 	for _, table := range tables {
 		var name string
 		err := store.DB.QueryRow(
@@ -59,7 +62,7 @@ func TestMigrationsAreIdempotent(t *testing.T) {
 	var count int
 	err = store2.DB.QueryRow("SELECT COUNT(*) FROM schema_versions").Scan(&count)
 	require.NoError(t, err)
-	assert.Equal(t, 24, count, "all migrations should be recorded exactly once each")
+	assert.Equal(t, 25, count, "all migrations should be recorded exactly once each")
 }
 
 func TestSchemaVersionTracked(t *testing.T) {
