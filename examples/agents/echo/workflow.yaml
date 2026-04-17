@@ -1,0 +1,12 @@
+name: echo-demo
+tasks:
+  - name: ping
+    type: echo
+    input:
+      message: "hello from the echo workflow"
+  - name: ping-again
+    type: echo
+    input:
+      message: "second hop"
+    depends_on:
+      - ping

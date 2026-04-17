@@ -756,7 +756,7 @@ var agentSwapCmd = &cobra.Command{
 		if err != nil {
 			return fmt.Errorf("replacement agent: %w", err)
 		}
-		if replacement.HealthStatus != "healthy" {
+		if replacement.HealthStatus != healthyStatus {
 			return fmt.Errorf("replacement agent %s is not healthy (%s)", newName, replacement.HealthStatus)
 		}
 

@@ -192,10 +192,14 @@ var serveCmd = &cobra.Command{
 
 		// Monthly billing aggregation. Runs once a day (idempotent thanks to
 		// the unique (tenant, period) constraint), rolls the previous full
-		// calendar month into one invoice per tenant. Gateway wiring
-		// (Stripe, etc.) is a separate follow-up — this is the infra that
-		// keeps accumulating clean data regardless.
+		// calendar month into one invoice per tenant.
+		// Stripe gateway auto-wires when STRIPE_SECRET_KEY is set; without
+		// it, invoices stay self-hosted (internal chargeback).
 		billingGen := billing.NewGenerator(store.DB, "USD")
+		if stripeKey := os.Getenv("STRIPE_SECRET_KEY"); stripeKey != "" {
+			billingGen.WithGateway(billing.NewStripeGateway(stripeKey, "USD"))
+			slog.Info("billing gateway: stripe")
+		}
 		go func() {
 			t := time.NewTicker(24 * time.Hour)
 			defer t.Stop()
@@ -267,7 +271,7 @@ var serveCmd = &cobra.Command{
 					interval = time.Duration(cfg.Autonomy.HeartbeatSeconds) * time.Second
 				}
 				for _, a := range agents {
-					if a.HealthStatus == "healthy" {
+					if a.HealthStatus == healthyStatus {
 						scheduler.Register(a.Name, interval)
 					}
 				}
@@ -284,7 +288,7 @@ var serveCmd = &cobra.Command{
 			// we don't know which one might now be capable.
 			agents, _ := mgr.List(supervisorCtx)
 			for _, a := range agents {
-				if a.HealthStatus == "healthy" {
+				if a.HealthStatus == healthyStatus {
 					scheduler.TriggerWakeUp(a.Name)
 				}
 			}
@@ -431,6 +435,15 @@ var serveCmd = &cobra.Command{
 		// its own HMAC secret via trigger.secret). Path must match the
 		// `webhook:` field of a registered workflow trigger.
 		mux.Handle("/hooks/", api.Instrument("/hooks/", workflow.WebhookHandler(triggerMgr)))
+
+		// Stripe webhook — unauthenticated (signature verification gates
+		// payload authenticity instead of API keys). Only wired when the
+		// Stripe secret + webhook secret are both set.
+		if stripeSecret := os.Getenv("STRIPE_WEBHOOK_SECRET"); stripeSecret != "" {
+			mux.Handle("/webhooks/stripe", api.Instrument("/webhooks/stripe",
+				api.StripeWebhookHandler(billingGen, stripeSecret)))
+			slog.Info("stripe webhook endpoint armed", "path", "/webhooks/stripe")
+		}
 
 		// Dashboard (static, no auth)
 		mux.Handle("/", dashboard.Handler())

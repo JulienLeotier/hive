@@ -1,0 +1,12 @@
+name: translate-demo
+tasks:
+  - name: to-french
+    type: translate
+    input:
+      text: "Hive lets you orchestrate heterogeneous AI agents as workflows."
+      target_lang: French
+  - name: to-japanese
+    type: translate
+    input:
+      text: "Hive lets you orchestrate heterogeneous AI agents as workflows."
+      target_lang: Japanese

@@ -1,0 +1,13 @@
+name: summarize-demo
+tasks:
+  - name: summarize-readme
+    type: summarize
+    input:
+      text: |
+        Hive is an AI agent orchestration platform. It registers
+        heterogeneous agents (HTTP, Claude Code, MCP, CrewAI, LangChain,
+        AutoGen, OpenAI), composes workflows as DAGs either as YAML or
+        through the visual drag-drop builder, routes tasks with
+        per-tenant budgets, tracks costs through OpenTelemetry traces,
+        and ships with a federated agent marketplace.
+      max_words: 30
