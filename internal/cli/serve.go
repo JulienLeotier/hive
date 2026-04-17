@@ -16,6 +16,7 @@ import (
 	"github.com/JulienLeotier/hive/internal/devloop"
 	"github.com/JulienLeotier/hive/internal/event"
 	"github.com/JulienLeotier/hive/internal/intake"
+	"github.com/JulienLeotier/hive/internal/notify"
 	"github.com/JulienLeotier/hive/internal/project"
 	"github.com/JulienLeotier/hive/internal/storage"
 	"github.com/JulienLeotier/hive/internal/tracing"
@@ -60,6 +61,10 @@ var serveCmd = &cobra.Command{
 		defer store.Close()
 
 		bus := event.NewBus(store.DB)
+
+		// Notifications Slack (opt-in via HIVE_SLACK_WEBHOOK). No-op si
+		// l'env var est absente — aucun impact en local.
+		notify.Attach(bus)
 
 		// Background retention sweeps (events, audit) keep the DB bounded.
 		supervisorCtx, supervisorCancel := context.WithCancel(context.Background())

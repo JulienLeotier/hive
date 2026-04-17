@@ -12,6 +12,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"strings"
@@ -237,6 +240,74 @@ func ListRepos(ctx context.Context) ([]Repo, error) {
 	return repos, nil
 }
 
+// DeviceFlow — GitHub OAuth device flow côté client. On appelle
+// directement les endpoints GitHub (plus fiable que de parser le
+// output de `gh auth login --web`), puis une fois le token obtenu
+// on le pipe à `gh auth login --with-token` pour qu'il persiste
+// dans ~/.config/gh comme si l'user avait fait un login standard.
+//
+// Client ID : celui du gh CLI public (178c6fc778ccc68e1d6a) — c'est
+// le même qu'utiliserait `gh auth login --web`, aucune secret
+// nécessaire puisque c'est une OAuth App publique.
+const ghDeviceClientID = "178c6fc778ccc68e1d6a"
+
+// DeviceStart kicks off the device flow and returns the user code,
+// verification URL, opaque device code (to pass to DevicePoll), and
+// polling interval.
+type DeviceStart struct {
+	UserCode        string `json:"user_code"`
+	VerificationURI string `json:"verification_uri"`
+	DeviceCode      string `json:"device_code"`
+	Interval        int    `json:"interval"`
+	ExpiresIn       int    `json:"expires_in"`
+}
+
+func StartDeviceFlow(ctx context.Context) (*DeviceStart, error) {
+	form := "client_id=" + ghDeviceClientID + "&scope=" + httpEscapeScopes("repo workflow read:org")
+	req, err := httpNewRequest(ctx, "POST", "https://github.com/login/device/code", form)
+	if err != nil {
+		return nil, err
+	}
+	var out DeviceStart
+	if err := httpDoJSON(req, &out); err != nil {
+		return nil, fmt.Errorf("device/code: %w", err)
+	}
+	if out.Interval <= 0 {
+		out.Interval = 5
+	}
+	return &out, nil
+}
+
+// PollDeviceFlow checks if the user has authorized the device code.
+// Returns the access token when granted, or (empty, pendingErr) while
+// waiting. Callers poll at the interval returned by StartDeviceFlow.
+func PollDeviceFlow(ctx context.Context, deviceCode string) (string, error) {
+	form := "client_id=" + ghDeviceClientID +
+		"&device_code=" + deviceCode +
+		"&grant_type=urn:ietf:params:oauth:grant-type:device_code"
+	req, err := httpNewRequest(ctx, "POST", "https://github.com/login/oauth/access_token", form)
+	if err != nil {
+		return "", err
+	}
+	var resp struct {
+		AccessToken      string `json:"access_token"`
+		Error            string `json:"error"`
+		ErrorDescription string `json:"error_description"`
+	}
+	if err := httpDoJSON(req, &resp); err != nil {
+		return "", err
+	}
+	if resp.AccessToken != "" {
+		// Persiste via gh pour que les prochaines commandes `gh …` soient auth.
+		if err := LoginWithToken(ctx, resp.AccessToken); err != nil {
+			return resp.AccessToken, fmt.Errorf("token obtenu mais gh auth failed: %w", err)
+		}
+		return resp.AccessToken, nil
+	}
+	// Cas pending : on relaie l'erreur GitHub pour que le caller sache quoi faire.
+	return "", errors.New(resp.Error)
+}
+
 // Logout supprime l'auth gh locale (`gh auth logout --hostname github.com`).
 func Logout(ctx context.Context) error {
 	if _, err := exec.LookPath("gh"); err != nil {
@@ -311,4 +382,41 @@ func truncate(s string, n int) string {
 		return s[:n] + "…"
 	}
 	return s
+}
+
+// HTTP helpers for the GitHub OAuth device flow. Small hand-rolled
+// wrappers so we avoid pulling in an OAuth SDK just for two endpoints.
+
+func httpEscapeScopes(s string) string {
+	return url.QueryEscape(s)
+}
+
+func httpNewRequest(ctx context.Context, method, urlStr, body string) (*http.Request, error) {
+	req, err := http.NewRequestWithContext(ctx, method, urlStr, strings.NewReader(body))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	return req, nil
+}
+
+func httpDoJSON(req *http.Request, out any) error {
+	client := &http.Client{Timeout: 20 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	data, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil {
+		return err
+	}
+	if resp.StatusCode >= 400 && resp.StatusCode != http.StatusUnauthorized {
+		return fmt.Errorf("http %d: %s", resp.StatusCode, truncate(string(data), 200))
+	}
+	if err := json.Unmarshal(data, out); err != nil {
+		return fmt.Errorf("parse json: %w (body=%s)", err, truncate(string(data), 200))
+	}
+	return nil
 }

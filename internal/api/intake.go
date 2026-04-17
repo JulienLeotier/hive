@@ -907,6 +907,35 @@ func (s *Server) stepObserver(ctx context.Context, projectID, phase string) bmad
 					`UPDATE projects SET total_cost_usd = total_cost_usd + ?,
 					 updated_at = datetime('now') WHERE id = ?`,
 					res.CostUSD, projectID)
+				// Plafond coût : si le cumul vient de passer le cap,
+				// on annule le run courant. L'observer tourne dans la
+				// goroutine de la séquence BMAD, donc cancel() au
+				// context du run fait remonter l'erreur au
+				// RunSequenceObserved qui stoppe net. Le fail() dans
+				// runArchitect/runIteration flippe alors le projet en
+				// failed avec stage=cost-cap.
+				var total, cap_ float64
+				_ = s.db().QueryRowContext(ctx,
+					`SELECT total_cost_usd, COALESCE(cost_cap_usd, 0) FROM projects WHERE id = ?`,
+					projectID).Scan(&total, &cap_)
+				if cap_ > 0 && total >= cap_ {
+					slog.Warn("bmad: cost cap reached, cancelling run",
+						"project", projectID, "total_usd", total, "cap_usd", cap_)
+					_, _ = s.db().ExecContext(ctx,
+						`UPDATE projects SET failure_stage = 'cost-cap',
+						 failure_error = 'Plafond coût atteint', status = 'failed',
+						 updated_at = datetime('now') WHERE id = ?`,
+						projectID)
+					if s.eventBus != nil {
+						_, _ = s.eventBus.Publish(ctx, "project.cost_cap_reached", "api",
+							map[string]any{
+								"project_id": projectID,
+								"total_usd":  total,
+								"cap_usd":    cap_,
+							})
+					}
+					s.cancelRun(projectID)
+				}
 			}
 			if s.eventBus != nil {
 				_, _ = s.eventBus.Publish(ctx, "project.bmad_step_finished", "api", map[string]any{

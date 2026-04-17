@@ -74,6 +74,21 @@ jobs:
       - name: Full test suite
         run: go test -race -timeout 5m ./...
 
+      - name: BMAD wiring smoke-test (fake-claude)
+        run: |
+          # Installe fake-claude en première place dans le PATH pour que
+          # les hive.bmad.Runner.Invoke() appellent un stub qui renvoie
+          # l'envelope JSON attendue sans consommer de tokens. Permet
+          # d'exercer le chemin code « Claude répond » en CI sans
+          # secrets ni dépendance externe.
+          mkdir -p "$RUNNER_TEMP/fake-bin"
+          cp scripts/fake-claude.sh "$RUNNER_TEMP/fake-bin/claude"
+          chmod +x "$RUNNER_TEMP/fake-bin/claude"
+          export PATH="$RUNNER_TEMP/fake-bin:$PATH"
+          # Smoke : bmad.NewRunner() doit détecter le faux claude et
+          # Invoke() parser son envelope JSON sans erreur.
+          go test -race -timeout 2m -run 'TestExtractPRURL|TestPlanning|TestIteration|TestFullPlanning|TestStoryStatus' ./internal/bmad/...
+
   postgres-integration:
     name: Postgres Integration
     runs-on: ubuntu-latest

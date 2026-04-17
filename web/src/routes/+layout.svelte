@@ -26,7 +26,14 @@
 			label: 'Inspection',
 			items: [
 				{ href: '/events', label: 'Événements' },
-				{ href: '/audit', label: 'Audit' }
+				{ href: '/audit', label: 'Audit' },
+				{ href: '/costs', label: 'Coûts' }
+			]
+		},
+		{
+			label: 'Système',
+			items: [
+				{ href: '/settings', label: 'Réglages' }
 			]
 		}
 	];

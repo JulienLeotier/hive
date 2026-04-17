@@ -28,6 +28,7 @@
 	let workdir = $state('');
 	let bmadOutputPath = $state('');
 	let repoPath = $state('');
+	let costCapUSD = $state('');
 
 	// Intégration GitHub
 	type GhStatus = { installed: boolean; authenticated: boolean; login?: string; error?: string };
@@ -98,6 +99,75 @@
 		}
 	}
 
+	// OAuth device flow (alternative au PAT) : l'user clique, on lance
+	// /gh/device/start pour obtenir un user_code, on ouvre l'URL de
+	// vérification dans un onglet, puis on poll /gh/device/poll jusqu'à
+	// obtenir le token (ou expiration / refus).
+	type DeviceStart = {
+		user_code: string;
+		verification_uri: string;
+		device_code: string;
+		interval: number;
+		expires_in: number;
+	};
+	let device = $state<DeviceStart | null>(null);
+	let deviceStatus = $state<'idle' | 'waiting' | 'ok' | 'error'>('idle');
+	let deviceError = $state('');
+	let devicePoll: ReturnType<typeof setTimeout> | null = null;
+
+	async function startDevice() {
+		deviceError = '';
+		deviceStatus = 'waiting';
+		try {
+			device = (await apiPost('/api/v1/gh/device/start', {})) as DeviceStart;
+			window.open(device.verification_uri, '_blank', 'noopener');
+			scheduleDevicePoll();
+		} catch (e) {
+			deviceStatus = 'error';
+			deviceError = e instanceof Error ? e.message : String(e);
+		}
+	}
+
+	function scheduleDevicePoll() {
+		if (!device) return;
+		devicePoll = setTimeout(pollDevice, Math.max(device.interval, 5) * 1000);
+	}
+
+	async function pollDevice() {
+		if (!device) return;
+		try {
+			const res = await fetch('/api/v1/gh/device/poll', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ device_code: device.device_code })
+			});
+			if (res.status === 202) {
+				scheduleDevicePoll();
+				return;
+			}
+			const body = await res.json();
+			if (!res.ok) {
+				deviceStatus = 'error';
+				deviceError = body?.error?.message ?? 'échec device flow';
+				device = null;
+				return;
+			}
+			ghStatus = body as GhStatus;
+			deviceStatus = 'ok';
+			device = null;
+		} catch (e) {
+			deviceStatus = 'error';
+			deviceError = e instanceof Error ? e.message : String(e);
+		}
+	}
+
+	function cancelDevice() {
+		if (devicePoll) clearTimeout(devicePoll);
+		devicePoll = null;
+		device = null;
+		deviceStatus = 'idle';
+	}
+
 	async function ghLogout() {
 		try {
 			ghStatus = (await apiPost('/api/v1/gh/logout', {})) as GhStatus;
@@ -155,7 +225,7 @@
 		formError = '';
 		submitting = true;
 		try {
-			const payload: Record<string, string> = {
+			const payload: Record<string, unknown> = {
 				name,
 				idea,
 				workdir,
@@ -167,6 +237,10 @@
 			} else if (githubMode === 'create' && createRepoName.trim()) {
 				payload.create_repo = createRepoName.trim();
 				payload.repo_visibility = repoVisibility;
+			}
+			const cap = parseFloat(costCapUSD);
+			if (!Number.isNaN(cap) && cap > 0) {
+				payload.cost_cap_usd = cap;
 			}
 			const p = (await apiPost('/api/v1/projects', payload)) as Project;
 			window.location.href = `/projects/${encodeURIComponent(p.id)}`;
@@ -308,6 +382,28 @@
 						{#if ghLoginError}
 							<div class="err">{ghLoginError}</div>
 						{/if}
+						<div class="gh-or">— ou —</div>
+						{#if !device}
+							<button type="button"
+								class="gh-device-btn"
+								onclick={startDevice}
+								disabled={deviceStatus === 'waiting'}>
+								Se connecter via navigateur (OAuth)
+							</button>
+						{:else}
+							<div class="gh-device-modal">
+								<p>
+									Ouvre <a href={device.verification_uri} target="_blank" rel="noopener">{device.verification_uri}</a>
+									et saisis ce code :
+								</p>
+								<code class="gh-device-code">{device.user_code}</code>
+								<p class="gh-hint">Hive poll GitHub toutes les {device.interval}s — reviens ici quand c'est validé.</p>
+								<button type="button" class="ghost" onclick={cancelDevice}>Annuler</button>
+							</div>
+						{/if}
+						{#if deviceError}
+							<div class="err">{deviceError}</div>
+						{/if}
 					</div>
 				{/if}
 
@@ -370,6 +466,19 @@
 						Le workdir ci-dessus est requis : c'est là que Hive va cloner ou initialiser le repo.
 					</small>
 				{/if}
+			</fieldset>
+
+			<fieldset class="block">
+				<legend>Budget (optionnel)</legend>
+				<label>
+					<span>Plafond de coût Claude (USD)</span>
+					<input type="number"
+						min="0"
+						step="0.5"
+						placeholder="ex. 10"
+						bind:value={costCapUSD} />
+					<small>Hive annule le run BMAD si le cumul dépasse ce montant. Laisse vide pour aucun plafond.</small>
+				</label>
 			</fieldset>
 
 			<button type="submit" disabled={submitting || !idea.trim()}>
@@ -568,6 +677,44 @@
 	.gh-login-row input { flex: 1; font-family: ui-monospace, monospace; font-size: 0.8rem; padding: 0.4rem 0.6rem; border: 1px solid var(--border); border-radius: 4px; background: var(--bg); color: inherit; }
 	.gh-login-row button { padding: 0.4rem 0.9rem; background: var(--accent); color: white; border: none; border-radius: 4px; cursor: pointer; font-weight: 600; }
 	.gh-login-row button:disabled { opacity: 0.5; cursor: not-allowed; }
+	.gh-or {
+		text-align: center;
+		color: var(--muted);
+		font-size: 0.75rem;
+		margin: 0.5rem 0;
+	}
+	.gh-device-btn {
+		width: 100%;
+		padding: 0.5rem 0.8rem;
+		background: var(--bg);
+		color: var(--fg);
+		border: 1px solid var(--border);
+		border-radius: 4px;
+		cursor: pointer;
+		font-weight: 500;
+	}
+	.gh-device-btn:hover { border-color: var(--accent); }
+	.gh-device-modal {
+		padding: 0.7rem;
+		background: color-mix(in srgb, var(--accent) 10%, transparent);
+		border: 1px dashed var(--accent);
+		border-radius: 4px;
+		display: flex;
+		flex-direction: column;
+		gap: 0.5rem;
+		text-align: center;
+	}
+	.gh-device-code {
+		font-family: ui-monospace, monospace;
+		font-size: 1.3rem;
+		font-weight: 700;
+		letter-spacing: 0.2rem;
+		padding: 0.4rem 0.8rem;
+		background: var(--bg);
+		border: 1px solid var(--border);
+		border-radius: 4px;
+		display: inline-block;
+	}
 	.link {
 		background: none;
 		border: none;

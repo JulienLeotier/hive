@@ -174,6 +174,43 @@
 	let intakeDone = $state(false);
 	let finalizing = $state(false);
 	let intakeError = $state('');
+	let editingMessageID = $state<number | null>(null);
+	let editDraft = $state('');
+	let savingEdit = $state(false);
+
+	function startEdit(m: IntakeMessage) {
+		editingMessageID = m.id;
+		editDraft = m.content;
+		intakeError = '';
+	}
+
+	function cancelEdit() {
+		editingMessageID = null;
+		editDraft = '';
+	}
+
+	async function saveEdit() {
+		const id = $page.params.id ?? '';
+		if (editingMessageID === null || !editDraft.trim()) return;
+		savingEdit = true;
+		intakeError = '';
+		try {
+			const resp = await fetch(`/api/v1/projects/${encodeURIComponent(id)}/intake/message`, {
+				method: 'PATCH',
+				headers: { 'content-type': 'application/json' },
+				body: JSON.stringify({ message_id: editingMessageID, content: editDraft })
+			});
+			if (!resp.ok) throw new Error((await resp.json()).error?.message ?? resp.statusText);
+			const json = await resp.json();
+			conversation = json.data as Conversation;
+			editingMessageID = null;
+			editDraft = '';
+		} catch (e) {
+			intakeError = e instanceof Error ? e.message : String(e);
+		} finally {
+			savingEdit = false;
+		}
+	}
 
 	async function load() {
 		const id = $page.params.id ?? '';
@@ -607,8 +644,32 @@
 								<div class="bubble-head">
 									<strong>{m.author === 'user' ? 'Toi' : 'Agent PM'}</strong>
 									<span class="muted">{fmtRelative(m.created_at)}</span>
+									{#if m.author === 'user' && editingMessageID !== m.id}
+										<button type="button" class="edit-msg"
+											onclick={() => startEdit(m)}
+											title="Modifier ce message">✎</button>
+									{/if}
 								</div>
-								<div class="bubble-content">{m.content}</div>
+								{#if editingMessageID === m.id}
+									<textarea
+										class="edit-area"
+										rows="3"
+										bind:value={editDraft}
+										disabled={savingEdit}
+									></textarea>
+									<div class="edit-actions">
+										<button type="button"
+											onclick={saveEdit}
+											disabled={savingEdit || !editDraft.trim()}>
+											{savingEdit ? 'Enregistrement…' : 'Enregistrer'}
+										</button>
+										<button type="button" onclick={cancelEdit} disabled={savingEdit}>
+											Annuler
+										</button>
+									</div>
+								{:else}
+									<div class="bubble-content">{m.content}</div>
+								{/if}
 							</div>
 						{/each}
 					</div>
@@ -1158,6 +1219,47 @@
 		color: var(--muted);
 		margin-bottom: 0.25rem;
 	}
+	.edit-msg {
+		margin-left: auto;
+		background: none;
+		border: none;
+		color: var(--muted);
+		cursor: pointer;
+		font-size: 0.75rem;
+		padding: 0;
+	}
+	.edit-msg:hover { color: var(--accent); }
+	.edit-area {
+		width: 100%;
+		padding: 0.4rem 0.6rem;
+		background: var(--bg);
+		border: 1px solid var(--accent);
+		border-radius: 4px;
+		font: inherit;
+		color: inherit;
+		resize: vertical;
+	}
+	.edit-actions {
+		display: flex;
+		gap: 0.35rem;
+		margin-top: 0.4rem;
+	}
+	.edit-actions button {
+		padding: 0.25rem 0.7rem;
+		background: var(--bg-alt);
+		border: 1px solid var(--border);
+		border-radius: 4px;
+		cursor: pointer;
+		font: inherit;
+		font-size: 0.78rem;
+		color: inherit;
+	}
+	.edit-actions button:first-child {
+		background: var(--accent);
+		color: white;
+		border: none;
+	}
+	.edit-actions button:disabled { opacity: 0.5; cursor: not-allowed; }
 	.bubble-content {
 		white-space: pre-wrap;
 		font-size: 0.9rem;

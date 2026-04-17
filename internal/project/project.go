@@ -59,6 +59,9 @@ type Project struct {
 	// invocation claude pour ce projet. Affiché dans le dashboard
 	// pour que l'opérateur voit sa facture grossir.
 	TotalCostUSD float64 `json:"total_cost_usd"`
+	// CostCapUSD : plafond au-delà duquel Hive annule le build pour
+	// empêcher un projet de consommer sans limite. 0 = pas de cap.
+	CostCapUSD float64 `json:"cost_cap_usd,omitempty"`
 	// FailureStage / FailureError : non vides quand le pipeline BMAD
 	// a planté. Le dashboard affiche une bannière d'erreur + un
 	// bouton Retry pointant vers le stage concerné.
@@ -140,6 +143,8 @@ type CreateOpts struct {
 	// IsExisting : activer pour les projets brownfield. Hive choisit
 	// alors IterationPipeline à la place de FullPlanningPipeline.
 	IsExisting bool
+	// CostCapUSD : plafond Claude en USD. 0 = illimité.
+	CostCapUSD float64
 }
 
 // Create persists a new project in `draft` state. Name falls back to a
@@ -163,9 +168,9 @@ func (s *Store) Create(ctx context.Context, tenant, idea string, opts CreateOpts
 		isExisting = 1
 	}
 	_, err := s.db.ExecContext(ctx,
-		`INSERT INTO projects (id, name, idea, workdir, bmad_output_path, repo_path, repo_url, is_existing, status, tenant_id)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		id, name, idea, opts.Workdir, opts.BMADOutputPath, opts.RepoPath, opts.RepoURL, isExisting, StatusDraft, tenant,
+		`INSERT INTO projects (id, name, idea, workdir, bmad_output_path, repo_path, repo_url, is_existing, cost_cap_usd, status, tenant_id)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		id, name, idea, opts.Workdir, opts.BMADOutputPath, opts.RepoPath, opts.RepoURL, isExisting, opts.CostCapUSD, StatusDraft, tenant,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("inserting project: %w", err)
@@ -182,8 +187,8 @@ func (s *Store) List(ctx context.Context, tenant string, limit int) ([]Project, 
 	q := `SELECT id, name, idea, COALESCE(prd, ''), COALESCE(workdir, ''),
 	             COALESCE(bmad_output_path, ''), COALESCE(repo_path, ''),
 	             COALESCE(repo_url, ''), COALESCE(is_existing, 0),
-	             COALESCE(total_cost_usd, 0), COALESCE(failure_stage, ''),
-	             COALESCE(failure_error, ''),
+	             COALESCE(total_cost_usd, 0), COALESCE(cost_cap_usd, 0),
+	             COALESCE(failure_stage, ''), COALESCE(failure_error, ''),
 	             status, tenant_id, created_at, updated_at
 	      FROM projects`
 	args := []any{}
@@ -207,7 +212,7 @@ func (s *Store) List(ctx context.Context, tenant string, limit int) ([]Project, 
 		var isExisting int
 		if err := rows.Scan(&p.ID, &p.Name, &p.Idea, &p.PRD, &p.Workdir,
 			&p.BMADOutputPath, &p.RepoPath, &p.RepoURL, &isExisting,
-			&p.TotalCostUSD, &p.FailureStage, &p.FailureError,
+			&p.TotalCostUSD, &p.CostCapUSD, &p.FailureStage, &p.FailureError,
 			&p.Status, &p.TenantID, &created, &updated); err != nil {
 			return nil, err
 		}
@@ -231,13 +236,13 @@ func (s *Store) GetByID(ctx context.Context, id string) (*Project, error) {
 		`SELECT id, name, idea, COALESCE(prd, ''), COALESCE(workdir, ''),
 		        COALESCE(bmad_output_path, ''), COALESCE(repo_path, ''),
 		        COALESCE(repo_url, ''), COALESCE(is_existing, 0),
-		        COALESCE(total_cost_usd, 0), COALESCE(failure_stage, ''),
-		        COALESCE(failure_error, ''),
+		        COALESCE(total_cost_usd, 0), COALESCE(cost_cap_usd, 0),
+		        COALESCE(failure_stage, ''), COALESCE(failure_error, ''),
 		        status, tenant_id, created_at, updated_at
 		 FROM projects WHERE id = ?`, id,
 	).Scan(&p.ID, &p.Name, &p.Idea, &p.PRD, &p.Workdir,
 		&p.BMADOutputPath, &p.RepoPath, &p.RepoURL, &isExisting,
-		&p.TotalCostUSD, &p.FailureStage, &p.FailureError,
+		&p.TotalCostUSD, &p.CostCapUSD, &p.FailureStage, &p.FailureError,
 		&p.Status, &p.TenantID, &created, &updated)
 	p.IsExisting = isExisting == 1
 	if err == sql.ErrNoRows {

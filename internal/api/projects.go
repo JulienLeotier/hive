@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"os"
 	"strings"
 	"time"
 
@@ -74,9 +75,11 @@ func (s *Server) handleCreateProject(w http.ResponseWriter, r *http.Request) {
 		//   - CloneRepo : URL ou owner/name à cloner dans workdir.
 		//   - CreateRepo : nom du nouveau repo à créer via gh.
 		//   - (les deux vides) : pas d'intégration GitHub.
-		CloneRepo        string `json:"clone_repo"`
-		CreateRepo       string `json:"create_repo"`
-		RepoVisibility   string `json:"repo_visibility"` // public|private|internal
+		CloneRepo      string `json:"clone_repo"`
+		CreateRepo     string `json:"create_repo"`
+		RepoVisibility string `json:"repo_visibility"` // public|private|internal
+		// Garde-fou budget Claude. 0 = pas de cap.
+		CostCapUSD float64 `json:"cost_cap_usd"`
 	}
 	if err := json.NewDecoder(io.LimitReader(r.Body, 1<<16)).Decode(&body); err != nil {
 		writeError(w, http.StatusBadRequest, "BAD_REQUEST", err.Error())
@@ -140,6 +143,7 @@ func (s *Server) handleCreateProject(w http.ResponseWriter, r *http.Request) {
 		RepoPath:       body.RepoPath,
 		RepoURL:        repoURL,
 		IsExisting:     isExisting,
+		CostCapUSD:     body.CostCapUSD,
 	})
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "CREATE_FAILED", err.Error())
@@ -200,6 +204,198 @@ func (s *Server) handleGhRepos(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleGhLogout(w http.ResponseWriter, r *http.Request) {
 	if err := git.Logout(r.Context()); err != nil {
 		writeError(w, http.StatusInternalServerError, "GH_LOGOUT_FAILED", err.Error())
+		return
+	}
+	writeJSON(w, git.CheckGh(r.Context()))
+}
+
+// handleCostSummary aggregates cumulative cost across every project,
+// plus per-phase / per-command breakdowns. Feeds the /costs dashboard
+// page so the operator can see where Claude tokens are going without
+// drilling into each project individually.
+func (s *Server) handleCostSummary(w http.ResponseWriter, r *http.Request) {
+	type projectLine struct {
+		ID         string  `json:"id"`
+		Name       string  `json:"name"`
+		Status     string  `json:"status"`
+		TotalUSD   float64 `json:"total_usd"`
+		CapUSD     float64 `json:"cap_usd,omitempty"`
+		StepCount  int     `json:"step_count"`
+		FailedStep string  `json:"failure_stage,omitempty"`
+	}
+	type phaseLine struct {
+		Phase     string  `json:"phase"`
+		TotalUSD  float64 `json:"total_usd"`
+		StepCount int     `json:"step_count"`
+		InTokens  int64   `json:"input_tokens"`
+		OutTokens int64   `json:"output_tokens"`
+	}
+	type commandLine struct {
+		Command   string  `json:"command"`
+		TotalUSD  float64 `json:"total_usd"`
+		StepCount int     `json:"step_count"`
+	}
+	type summary struct {
+		GrandTotalUSD float64       `json:"grand_total_usd"`
+		Projects      []projectLine `json:"projects"`
+		Phases        []phaseLine   `json:"phases"`
+		Commands      []commandLine `json:"commands"`
+	}
+
+	out := summary{Projects: []projectLine{}, Phases: []phaseLine{}, Commands: []commandLine{}}
+
+	// Par projet
+	rows, err := s.db().QueryContext(r.Context(),
+		`SELECT p.id, p.name, p.status,
+		        COALESCE(p.total_cost_usd, 0),
+		        COALESCE(p.cost_cap_usd, 0),
+		        COALESCE(p.failure_stage, ''),
+		        COALESCE((SELECT COUNT(*) FROM bmad_phase_steps s WHERE s.project_id = p.id), 0)
+		 FROM projects p
+		 ORDER BY p.total_cost_usd DESC, p.updated_at DESC`)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "QUERY_FAILED", err.Error())
+		return
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var p projectLine
+		if err := rows.Scan(&p.ID, &p.Name, &p.Status, &p.TotalUSD,
+			&p.CapUSD, &p.FailedStep, &p.StepCount); err != nil {
+			writeError(w, http.StatusInternalServerError, "SCAN_FAILED", err.Error())
+			return
+		}
+		out.Projects = append(out.Projects, p)
+		out.GrandTotalUSD += p.TotalUSD
+	}
+	if err := rows.Err(); err != nil {
+		writeError(w, http.StatusInternalServerError, "SCAN_FAILED", err.Error())
+		return
+	}
+
+	// Par phase (analysis, planning, solutioning, implementation-init, story, review)
+	phaseRows, perr := s.db().QueryContext(r.Context(),
+		`SELECT phase,
+		        SUM(COALESCE(cost_usd, 0)),
+		        COUNT(*),
+		        SUM(COALESCE(input_tokens, 0)),
+		        SUM(COALESCE(output_tokens, 0))
+		 FROM bmad_phase_steps
+		 WHERE status = 'done'
+		 GROUP BY phase
+		 ORDER BY 2 DESC`)
+	if perr != nil && !strings.Contains(perr.Error(), "no such table") {
+		writeError(w, http.StatusInternalServerError, "QUERY_FAILED", perr.Error())
+		return
+	}
+	if phaseRows != nil {
+		defer phaseRows.Close()
+		for phaseRows.Next() {
+			var p phaseLine
+			if err := phaseRows.Scan(&p.Phase, &p.TotalUSD, &p.StepCount,
+				&p.InTokens, &p.OutTokens); err != nil {
+				writeError(w, http.StatusInternalServerError, "SCAN_FAILED", err.Error())
+				return
+			}
+			out.Phases = append(out.Phases, p)
+		}
+	}
+
+	// Par commande (top 20)
+	cmdRows, cerr := s.db().QueryContext(r.Context(),
+		`SELECT command,
+		        SUM(COALESCE(cost_usd, 0)),
+		        COUNT(*)
+		 FROM bmad_phase_steps
+		 WHERE status = 'done'
+		 GROUP BY command
+		 ORDER BY 2 DESC
+		 LIMIT 20`)
+	if cerr != nil && !strings.Contains(cerr.Error(), "no such table") {
+		writeError(w, http.StatusInternalServerError, "QUERY_FAILED", cerr.Error())
+		return
+	}
+	if cmdRows != nil {
+		defer cmdRows.Close()
+		for cmdRows.Next() {
+			var c commandLine
+			if err := cmdRows.Scan(&c.Command, &c.TotalUSD, &c.StepCount); err != nil {
+				writeError(w, http.StatusInternalServerError, "SCAN_FAILED", err.Error())
+				return
+			}
+			out.Commands = append(out.Commands, c)
+		}
+	}
+
+	writeJSON(w, out)
+}
+
+// handleNotifySettings reports which notification sinks are wired up.
+// We don't leak the webhook URL itself — just whether one is set, so
+// the UI can render "Slack: ON" vs a help card pointing at the env var.
+func (s *Server) handleNotifySettings(w http.ResponseWriter, _ *http.Request) {
+	slack := os.Getenv("HIVE_SLACK_WEBHOOK")
+	writeJSON(w, map[string]any{
+		"slack_enabled": slack != "",
+		"slack_host": func() string {
+			if slack == "" {
+				return ""
+			}
+			// Strip the token path but keep the host for a "connected to hooks.slack.com" hint.
+			if i := strings.Index(slack[8:], "/"); i > 0 {
+				return slack[:8+i]
+			}
+			return slack
+		}(),
+		"events": []string{
+			"project.shipped",
+			"project.architect_failed",
+			"project.iteration_failed",
+			"project.cost_cap_reached",
+		},
+	})
+}
+
+// handleGhDeviceStart kicks off a GitHub OAuth device flow. Returns
+// the verification URL + user code to display, and an opaque device
+// code the client passes back to /gh/device/poll.
+func (s *Server) handleGhDeviceStart(w http.ResponseWriter, r *http.Request) {
+	start, err := git.StartDeviceFlow(r.Context())
+	if err != nil {
+		writeError(w, http.StatusBadGateway, "DEVICE_START_FAILED", err.Error())
+		return
+	}
+	writeJSON(w, start)
+}
+
+// handleGhDevicePoll polls GitHub for the device code. When the user
+// has authorized, the token is persisted via `gh auth login --with-
+// token`. While pending, returns 202 with the GitHub error code
+// (`authorization_pending`, `slow_down`) so the client can back off.
+func (s *Server) handleGhDevicePoll(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		DeviceCode string `json:"device_code"`
+	}
+	if err := json.NewDecoder(io.LimitReader(r.Body, 1<<14)).Decode(&body); err != nil {
+		writeError(w, http.StatusBadRequest, "BAD_REQUEST", err.Error())
+		return
+	}
+	if strings.TrimSpace(body.DeviceCode) == "" {
+		writeError(w, http.StatusBadRequest, "MISSING_DEVICE_CODE", "device_code requis")
+		return
+	}
+	_, err := git.PollDeviceFlow(r.Context(), body.DeviceCode)
+	if err != nil {
+		switch err.Error() {
+		case "authorization_pending", "slow_down":
+			w.WriteHeader(http.StatusAccepted)
+			writeJSON(w, map[string]string{"status": err.Error()})
+			return
+		case "expired_token", "access_denied":
+			writeError(w, http.StatusBadRequest, strings.ToUpper(err.Error()), err.Error())
+			return
+		}
+		writeError(w, http.StatusBadGateway, "DEVICE_POLL_FAILED", err.Error())
 		return
 	}
 	writeJSON(w, git.CheckGh(r.Context()))
