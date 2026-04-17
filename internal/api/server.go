@@ -98,6 +98,13 @@ func (s *Server) routes() {
 	s.mux.Handle("POST /api/v1/projects/{id}/intake/messages", http.HandlerFunc(s.handleIntakeMessage))
 	s.mux.Handle("POST /api/v1/projects/{id}/intake/finalize", http.HandlerFunc(s.handleIntakeFinalize))
 
+	// Itération brownfield : seconde phase sur un projet déjà livré
+	// (on ajoute une feature). Conversation séparée, pipeline BMAD
+	// edit-prd + solutioning incrémental.
+	s.mux.Handle("GET /api/v1/projects/{id}/iterate", http.HandlerFunc(s.handleIterateGet))
+	s.mux.Handle("POST /api/v1/projects/{id}/iterate/messages", http.HandlerFunc(s.handleIterateMessage))
+	s.mux.Handle("POST /api/v1/projects/{id}/iterate/finalize", http.HandlerFunc(s.handleIterateFinalize))
+
 	// BMAD planning recovery + per-story retry.
 	s.mux.Handle("POST /api/v1/projects/{id}/stories/{story_id}/retry", http.HandlerFunc(s.handleRetryStory))
 	s.mux.Handle("PATCH /api/v1/projects/{id}/prd", http.HandlerFunc(s.handleUpdatePRD))

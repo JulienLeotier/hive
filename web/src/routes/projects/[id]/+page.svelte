@@ -367,6 +367,9 @@
 			<p class="idea">{project.idea}</p>
 			<nav class="tabs">
 				<a href="/projects/{project.id}/files">📁 Fichiers</a>
+				{#if project.status === 'shipped' || project.status === 'building'}
+					<a class="iter" href="/projects/{project.id}/iterate">➕ Nouvelle itération</a>
+				{/if}
 			</nav>
 			{#if project.bmad_output_path || project.repo_path || project.workdir}
 				<dl class="refs">
@@ -641,6 +644,12 @@
 		font-size: 0.8rem;
 	}
 	.tabs a:hover { border-color: var(--accent); color: var(--accent); }
+	.tabs a.iter {
+		background: color-mix(in srgb, var(--accent) 16%, var(--bg-alt));
+		border-color: var(--accent);
+		color: var(--accent);
+		font-weight: 600;
+	}
 	.refs {
 		display: grid;
 		grid-template-columns: max-content 1fr;

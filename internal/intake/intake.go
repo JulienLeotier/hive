@@ -39,6 +39,7 @@ import (
 // Phase 3+ will spawn.
 const (
 	RolePM        = "pm"
+	RolePMIterate = "pm-iterate" // conversation pour une nouvelle itération (brownfield)
 	RoleArchitect = "architect"
 	RoleReviewer  = "reviewer"
 )
@@ -107,6 +108,35 @@ type Store struct {
 
 // NewStore builds a store backed by the hive DB.
 func NewStore(db *sql.DB) *Store { return &Store{db: db} }
+
+// IterationAgent adapte un Agent existant pour une conversation
+// d'itération (ajout d'une feature à un projet déjà livré). Le rôle
+// devient `pm-iterate` ce qui isole la nouvelle conversation de
+// celle de la création initiale dans la même table
+// project_conversations. Le greeting rappelle au user qu'on est en
+// mode brownfield.
+type IterationAgent struct{ Base Agent }
+
+// Role fixe le rôle à "pm-iterate" pour isoler la conversation.
+func (i *IterationAgent) Role() string { return RolePMIterate }
+
+// Greeting ouvre la conversation en rappelant le projet existant.
+func (i *IterationAgent) Greeting(_ context.Context, projectIdea string) string {
+	return fmt.Sprintf(
+		"Bonjour ! On est sur le projet déjà livré : « %s ». Quelle nouvelle feature veux-tu ajouter dans cette itération ? Je vais te poser quelques questions pour que BMAD étende le PRD et génère les nouvelles stories.",
+		strings.TrimSpace(projectIdea))
+}
+
+// Reply délègue à l'agent de base (mêmes questions — on les
+// applique à la nouvelle feature plutôt qu'au projet global).
+func (i *IterationAgent) Reply(ctx context.Context, projectIdea string, messages []Message) (string, bool, error) {
+	return i.Base.Reply(ctx, projectIdea, messages)
+}
+
+// FinalPRD délègue à l'agent de base.
+func (i *IterationAgent) FinalPRD(ctx context.Context, projectIdea string, messages []Message) (string, error) {
+	return i.Base.FinalPRD(ctx, projectIdea, messages)
+}
 
 // GetOrStart returns the PM conversation for the project, starting a fresh
 // one and seeding the agent greeting when no conversation exists. Safe

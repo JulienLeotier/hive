@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -49,6 +50,16 @@ func (s *Server) handleIntakeGet(w http.ResponseWriter, r *http.Request) {
 // returns the updated conversation including the agent's follow-up.
 // Body: {content}.
 func (s *Server) handleIntakeMessage(w http.ResponseWriter, r *http.Request) {
+	s.handleConversationMessage(w, r, s.intakeAgent())
+}
+
+// handleConversationMessage is the shared body between the initial
+// intake chat and the brownfield iteration chat. Both store messages
+// in project_conversations keyed by agent role, both call the same
+// AppendUserMessage primitive, and both return the updated
+// conversation. The only variable is which agent drives the
+// responses (pm vs pm-iterate wrapper).
+func (s *Server) handleConversationMessage(w http.ResponseWriter, r *http.Request, agent intake.Agent) {
 	if s.projectStore == nil || s.intakeStore == nil {
 		writeError(w, http.StatusServiceUnavailable, "NO_INTAKE",
 			"intake subsystem is not configured on this node")
@@ -60,7 +71,6 @@ func (s *Server) handleIntakeMessage(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "NOT_FOUND", err.Error())
 		return
 	}
-
 	var body struct {
 		Content string `json:"content"`
 	}
@@ -68,7 +78,6 @@ func (s *Server) handleIntakeMessage(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "BAD_REQUEST", err.Error())
 		return
 	}
-	agent := s.intakeAgent()
 	conv, err := s.intakeStore.GetOrStart(r.Context(), p.ID, p.Idea, agent)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "INTAKE_START_FAILED", err.Error())
@@ -79,10 +88,7 @@ func (s *Server) handleIntakeMessage(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "APPEND_FAILED", err.Error())
 		return
 	}
-	writeJSON(w, map[string]any{
-		"conversation": updated,
-		"done":         done,
-	})
+	writeJSON(w, map[string]any{"conversation": updated, "done": done})
 }
 
 // handleIntakeFinalize asks the PM agent for the final PRD, stores it on
@@ -128,6 +134,309 @@ func (s *Server) handleIntakeFinalize(w http.ResponseWriter, r *http.Request) {
 		"project_id": p.ID,
 		"status":     project.StatusPlanning,
 	})
+}
+
+// handleIterateGet ouvre (ou retourne) la conversation d'itération
+// pour un projet déjà livré. Conversation séparée de l'intake
+// d'origine — role="pm-iterate" dans project_conversations.
+func (s *Server) handleIterateGet(w http.ResponseWriter, r *http.Request) {
+	if s.projectStore == nil || s.intakeStore == nil {
+		writeError(w, http.StatusServiceUnavailable, "NO_INTAKE",
+			"intake subsystem is not configured on this node")
+		return
+	}
+	id := r.PathValue("id")
+	p, err := s.projectStore.GetByID(r.Context(), id)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "NOT_FOUND", err.Error())
+		return
+	}
+	conv, err := s.intakeStore.GetOrStart(r.Context(), p.ID, p.Idea, s.iterationAgent())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "ITERATION_START_FAILED", err.Error())
+		return
+	}
+	writeJSON(w, conv)
+}
+
+// handleIterateMessage poste une réponse utilisateur dans la
+// conversation d'itération (brownfield). Délègue au shared body.
+func (s *Server) handleIterateMessage(w http.ResponseWriter, r *http.Request) {
+	s.handleConversationMessage(w, r, s.iterationAgent())
+}
+
+// handleIterateFinalize clôture la conversation d'itération et
+// déclenche le pipeline brownfield BMAD en background :
+// document-project → edit-prd → sprint-planning, etc. Le supervisor
+// reprendra automatiquement sur les nouvelles stories pending.
+func (s *Server) handleIterateFinalize(w http.ResponseWriter, r *http.Request) {
+	if s.projectStore == nil || s.intakeStore == nil {
+		writeError(w, http.StatusServiceUnavailable, "NO_INTAKE", "")
+		return
+	}
+	id := r.PathValue("id")
+	p, err := s.projectStore.GetByID(r.Context(), id)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "NOT_FOUND", err.Error())
+		return
+	}
+	agent := s.iterationAgent()
+	conv, err := s.intakeStore.GetOrStart(r.Context(), p.ID, p.Idea, agent)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "ITERATION_START_FAILED", err.Error())
+		return
+	}
+
+	// Flip direct en planning pour signaler à l'UI que l'itération
+	// démarre. Un shipped project qui itère redevient building à la
+	// fin du pipeline brownfield.
+	if _, err := s.db().ExecContext(r.Context(),
+		`UPDATE projects SET status = ?, updated_at = datetime('now') WHERE id = ?`,
+		project.StatusPlanning, p.ID,
+	); err != nil {
+		writeError(w, http.StatusInternalServerError, "PROJECT_UPDATE_FAILED", err.Error())
+		return
+	}
+
+	go s.runIterationAsync(p.ID, p.Idea, flattenConversation(conv)) //nolint:gosec // G118: request ctx dies with the handler
+
+	writeJSON(w, map[string]any{"project_id": p.ID, "status": project.StatusPlanning})
+}
+
+// iterationAgent renvoie le PM agent wrappé pour une conversation
+// d'itération (role = pm-iterate).
+func (s *Server) iterationAgent() intake.Agent {
+	return &intake.IterationAgent{Base: s.intakeAgent()}
+}
+
+// runIterationAsync exécute le pipeline brownfield BMAD : on écrit
+// le brief de la nouvelle feature dans un fichier dédié, puis on
+// lance IterationPipeline (document-project → edit-prd → etc.).
+// Les epics/stories existants sont conservés en DB ; les nouveaux
+// seront ingérés en sortie via le même parseur json-hive.
+func (s *Server) runIterationAsync(projectID, idea, seedDoc string) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
+	defer cancel()
+
+	fail := func(stage string, err error) {
+		slog.Warn("iteration pipeline failed", "project", projectID, "stage", stage, "error", err)
+		if s.eventBus != nil {
+			_, _ = s.eventBus.Publish(ctx, "project.iteration_failed", "api", map[string]any{
+				"project_id": projectID, "stage": stage, "error": err.Error(),
+			})
+		}
+	}
+
+	if s.eventBus != nil {
+		_, _ = s.eventBus.Publish(ctx, "project.iteration_started", "api",
+			map[string]string{"project_id": projectID})
+	}
+
+	proj, err := s.projectStore.GetByID(ctx, projectID)
+	if err != nil {
+		fail("lookup", err)
+		return
+	}
+	if proj.Workdir == "" {
+		fail("prepare", fmt.Errorf("project has no workdir"))
+		return
+	}
+	workdir := proj.Workdir
+
+	runner := bmad.NewRunner()
+	if runner == nil {
+		fail("prepare", fmt.Errorf("claude CLI missing"))
+		return
+	}
+
+	// Écrire le brief de l'itération à côté du premier intake. La
+	// skill edit-prd saura le lire comme input additionnel.
+	iterPath := filepath.Join(workdir, bmad.PlanningDir, "_iteration.md")
+	if err := os.MkdirAll(filepath.Dir(iterPath), 0o755); err != nil {
+		fail("prepare", err)
+		return
+	}
+	if err := os.WriteFile(iterPath, []byte(buildIterationDoc(idea, seedDoc)), 0o644); err != nil {
+		fail("prepare", err)
+		return
+	}
+
+	// BMAD doit déjà être installé (projet déjà livré une fois),
+	// mais on rappelle Install() qui no-op si c'est le cas — c'est
+	// aussi une porte de rattrapage si l'opérateur a wipé _bmad/.
+	if err := runner.Install(ctx, workdir); err != nil {
+		fail("install", err)
+		return
+	}
+
+	if _, err := runner.RunSequence(ctx, workdir, bmad.IterationPipeline); err != nil {
+		fail("iteration-pipeline", err)
+		return
+	}
+
+	// Re-lire le PRD étendu et ingérer les nouveaux epics/stories.
+	if prdText, err := readFirst(workdir, bmad.PRDFile, bmad.PRDFileLower); err == nil {
+		_, _ = s.db().ExecContext(ctx,
+			`UPDATE projects SET prd = ?, updated_at = datetime('now') WHERE id = ?`,
+			prdText, projectID)
+	}
+
+	ingestGoal := "Lis les artefacts BMAD (epics.md + stories/) et émets UN bloc fencé " +
+		"`json-hive` à la fin contenant TOUS les epics et stories (anciens + nouveaux) " +
+		"dans ce schéma : [{\"title\":\"\",\"description\":\"\",\"stories\":" +
+		"[{\"title\":\"\",\"description\":\"\",\"acceptance_criteria\":[]}]}]"
+	res, err := runner.Invoke(ctx, workdir, ingestGoal, nil)
+	if err != nil {
+		fail("ingest-json", err)
+		return
+	}
+	tree, err := parseBMADTree(res.Text)
+	if err != nil {
+		fail("parse-epics", err)
+		return
+	}
+	if err := s.appendIterationTree(ctx, projectID, tree); err != nil {
+		fail("ingest", err)
+		return
+	}
+
+	// Retour en building — le supervisor reprendra le dev loop sur
+	// les nouvelles stories pending.
+	if _, err := s.db().ExecContext(ctx,
+		`UPDATE projects SET status = ?, updated_at = datetime('now') WHERE id = ?`,
+		project.StatusBuilding, projectID,
+	); err != nil {
+		slog.Warn("iteration done mais update échoué", "project", projectID, "error", err)
+	}
+	if s.eventBus != nil {
+		_, _ = s.eventBus.Publish(ctx, "project.iteration_done", "api", map[string]any{
+			"project_id": projectID,
+		})
+	}
+}
+
+// appendIterationTree ajoute SEULEMENT les epics qui n'existent pas
+// déjà en DB (dédupliqués par titre). Les stories déjà done ne sont
+// pas réinsérées ; les nouvelles stories d'un epic existant sont
+// ajoutées à la suite.
+func (s *Server) appendIterationTree(ctx context.Context, projectID string, epics []bmadEpic) error {
+	tx, err := s.db().BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	// Charger les epics existants pour dédupliquer.
+	existing, err := loadEpicIDsByTitle(ctx, tx, projectID)
+	if err != nil {
+		return err
+	}
+	storySeen, err := loadStoriesByEpic(ctx, tx, projectID)
+	if err != nil {
+		return err
+	}
+
+	for ei, e := range epics {
+		key := strings.ToLower(strings.TrimSpace(e.Title))
+		epicID, found := existing[key]
+		if !found {
+			epicID = fmt.Sprintf("epc_%s_iter_%d_%d", projectID, time.Now().Unix(), ei)
+			if _, err := tx.ExecContext(ctx,
+				`INSERT INTO epics (id, project_id, title, description, ordering, status)
+				 VALUES (?, ?, ?, ?, ?, 'pending')`,
+				epicID, projectID, e.Title, e.Description, 1000+ei,
+			); err != nil {
+				return fmt.Errorf("insert iteration epic %d: %w", ei, err)
+			}
+			storySeen[epicID] = map[string]bool{}
+		}
+		for si, st := range e.Stories {
+			skey := strings.ToLower(strings.TrimSpace(st.Title))
+			if storySeen[epicID][skey] {
+				continue
+			}
+			storyID := fmt.Sprintf("%s_iter_%d_s%d", epicID, time.Now().Unix(), si)
+			if _, err := tx.ExecContext(ctx,
+				`INSERT INTO stories (id, epic_id, title, description, ordering, status)
+				 VALUES (?, ?, ?, ?, ?, 'pending')`,
+				storyID, epicID, st.Title, st.Description, 1000+si,
+			); err != nil {
+				return fmt.Errorf("insert iteration story %d/%d: %w", ei, si, err)
+			}
+			for ai, ac := range st.AcceptanceCriteria {
+				if _, err := tx.ExecContext(ctx,
+					`INSERT INTO acceptance_criteria (story_id, ordering, text, passed)
+					 VALUES (?, ?, ?, 0)`,
+					storyID, ai, ac,
+				); err != nil {
+					return fmt.Errorf("insert iteration ac %d/%d/%d: %w", ei, si, ai, err)
+				}
+			}
+		}
+	}
+	return tx.Commit()
+}
+
+// loadEpicIDsByTitle retourne un index des epics d'un projet (titre
+// lowercased → id). Close + Err check corrects pour le linter.
+func loadEpicIDsByTitle(ctx context.Context, tx *sql.Tx, projectID string) (map[string]string, error) {
+	out := map[string]string{}
+	rows, err := tx.QueryContext(ctx, `SELECT id, title FROM epics WHERE project_id = ?`, projectID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id, title string
+		if err := rows.Scan(&id, &title); err != nil {
+			return nil, err
+		}
+		out[strings.ToLower(strings.TrimSpace(title))] = id
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// loadStoriesByEpic retourne un index des stories existantes par
+// epicID → {lowercased title → true}. Sert à dédupliquer à
+// l'ingestion d'une itération.
+func loadStoriesByEpic(ctx context.Context, tx *sql.Tx, projectID string) (map[string]map[string]bool, error) {
+	out := map[string]map[string]bool{}
+	rows, err := tx.QueryContext(ctx,
+		`SELECT s.epic_id, s.title FROM stories s JOIN epics e ON e.id = s.epic_id
+		 WHERE e.project_id = ?`, projectID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var eid, title string
+		if err := rows.Scan(&eid, &title); err != nil {
+			return nil, err
+		}
+		if out[eid] == nil {
+			out[eid] = map[string]bool{}
+		}
+		out[eid][strings.ToLower(strings.TrimSpace(title))] = true
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func buildIterationDoc(idea, conversation string) string {
+	var b strings.Builder
+	b.WriteString("# Nouvelle itération\n\n")
+	b.WriteString("## Projet existant\n\n")
+	b.WriteString(strings.TrimSpace(idea))
+	b.WriteString("\n\n")
+	b.WriteString("## Feature à ajouter\n\n")
+	b.WriteString(strings.TrimSpace(conversation))
+	b.WriteString("\n")
+	return b.String()
 }
 
 // flattenConversation turns the intake conversation into a plain

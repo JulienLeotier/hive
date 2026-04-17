@@ -99,6 +99,49 @@ var RetrospectiveSequence = []string{
 	"/bmad-retrospective",
 }
 
+// IterationPipeline est la séquence BMAD brownfield : ajouter une
+// nouvelle feature / itération à un projet DÉJÀ livré. Au lieu de
+// /bmad-create-prd qui part de zéro, on utilise /bmad-edit-prd qui
+// étend le PRD existant. Même logique pour l'architecture : on
+// repasse /bmad-create-architecture en mode « amend » (BMAD détecte
+// la présence du fichier et met à jour plutôt que de ré-écrire).
+//
+// Doc BMAD brownfield : Phase d'analyse remplacée par
+// bmad-document-project (récolte le contexte du repo existant),
+// puis le même parcours PM → Architect → Dev que Phase 2+3+4, mais
+// avec edit-prd à la place de create-prd.
+var IterationPipeline = concat(
+	// Analyse brownfield : documenter le projet existant.
+	[]string{
+		"/bmad-document-project",
+		"/bmad-generate-project-context",
+	},
+	// Planning update.
+	[]string{
+		"/bmad-agent-pm",
+		"/bmad-edit-prd",
+		"/bmad-validate-prd",
+		"/bmad-agent-ux-designer",
+		"/bmad-create-ux-design",
+	},
+	// Solutioning update — Architecture amend + ajout d'epics/stories
+	// pour la nouvelle feature.
+	[]string{
+		"/bmad-agent-architect",
+		"/bmad-create-architecture",
+		"/bmad-agent-pm",
+		"/bmad-create-epics-and-stories",
+		"/bmad-agent-architect",
+		"/bmad-check-implementation-readiness",
+	},
+	// Re-sprint : sprint-planning recompose sprint-status.yaml avec
+	// les stories existantes (done) + les nouvelles (ready-for-dev).
+	[]string{
+		"/bmad-agent-dev",
+		"/bmad-sprint-planning",
+	},
+)
+
 // CorrectCourseSequence reste à disposition : quand le loop
 // dev/review se coince (max iterations atteint, review refuse de
 // valider), on peut lancer /bmad-correct-course pour que BMAD re-cadre
