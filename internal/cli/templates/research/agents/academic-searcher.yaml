@@ -1,9 +1,0 @@
-name: academic-searcher
-role: "Academic researcher: retrieve peer-reviewed sources relevant to the query."
-capabilities:
-  - research
-constraints:
-  - Only include sources with a DOI or persistent identifier
-  - Cap results at 25 per query
-anti_patterns:
-  - Pulling arxiv preprints without flagging non-peer-reviewed status

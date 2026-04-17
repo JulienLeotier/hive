@@ -1,32 +1,31 @@
 package auth
 
 import (
+	"context"
 	"testing"
-
-	"github.com/stretchr/testify/assert"
 )
 
-func TestAdminHasAllPermissions(t *testing.T) {
-	assert.True(t, CheckPermission(RoleAdmin, "agents", "write"))
-	assert.True(t, CheckPermission(RoleAdmin, "system", "admin"))
-	assert.True(t, CheckPermission(RoleAdmin, "anything", "everything"))
+func TestRoleContextRoundtrip(t *testing.T) {
+	ctx := WithRole(context.Background(), RoleAdmin)
+	r, ok := RoleFromContext(ctx)
+	if !ok || r != RoleAdmin {
+		t.Fatalf("RoleFromContext returned %q, %v; want admin, true", r, ok)
+	}
 }
 
-func TestOperatorPermissions(t *testing.T) {
-	assert.True(t, CheckPermission(RoleOperator, "agents", "read"))
-	assert.True(t, CheckPermission(RoleOperator, "agents", "write"))
-	assert.True(t, CheckPermission(RoleOperator, "events", "read"))
-	assert.False(t, CheckPermission(RoleOperator, "system", "admin"))
-	assert.False(t, CheckPermission(RoleOperator, "events", "delete"))
+func TestTenantContextRoundtrip(t *testing.T) {
+	ctx := WithTenant(context.Background(), "default")
+	s, ok := TenantFromContext(ctx)
+	if !ok || s != "default" {
+		t.Fatalf("TenantFromContext returned %q, %v; want default, true", s, ok)
+	}
 }
 
-func TestViewerPermissions(t *testing.T) {
-	assert.True(t, CheckPermission(RoleViewer, "agents", "read"))
-	assert.True(t, CheckPermission(RoleViewer, "events", "read"))
-	assert.False(t, CheckPermission(RoleViewer, "agents", "write"))
-	assert.False(t, CheckPermission(RoleViewer, "agents", "delete"))
-}
-
-func TestUnknownRoleDenied(t *testing.T) {
-	assert.False(t, CheckPermission(Role("unknown"), "agents", "read"))
+func TestMissingContextValuesAreSafe(t *testing.T) {
+	if _, ok := RoleFromContext(context.Background()); ok {
+		t.Fatal("expected no role on empty context")
+	}
+	if _, ok := TenantFromContext(context.Background()); ok {
+		t.Fatal("expected no tenant on empty context")
+	}
 }

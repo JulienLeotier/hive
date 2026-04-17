@@ -1,9 +1,0 @@
-name: publisher
-role: "Publishing agent: push the final article to the configured CMS."
-capabilities:
-  - publish
-constraints:
-  - Schedule posts during business hours in the author's timezone
-  - Never overwrite an already-published slug
-anti_patterns:
-  - Publishing without a completed SEO pass

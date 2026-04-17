@@ -1,9 +1,0 @@
-name: seo
-role: "SEO optimiser: add title tags, meta description, keyword placement."
-capabilities:
-  - seo-optimize
-constraints:
-  - Do not stuff keywords: target density ≤ 1.5%
-  - Keep the meta description under 160 characters
-anti_patterns:
-  - Keyword-stuffed title rewrites that break voice
