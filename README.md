@@ -1,164 +1,138 @@
 # Hive
 
-Hive is a **local BMAD product factory**. Describe what you want built,
-the PM agent turns it into a PRD, the Architect decomposes into epics
-and stories with acceptance criteria, and Claude Code drives a
-Dev/Reviewer loop until every AC passes — commits land in your workdir,
-no human in the loop. One Go binary, one SvelteKit dashboard, one
-database (SQLite by default).
+**Usine à produits BMAD en local.** Tu décris une idée, Hive lance le
+framework [BMAD-METHOD](https://github.com/bmad-code-org/BMAD-METHOD) de
+bout en bout via Claude Code — PRD, architecture, stories, implémentation,
+revue de code, rétrospective — jusqu'à ce que le produit soit livré.
 
-**Flow:** Idea → PM Q&A → PRD → Architect → Dev + Review → Shipped.
-Everything is piloted from the web dashboard; there's no CLI for the
-user-facing build flow. See `web/src/routes/projects/` for the UI entry
-points and `internal/devloop/` for the autonomous loop.
-
-Running the real `claude` CLI end-to-end against a throwaway project:
-
-```bash
-# Requires: claude CLI on PATH, go 1.25+, jq, curl.
-# HIVE_E2E_TIMEOUT=1200  # seconds; default 20 min
-./scripts/claude-e2e.sh
-```
-
-The script spins up a temp hive on port 18233, creates a tiny project
-("write a CLI that prints a random compliment"), finalises the intake,
-lets the real Claude Code adapter drive the dev loop, and verifies the
-project flips to `shipped`. For quick adapter-only plumbing checks:
-`go test -tags claude_e2e ./internal/devloop`.
+Un seul binaire Go, un dashboard SvelteKit, une base SQLite. Tout se
+pilote depuis le navigateur.
 
 ---
 
-Below is the legacy README from before the BMAD pivot. Some of this is
-stale — federation, marketplace, billing, workflow DAGs, etc. are no
-longer part of the product surface. Kept here until it's rewritten.
+## Flow
 
-## Legacy description
+1. **Nouveau projet** (`/projects`) — tu décris l'idée. Optionnel :
+   clone un repo GitHub existant ou pointe un repo local (mode
+   brownfield).
+2. **Intake PM** — un agent te pose 5 questions (audience, flows,
+   non-goals, tech, DoD) pour nourrir le brief BMAD.
+3. **Finalisation** → Hive exécute la séquence BMAD officielle, une
+   skill par invocation `claude --print` :
 
-Universal AI agent orchestration platform. Register heterogeneous agents
-(HTTP, Claude Code, MCP, CrewAI, LangChain, AutoGen, OpenAI), compose
-workflows as DAGs (YAML or visual builder), and let Hive route tasks,
-track cost, bill tenants, and surface live health — all from a single
-Go binary with an embedded dashboard.
+   **Greenfield** (13 skills) :
+   ```
+   /bmad-agent-analyst → /bmad-product-brief
+   /bmad-agent-pm → /bmad-create-prd → /bmad-validate-prd
+   /bmad-agent-ux-designer → /bmad-create-ux-design
+   /bmad-agent-architect → /bmad-create-architecture
+   /bmad-agent-pm → /bmad-create-epics-and-stories
+   /bmad-agent-architect → /bmad-check-implementation-readiness
+   /bmad-agent-dev → /bmad-sprint-planning
+   ```
 
-**Highlights:** first-run setup wizard · visual drag-drop workflow
-builder · federated agent marketplace · SMTP + Slack ops alerts · OTLP
-traces · backup/restore CLI · multi-tenant + multi-node (Postgres + NATS)
-· Go SDK for integrators.
+   **Brownfield** (14 skills) :
+   ```
+   /bmad-document-project → /bmad-generate-project-context
+   /bmad-agent-pm → /bmad-edit-prd → /bmad-validate-prd
+   /bmad-agent-ux-designer → /bmad-create-ux-design
+   /bmad-agent-architect → /bmad-create-architecture
+   /bmad-agent-pm → /bmad-create-epics-and-stories
+   /bmad-agent-architect → /bmad-check-implementation-readiness
+   /bmad-agent-dev → /bmad-sprint-planning
+   ```
 
-## Quickstart (Docker)
+4. **Dev loop** — pour chaque story ready-for-dev dans
+   `sprint-status.yaml` :
+   ```
+   /bmad-create-story → /bmad-dev-story → /bmad-qa-generate-e2e-tests
+   /bmad-code-review
+   ```
+   BMAD gère lui-même : branch feature par story, commit, push,
+   ouverture de PR via `gh`, mise à jour du sprint status.
+
+5. **Fin d'epic** → `/bmad-agent-dev` + `/bmad-retrospective`
+   automatiquement.
+
+6. **Nouvelle itération** — sur un projet livré, un bouton
+   « ➕ Nouvelle itération » ouvre un chat séparé pour ajouter une
+   feature. Relance l'IterationPipeline (brownfield) sans toucher
+   aux stories done.
+
+---
+
+## Dépendances
+
+- **Go 1.25+** — pour builder Hive.
+- **Node 20+** — pour installer BMAD (`npx bmad-method install`).
+- **Claude Code CLI** sur le PATH — `claude --version`.
+- **`gh` CLI** (optionnel, recommandé) — pour cloner/créer des repos
+  GitHub depuis l'UI et pour que BMAD ouvre les PRs de stories.
+
+---
+
+## Démarrage
 
 ```bash
-git clone https://github.com/JulienLeotier/hive.git
-cd hive
-docker compose up -d
-```
-
-Open <http://localhost:8233>. The first-run wizard walks you through
-creating an admin user + API key. See
-[docs/getting-started.md](docs/getting-started.md) for the 5-minute
-end-to-end tour (register an agent, fire a workflow, wire alerts, back
-up).
-
-## Quickstart (from source)
-
-```bash
-# Build everything (Go binary + Svelte dashboard baked in)
+# Build + dashboard embarqué dans le binaire
 make build
 
-# Run the server on http://localhost:8233
-./hive serve
-
-# In another terminal: register an HTTP agent
-./hive add-agent --name writer --type http --url http://localhost:8080
-
-# Submit a workflow
-./hive run ./examples/content-pipeline/workflow.yaml
+# Ou dev loop avec HMR côté front + air côté backend
+make dev     # Vite sur :5173, hive sur :8233
+make serve   # build complet puis ./hive serve
 ```
 
-On first boot there are no API keys, so auth is bypassed (dev mode).
-See [docs/configuration.md](docs/configuration.md) to harden for
-production.
+Ouvre <http://localhost:8233> et crée ton premier projet. L'intégration
+GitHub se fait via un token personnel collé dans l'UI (login PAT) —
+scopes recommandés : `repo`, `workflow`, `read:org`.
 
-## Development
+---
 
-`make dev` runs Vite (HMR on `:5173`) and the Go server (auto-rebuild via
-`air` on `:8233`) side by side. Vite proxies `/api` and `/ws` to the Go
-backend so you work on one URL (`http://localhost:5173`) with live reload
-on both sides.
+## Architecture
+
+| Couche | Emplacement | Rôle |
+|---|---|---|
+| API REST + WS | `internal/api/` | Routes `/api/v1/projects/*`, `/intake/*`, `/iterate/*`, `/phases`, `/cancel`, `/retry-architect`, `/fs/*`, `/gh/*` + hub WebSocket |
+| BMAD runner | `internal/bmad/` | `Install()` (npx bmad-method), `Invoke()` (`claude --print --dangerously-skip-permissions`), `RunSequenceObserved()` (liste de slash-commands + callbacks progress/cost) |
+| Workflow BMAD | `internal/bmad/workflow.go` | Les 6 séquences officielles (Analysis, Planning, Solutioning, ImplementationInit, Story, Review, Retrospective) + FullPlanningPipeline et IterationPipeline |
+| Dev loop | `internal/devloop/` | Supervisor polling `building` projects, parallélisme borné (3 projets), invocation des skills dev/review BMAD per story, crash recovery |
+| Project store | `internal/project/` | CRUD + epic/story/AC tree sur SQLite |
+| Intake | `internal/intake/` | Conversation PM avec rubric scripted (agent fallback), `IterationAgent` pour brownfield |
+| Git | `internal/git/`, `internal/devloop/git.go` | Clone/create repo via `gh`, auth status, local git init pour le bootstrap |
+| Dashboard | `web/` | SvelteKit statique embarqué dans le binaire Go |
+
+---
+
+## Mode dégradé
+
+Quand la CLI `claude` n'est pas dispo, Hive bascule automatiquement
+sur `ScriptedDev` + `ScriptedReviewer` — agents déterministes qui
+écrivent un notes file par story. Utilisé pour :
+- CI sans crédits Claude
+- Smoke-tests locaux (`HIVE_DEV_AGENT=scripted hive serve`)
+- Garder un flow end-to-end fonctionnel quand Claude est down
+
+Idem quand `gh` n'est pas installé/authentifié : Hive tourne en mode
+local-only (commits locaux, pas de PR).
+
+---
+
+## Tests end-to-end
+
+Script qui lance une vraie build BMAD contre Claude + gh :
 
 ```bash
-make dev         # full-stack loop
-make dev-web     # Vite only
-make dev-api     # air only
-make test        # full Go + integration suite
-make lint        # go vet
+HIVE_E2E_TIMEOUT=3600 ./scripts/claude-e2e.sh
 ```
 
-## What's in here
+Le script instancie un hive jetable sur :18233, crée un mini projet
+(« CLI qui sort un compliment aléatoire »), laisse BMAD tourner son
+pipeline complet et vérifie que le projet flippe en `shipped`.
+Observable dans le dashboard à `http://localhost:18233` pendant
+l'exécution.
 
-| Area | Path | Notes |
-|---|---|---|
-| CLI + server | `cmd/hive/`, `internal/cli/` | `hive serve`, `hive run`, `hive backup`, `hive restore`, ... |
-| API | `internal/api/` | REST `/api/v1/*`, webhooks `/hooks/*`, WS `/ws`, Prom `/metrics`, health probes |
-| Agents | `internal/agent/`, `internal/adapter/` | Registration + adapter protocol (HTTP, Claude Code, MCP, CrewAI, LangChain, AutoGen, OpenAI) |
-| Workflows | `internal/workflow/` | YAML DAG parser + execution engine + schedule/webhook triggers |
-| Federation | `internal/federation/` | Hive-to-hive with mTLS, hop limits, cert-at-rest encryption |
-| Marketplace | `internal/api/marketplace` | Aggregated catalog of agents published by federated peers |
-| Billing | `internal/billing/` | Monthly invoice generation from costs, pluggable payment gateway |
-| Notify | `internal/notify/` | SMTP + Slack notifiers for ops events (task.failed, cost.alert, agent.isolated) |
-| Tracing | `internal/tracing/` | OTLP exporter; spans on HTTP + adapter + workflow |
-| SDK | `sdk/` | Public Go client for third-party integrations |
-| Storage | `internal/storage/` | SQLite (default) or Postgres via `storage=postgres` |
-| Dashboard | `web/`, `internal/dashboard/` | SvelteKit static build, embedded in the binary |
+---
 
-## Production notes
+## Licence
 
-- **TLS.** Set `HIVE_TLS_CERT` + `HIVE_TLS_KEY` (or `tls:` block in
-  `hive.yaml`). Without TLS, the server starts in plaintext HTTP —
-  fine for dev, not for prod. Security headers (CSP, HSTS-on-TLS,
-  X-Frame-Options, X-Content-Type-Options, Referrer-Policy) always ship.
-- **Auth.** Generate an API key with `hive api-key generate <name>`, or
-  configure OIDC in `hive.yaml` under `oidc:`. When any key exists,
-  auth is required on every `/api/v1/*` request.
-- **Storage.** SQLite is fine for a single node with low write concurrency.
-  Set `storage: postgres` + `postgres_url` for multi-writer workloads.
-  See [ADR 0004](docs/adr/0004-sqlite-is-dev-only.md).
-- **Tenancy.** Every handler filters by the caller's tenant. See
-  [ADR 0003](docs/adr/0003-tenant-isolation-contract.md).
-- **Secrets at rest.** Set `HIVE_MASTER_KEY` to envelope-encrypt the
-  federation TLS material *and* outbound webhook URLs (which may embed
-  bearer tokens). Same key, one `enc:v1:` format across the board.
-- **Observability.** Set `OTEL_EXPORTER_OTLP_ENDPOINT` (or
-  `observability.traces.endpoint` in `hive.yaml`) to ship traces to any
-  OTLP-compatible backend — Jaeger, Tempo, Honeycomb, Grafana Cloud.
-  Prometheus scrape lives on `/metrics`.
-- **Alerts.** Configure `notifications.email` (SMTP) and/or
-  `notifications.slack` (webhook URL) in `hive.yaml` to page on
-  `task.failed`, `cost.alert`, and `agent.isolated`. Each event type is
-  debounced per 60s by default to avoid storm spam.
-- **Retention.** Events, completed tasks, costs, audit are purged on a
-  timer. Defaults under `retention:` in `hive.yaml`.
-- **Backups.** `hive backup backup.tar.gz` snapshots the SQLite DB via
-  VACUUM INTO without blocking writers. Postgres deployments should use
-  `pg_dump` instead.
-
-## Deeper docs
-
-- [Getting started](docs/getting-started.md) — 5-minute walkthrough
-- [Architecture overview](docs/architecture-overview.md)
-- [Configuration reference](docs/configuration.md)
-- [CLI reference](docs/cli-reference.md)
-- [API reference](docs/api-reference.md)
-- [Adapter guide](docs/adapters-guide.md)
-- [Tracing / observability](docs/tracing.md)
-- [Marketplace](docs/marketplace.md)
-- [Notifications](docs/notifications.md)
-- [Federation](docs/federation.md) · [Multi-node](docs/multi-node.md)
-- [Cost management](docs/cost-management.md) · [Optimization](docs/optimization.md)
-- [Knowledge layer](docs/knowledge-layer.md) · [Trust levels](docs/trust-configuration.md)
-- [NFR assessment](docs/nfr-assessment-2026-04-17.md) · [Adversarial review](docs/architecture-adversarial-review-2026-04-17.md)
-- [ADRs](docs/adr/README.md)
-
-## License
-
-See [LICENSE](LICENSE) (or ping the maintainer if missing).
+Apache-2.0.

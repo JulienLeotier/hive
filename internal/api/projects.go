@@ -1,12 +1,15 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"io"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/JulienLeotier/hive/internal/auth"
+	"github.com/JulienLeotier/hive/internal/bmad"
 	"github.com/JulienLeotier/hive/internal/git"
 	"github.com/JulienLeotier/hive/internal/project"
 )
@@ -311,6 +314,51 @@ func (s *Server) handleRegeneratePlan(w http.ResponseWriter, r *http.Request) {
 	}
 	go s.runArchitectAsync(p.ID, p.Idea, p.PRD) //nolint:gosec // G118: same pattern as finalize — request ctx would cancel the architect mid-run
 	writeJSON(w, map[string]any{"project_id": id, "status": project.StatusPlanning})
+}
+
+// handleRetrospective déclenche manuellement la rétrospective BMAD
+// (bmad-agent-dev + bmad-retrospective) pour un projet. Utile quand
+// le trigger auto (fin d'epic détectée par epicComplete) ne s'est
+// pas fait feu ou pour forcer un lessons-learned après une itération.
+func (s *Server) handleRetrospective(w http.ResponseWriter, r *http.Request) {
+	if s.projectStore == nil {
+		writeError(w, http.StatusServiceUnavailable, "NO_PROJECT_STORE", "")
+		return
+	}
+	id := r.PathValue("id")
+	p, err := s.projectStore.GetByID(r.Context(), id)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "NOT_FOUND", err.Error())
+		return
+	}
+	if p.Workdir == "" {
+		writeError(w, http.StatusBadRequest, "NO_WORKDIR", "projet sans workdir")
+		return
+	}
+	runner := bmad.NewRunner()
+	if runner == nil {
+		writeError(w, http.StatusServiceUnavailable, "NO_CLAUDE",
+			"CLI claude absente — rétrospective nécessite claude")
+		return
+	}
+	//nolint:gosec // G118: retrospective tourne détachée pour ne pas bloquer la requête
+	go func(wd, pid string) {
+		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Minute)
+		defer cancel()
+		obs := s.stepObserver(ctx, pid, "retrospective")
+		if _, err := runner.RunSequenceObserved(ctx, wd, bmad.RetrospectiveSequence, obs); err != nil {
+			if s.eventBus != nil {
+				_, _ = s.eventBus.Publish(ctx, "project.retrospective_failed", "api",
+					map[string]any{"project_id": pid, "error": err.Error()})
+			}
+			return
+		}
+		if s.eventBus != nil {
+			_, _ = s.eventBus.Publish(ctx, "project.retrospective_done", "api",
+				map[string]string{"project_id": pid})
+		}
+	}(p.Workdir, p.ID)
+	writeJSON(w, map[string]string{"project_id": p.ID, "status": "retrospective-scheduled"})
 }
 
 // handleCancelRun annule le pipeline BMAD en cours sur un projet.

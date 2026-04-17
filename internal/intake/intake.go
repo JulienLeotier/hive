@@ -176,6 +176,31 @@ func (s *Store) GetOrStart(ctx context.Context, projectID, projectIdea string, a
 	return s.Load(ctx, id)
 }
 
+// EditUserMessage réécrit le contenu d'un message user déjà posté
+// (permet à l'opérateur de corriger une réponse sans avoir à tout
+// recommencer). On n'édite que les messages user ; toucher aux
+// réponses agent serait misleading puisqu'elles ne seraient pas
+// régénérées. Le caller (API handler) décide ensuite s'il re-run
+// l'agent pour rafraîchir la question suivante.
+func (s *Store) EditUserMessage(ctx context.Context, conversationID string, messageID int64, newContent string) error {
+	if newContent == "" {
+		return fmt.Errorf("content vide")
+	}
+	res, err := s.db.ExecContext(ctx,
+		`UPDATE project_messages
+		 SET content = ?
+		 WHERE id = ? AND conversation_id = ? AND author = ?`,
+		newContent, messageID, conversationID, AuthorUser)
+	if err != nil {
+		return err
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return fmt.Errorf("message introuvable ou non éditable")
+	}
+	return nil
+}
+
 // AppendUserMessage records a user reply and then asks the agent for its
 // next turn. The agent's reply is stored too before returning the full
 // updated conversation. If the agent signals `done=true`, the caller can

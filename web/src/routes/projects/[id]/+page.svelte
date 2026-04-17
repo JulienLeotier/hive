@@ -119,6 +119,23 @@
 		}
 	}
 
+	let runningRetro = $state(false);
+
+	async function runRetrospective() {
+		const id = $page.params.id ?? '';
+		if (!confirm('Lancer une rétrospective BMAD sur ce projet ? /bmad-agent-dev + /bmad-retrospective tourneront en tâche de fond.')) return;
+		runningRetro = true;
+		actionError = '';
+		try {
+			await apiPost(`/api/v1/projects/${encodeURIComponent(id)}/retrospective`, {});
+			await loadPhases();
+		} catch (e) {
+			actionError = e instanceof Error ? e.message : String(e);
+		} finally {
+			runningRetro = false;
+		}
+	}
+
 	async function retryBuild() {
 		const id = $page.params.id ?? '';
 		retryingBuild = true;
@@ -457,6 +474,11 @@
 				<a href="/projects/{project.id}/files">📁 Fichiers</a>
 				{#if project.status === 'shipped' || project.status === 'building'}
 					<a class="iter" href="/projects/{project.id}/iterate">➕ Nouvelle itération</a>
+				{/if}
+				{#if project.status === 'shipped' || project.status === 'building'}
+					<button type="button" class="retro" onclick={runRetrospective} disabled={runningRetro}>
+						{runningRetro ? 'Rétro…' : '📝 Rétrospective'}
+					</button>
 				{/if}
 			</nav>
 			{#if project.bmad_output_path || project.repo_path || project.workdir}
@@ -816,6 +838,18 @@
 		color: var(--accent);
 		font-weight: 600;
 	}
+	.tabs .retro {
+		padding: 0.3rem 0.7rem;
+		background: var(--bg-alt);
+		border: 1px solid var(--border);
+		border-radius: 4px;
+		color: inherit;
+		font: inherit;
+		font-size: 0.8rem;
+		cursor: pointer;
+	}
+	.tabs .retro:hover { border-color: var(--accent); color: var(--accent); }
+	.tabs .retro:disabled { opacity: 0.5; cursor: not-allowed; }
 	.refs {
 		display: grid;
 		grid-template-columns: max-content 1fr;

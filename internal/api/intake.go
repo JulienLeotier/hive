@@ -90,6 +90,42 @@ func (s *Server) handleConversationMessage(w http.ResponseWriter, r *http.Reques
 	writeJSON(w, map[string]any{"conversation": updated, "done": done})
 }
 
+// handleIntakeEdit permet à l'opérateur de corriger un message user
+// déjà posté dans la conversation intake. Utilise le conversationID
+// courant + messageID passé dans le body. L'agent agent pourra
+// relire la conversation modifiée à la prochaine réponse.
+func (s *Server) handleIntakeEdit(w http.ResponseWriter, r *http.Request) {
+	if s.projectStore == nil || s.intakeStore == nil {
+		writeError(w, http.StatusServiceUnavailable, "NO_INTAKE", "")
+		return
+	}
+	id := r.PathValue("id")
+	p, err := s.projectStore.GetByID(r.Context(), id)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "NOT_FOUND", err.Error())
+		return
+	}
+	var body struct {
+		MessageID int64  `json:"message_id"`
+		Content   string `json:"content"`
+	}
+	if err := json.NewDecoder(io.LimitReader(r.Body, 1<<16)).Decode(&body); err != nil {
+		writeError(w, http.StatusBadRequest, "BAD_REQUEST", err.Error())
+		return
+	}
+	conv, err := s.intakeStore.GetOrStart(r.Context(), p.ID, p.Idea, s.intakeAgentFor(p))
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "INTAKE_START_FAILED", err.Error())
+		return
+	}
+	if err := s.intakeStore.EditUserMessage(r.Context(), conv.ID, body.MessageID, body.Content); err != nil {
+		writeError(w, http.StatusBadRequest, "EDIT_FAILED", err.Error())
+		return
+	}
+	updated, _ := s.intakeStore.Load(r.Context(), conv.ID)
+	writeJSON(w, updated)
+}
+
 // handleIntakeFinalize asks the PM agent for the final PRD, stores it on
 // the project, and flips the project status from `draft` to `planning`
 // so Phase 3's Architect pipeline picks it up.

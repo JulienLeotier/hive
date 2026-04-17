@@ -149,6 +149,7 @@ func (s *Server) routes() {
 	s.mux.Handle("GET /api/v1/projects/{id}/intake", http.HandlerFunc(s.handleIntakeGet))
 	s.mux.Handle("POST /api/v1/projects/{id}/intake/messages", http.HandlerFunc(s.handleIntakeMessage))
 	s.mux.Handle("POST /api/v1/projects/{id}/intake/finalize", http.HandlerFunc(s.handleIntakeFinalize))
+	s.mux.Handle("PATCH /api/v1/projects/{id}/intake/message", http.HandlerFunc(s.handleIntakeEdit))
 
 	// Itération brownfield : seconde phase sur un projet déjà livré
 	// (on ajoute une feature). Conversation séparée, pipeline BMAD
@@ -169,6 +170,7 @@ func (s *Server) routes() {
 	s.mux.Handle("GET /api/v1/projects/{id}/phases", http.HandlerFunc(s.handleProjectPhases))
 	s.mux.Handle("POST /api/v1/projects/{id}/cancel", http.HandlerFunc(s.handleCancelRun))
 	s.mux.Handle("POST /api/v1/projects/{id}/retry-architect", http.HandlerFunc(s.handleRetryArchitect))
+	s.mux.Handle("POST /api/v1/projects/{id}/retrospective", http.HandlerFunc(s.handleRetrospective))
 }
 
 // Handler returns the HTTP handler. Local-mode hive: the middleware
