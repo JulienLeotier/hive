@@ -21,10 +21,10 @@ func setupBus(t *testing.T) *Bus {
 func TestPublishPersistsEvent(t *testing.T) {
 	bus := setupBus(t)
 
-	evt, err := bus.Publish(context.Background(), TaskCreated, "system", map[string]string{"task_id": "t1"})
+	evt, err := bus.Publish(context.Background(), "task.created", "system", map[string]string{"task_id": "t1"})
 	require.NoError(t, err)
 	assert.Greater(t, evt.ID, int64(0))
-	assert.Equal(t, TaskCreated, evt.Type)
+	assert.Equal(t, "task.created", evt.Type)
 	assert.Equal(t, "system", evt.Source)
 }
 
@@ -40,12 +40,12 @@ func TestPublishDeliversToSubscribers(t *testing.T) {
 		mu.Unlock()
 	})
 
-	_, err := bus.Publish(context.Background(), TaskCreated, "system", nil)
+	_, err := bus.Publish(context.Background(), "task.created", "system", nil)
 	require.NoError(t, err)
-	_, err = bus.Publish(context.Background(), TaskCompleted, "system", nil)
+	_, err = bus.Publish(context.Background(), "task.completed", "system", nil)
 	require.NoError(t, err)
 	// This should NOT be delivered (different prefix)
-	_, err = bus.Publish(context.Background(), AgentRegistered, "system", nil)
+	_, err = bus.Publish(context.Background(), "agent.registered", "system", nil)
 	require.NoError(t, err)
 
 	mu.Lock()
@@ -59,9 +59,9 @@ func TestSubscribeWildcard(t *testing.T) {
 	var count int
 	bus.Subscribe("*", func(e Event) { count++ })
 
-	bus.Publish(context.Background(), TaskCreated, "a", nil)
-	bus.Publish(context.Background(), AgentRegistered, "b", nil)
-	bus.Publish(context.Background(), WorkflowStarted, "c", nil)
+	bus.Publish(context.Background(), "task.created", "a", nil)
+	bus.Publish(context.Background(), "agent.registered", "b", nil)
+	bus.Publish(context.Background(), "workflow.started", "c", nil)
 
 	assert.Equal(t, 3, count)
 }
@@ -70,7 +70,7 @@ func TestEventOrdering(t *testing.T) {
 	bus := setupBus(t)
 
 	for i := 0; i < 10; i++ {
-		_, err := bus.Publish(context.Background(), TaskCreated, "system", map[string]int{"seq": i})
+		_, err := bus.Publish(context.Background(), "task.created", "system", map[string]int{"seq": i})
 		require.NoError(t, err)
 	}
 
@@ -87,9 +87,9 @@ func TestEventOrdering(t *testing.T) {
 func TestQueryByType(t *testing.T) {
 	bus := setupBus(t)
 
-	bus.Publish(context.Background(), TaskCreated, "system", nil)
-	bus.Publish(context.Background(), TaskCompleted, "system", nil)
-	bus.Publish(context.Background(), AgentRegistered, "system", nil)
+	bus.Publish(context.Background(), "task.created", "system", nil)
+	bus.Publish(context.Background(), "task.completed", "system", nil)
+	bus.Publish(context.Background(), "agent.registered", "system", nil)
 
 	events, err := bus.Query(context.Background(), QueryOpts{Type: "task"})
 	require.NoError(t, err)
@@ -99,8 +99,8 @@ func TestQueryByType(t *testing.T) {
 func TestQueryBySource(t *testing.T) {
 	bus := setupBus(t)
 
-	bus.Publish(context.Background(), TaskCreated, "agent-a", nil)
-	bus.Publish(context.Background(), TaskCreated, "agent-b", nil)
+	bus.Publish(context.Background(), "task.created", "agent-a", nil)
+	bus.Publish(context.Background(), "task.created", "agent-b", nil)
 
 	events, err := bus.Query(context.Background(), QueryOpts{Source: "agent-a"})
 	require.NoError(t, err)
@@ -112,7 +112,7 @@ func TestQueryWithLimit(t *testing.T) {
 	bus := setupBus(t)
 
 	for i := 0; i < 20; i++ {
-		bus.Publish(context.Background(), TaskCreated, "system", nil)
+		bus.Publish(context.Background(), "task.created", "system", nil)
 	}
 
 	events, err := bus.Query(context.Background(), QueryOpts{Limit: 5})
@@ -123,7 +123,7 @@ func TestQueryWithLimit(t *testing.T) {
 func TestQuerySince(t *testing.T) {
 	bus := setupBus(t)
 
-	bus.Publish(context.Background(), TaskCreated, "system", nil)
+	bus.Publish(context.Background(), "task.created", "system", nil)
 	// Query since future time should return nothing
 	events, err := bus.Query(context.Background(), QueryOpts{Since: time.Now().Add(time.Hour)})
 	require.NoError(t, err)
