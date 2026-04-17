@@ -15,7 +15,12 @@
 	// éviter les surprises quand on revient d'une page longue sur une
 	// autre (ex. /projects/[id] → /projects).
 	afterNavigate(({ from, to }) => {
-		if (from && to && from.url.pathname !== to.url.pathname) {
+		// SvelteKit peut passer un NavigationTarget avec url=null (cas
+		// du premier hit, d'un navigateur qui rafraîchit, ou d'un
+		// `goto` sans cible). On guarde sur from?.url et to?.url pour
+		// ne pas crasher — si l'un des deux est inconnu, on ne sait
+		// pas s'il y a eu changement de route, donc on ne fait rien.
+		if (from?.url && to?.url && from.url.pathname !== to.url.pathname) {
 			window.scrollTo({ top: 0, behavior: 'instant' });
 		}
 	});
