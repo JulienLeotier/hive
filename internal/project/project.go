@@ -80,6 +80,11 @@ type Story struct {
 	CreatedAt          time.Time            `json:"created_at"`
 	UpdatedAt          time.Time            `json:"updated_at"`
 	AcceptanceCriteria []AcceptanceCriterion `json:"acceptance_criteria,omitempty"`
+	// Populated from the latest row in `reviews` for this story so the
+	// dashboard can surface the reason a loop is iterating or blocked
+	// without the UI having to fetch a second endpoint.
+	LastReviewVerdict  string               `json:"last_review_verdict,omitempty"`
+	LastReviewFeedback string               `json:"last_review_feedback,omitempty"`
 }
 
 // AcceptanceCriterion is the smallest verifiable unit. BMAD says a story is
@@ -299,6 +304,43 @@ func (s *Store) GetByID(ctx context.Context, id string) (*Project, error) {
 			}
 		}
 		if err := acRows.Err(); err != nil {
+			return nil, err
+		}
+	}
+
+	// Latest review per story — one row per story with the highest
+	// iteration, which is the feedback the operator actually cares
+	// about when a story is mid-loop or blocked. Using a correlated
+	// subquery because SQLite's window function support lands late in
+	// its release history and we want portability to very old builds.
+	if len(storyIDs) > 0 {
+		revQ := `SELECT r.story_id, r.verdict, COALESCE(r.feedback, '')
+		         FROM reviews r
+		         WHERE r.story_id IN (` + placeholders(len(storyIDs)) + `)
+		           AND r.iteration = (
+		             SELECT MAX(iteration) FROM reviews
+		             WHERE story_id = r.story_id
+		           )`
+		revArgs := make([]any, len(storyIDs))
+		for i, sid := range storyIDs {
+			revArgs[i] = sid
+		}
+		revRows, err := s.db.QueryContext(ctx, revQ, revArgs...)
+		if err != nil {
+			return nil, err
+		}
+		defer revRows.Close()
+		for revRows.Next() {
+			var storyID, verdict, feedback string
+			if err := revRows.Scan(&storyID, &verdict, &feedback); err != nil {
+				return nil, err
+			}
+			if st := storyByID[storyID]; st != nil {
+				st.LastReviewVerdict = verdict
+				st.LastReviewFeedback = feedback
+			}
+		}
+		if err := revRows.Err(); err != nil {
 			return nil, err
 		}
 	}

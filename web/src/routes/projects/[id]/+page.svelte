@@ -33,6 +33,8 @@
 		agent_id?: string;
 		branch?: string;
 		acceptance_criteria?: AcceptanceCriterion[];
+		last_review_verdict?: string;
+		last_review_feedback?: string;
 	};
 	type Epic = {
 		id: string;
@@ -471,6 +473,16 @@
 												</button>
 											{/if}
 										</div>
+										{#if story.last_review_feedback && story.status !== 'done' && story.last_review_verdict !== 'pass'}
+											<div
+												class="review-feedback"
+												class:blocked={story.status === 'blocked'}
+												title="Latest reviewer verdict: {story.last_review_verdict}"
+											>
+												<span class="review-label">Reviewer:</span>
+												{story.last_review_feedback}
+											</div>
+										{/if}
 										{#if story.acceptance_criteria && story.acceptance_criteria.length > 0}
 											<ul class="acs">
 												{#each story.acceptance_criteria as ac (ac.id)}
@@ -814,6 +826,25 @@
 		gap: 0.5rem;
 		align-items: center;
 		font-size: 0.9rem;
+	}
+	.review-feedback {
+		margin: 0.5rem 0 0;
+		padding: 0.45rem 0.65rem;
+		background: color-mix(in srgb, var(--warn) 10%, var(--bg));
+		border-left: 3px solid var(--warn);
+		border-radius: 0 4px 4px 0;
+		color: var(--text);
+		font-size: 0.8rem;
+		line-height: 1.4;
+	}
+	.review-feedback.blocked {
+		background: color-mix(in srgb, var(--err) 12%, var(--bg));
+		border-left-color: var(--err);
+	}
+	.review-label {
+		color: var(--muted);
+		margin-right: 0.3rem;
+		font-weight: 600;
 	}
 	.retry {
 		margin-left: auto;
