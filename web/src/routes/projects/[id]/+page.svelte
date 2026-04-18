@@ -735,28 +735,30 @@
 
 		{#if project.failure_stage}
 			<div class="fail-banner">
-				<div>
+				<div class="fail-text">
 					<strong>Build en échec</strong> — étape <code>{project.failure_stage}</code>
 					{#if project.failure_error}
 						<pre class="fail-error">{project.failure_error}</pre>
 					{/if}
 				</div>
-				<button
-					type="button"
-					class="retry-btn"
-					onclick={resumeBuild}
-					disabled={retryingBuild}
-					title="Saute les steps déjà réussis, reprend au premier non-terminé">
-					{retryingBuild ? 'Reprise…' : '↻ Reprendre au step suivant'}
-				</button>
-				<button
-					type="button"
-					class="retry-btn ghost"
-					onclick={retryBuild}
-					disabled={retryingBuild}
-					title="Relance la séquence depuis le début (coûteux)">
-					{retryingBuild ? 'Relance…' : '↻ Relancer BMAD'}
-				</button>
+				<div class="fail-actions">
+					<button
+						type="button"
+						class="retry-btn"
+						onclick={resumeBuild}
+						disabled={retryingBuild}
+						title="Saute les steps déjà réussis, reprend au premier non-terminé">
+						{retryingBuild ? 'Reprise…' : '↻ Reprendre au step suivant'}
+					</button>
+					<button
+						type="button"
+						class="retry-btn ghost"
+						onclick={retryBuild}
+						disabled={retryingBuild}
+						title="Relance la séquence depuis le début (coûteux)">
+						{retryingBuild ? 'Relance…' : '↻ Relancer BMAD'}
+					</button>
+				</div>
 			</div>
 		{/if}
 
@@ -1512,8 +1514,7 @@
 	}
 	.fail-banner {
 		display: flex;
-		justify-content: space-between;
-		align-items: flex-start;
+		align-items: center;
 		gap: 1rem;
 		padding: 0.9rem 1rem;
 		background: color-mix(in srgb, var(--err) 12%, var(--bg-alt));
@@ -1521,7 +1522,16 @@
 		border-radius: 0 6px 6px 0;
 		flex-wrap: wrap;
 	}
-	.fail-banner > div { flex: 1 1 200px; min-width: 0; }
+	.fail-text {
+		flex: 1 1 280px;
+		min-width: 0;
+	}
+	.fail-actions {
+		display: flex;
+		gap: 0.5rem;
+		flex-shrink: 0;
+		flex-wrap: wrap;
+	}
 	.fail-banner code {
 		font-family: ui-monospace, monospace;
 		font-size: 0.8rem;
@@ -1544,11 +1554,22 @@
 		padding: 0.45rem 0.85rem;
 		background: var(--accent);
 		color: white;
-		border: none;
+		border: 1px solid var(--accent);
 		border-radius: 4px;
 		cursor: pointer;
 		font-weight: 600;
+		font-size: 0.82rem;
 		white-space: nowrap;
+		transition: opacity 0.1s, background 0.1s;
+	}
+	.retry-btn:hover:not(:disabled) { opacity: 0.9; }
+	.retry-btn.ghost {
+		background: transparent;
+		color: var(--accent);
+	}
+	.retry-btn.ghost:hover:not(:disabled) {
+		background: color-mix(in srgb, var(--accent) 10%, transparent);
+		opacity: 1;
 	}
 	.retry-btn:disabled { opacity: 0.5; cursor: not-allowed; }
 	.header-actions {
