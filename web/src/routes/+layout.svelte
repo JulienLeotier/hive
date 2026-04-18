@@ -369,18 +369,21 @@
 	.sidebar {
 		background: var(--bg-panel);
 		border-right: 1px solid var(--border);
-		padding: 1.25rem 0.85rem;
+		padding: 1.25rem 0.85rem calc(1rem + var(--safe-bottom));
 		display: flex;
 		flex-direction: column;
-		gap: 1.5rem;
+		gap: 1.25rem;
 		/* Sticky : la sidebar reste visible pendant qu'on scroll le
 		   contenu. align-self:start empêche le grid item de stretcher
-		   pour matcher la hauteur du main. */
+		   pour matcher la hauteur du main. overflow:hidden empêche le
+		   sidebar dans son ensemble de scroller — seule la nav au milieu
+		   le fait si le nombre d'items dépasse (min-height:0 débloque
+		   le scroll interne d'un flex child). */
 		position: sticky;
 		top: 0;
 		align-self: start;
 		height: 100vh;
-		overflow-y: auto;
+		overflow: hidden;
 	}
 	.brand {
 		display: flex;
@@ -422,6 +425,9 @@
 		flex-direction: column;
 		gap: 1.5rem;
 		flex: 1;
+		min-height: 0;
+		overflow-y: auto;
+		overscroll-behavior: contain;
 	}
 	.group {
 		display: flex;
@@ -493,6 +499,7 @@
 		background: var(--bg);
 		border: 1px solid var(--border);
 		border-radius: 8px;
+		flex-shrink: 0; /* toujours visible même si la nav déborde */
 	}
 	.ws-status {
 		display: flex;
