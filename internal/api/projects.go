@@ -957,16 +957,61 @@ func (s *Server) handleCancelRun(w http.ResponseWriter, r *http.Request) {
 			"aucun build BMAD en cours pour ce projet")
 		return
 	}
-	_, _ = s.db().ExecContext(r.Context(),
-		`UPDATE projects SET status = ?, failure_stage = 'cancelled',
-		 failure_error = 'Build annulé par l''opérateur',
-		 updated_at = datetime('now') WHERE id = ?`,
-		project.StatusFailed, id)
+	// Règle : un cancel ne doit PAS forcément killer le projet.
+	//   - 1ère planification (planning + aucun epic) → failed, le
+	//     projet n'a rien livré, c'est un build avorté.
+	//   - Itération brownfield (planning AVEC des epics déjà livrés)
+	//     → on revient à 'shipped' pour préserver la release existante.
+	//     L'opérateur peut relancer /iterate plus tard sans tout perdre.
+	//   - Devloop en train de coder (building) → on stoppe la skill
+	//     en vol mais le projet reste 'building' ; le prochain tick du
+	//     supervisor reprendra ou l'opérateur peut retry une story.
+	var currentStatus string
+	var epicsCount int
+	_ = s.db().QueryRowContext(r.Context(),
+		`SELECT status, (SELECT COUNT(*) FROM epics WHERE project_id = ?) FROM projects WHERE id = ?`,
+		id, id).Scan(&currentStatus, &epicsCount)
+
+	nextStatus := currentStatus
+	reason := ""
+	switch {
+	case currentStatus == string(project.StatusPlanning) && epicsCount == 0:
+		nextStatus = string(project.StatusFailed)
+		reason = "Build annulé par l'opérateur"
+	case currentStatus == string(project.StatusPlanning) && epicsCount > 0:
+		// Itération brownfield annulée : retour à shipped.
+		nextStatus = string(project.StatusShipped)
+	default:
+		// building / shipped / autres : on laisse tel quel. La skill en
+		// vol est déjà tuée ; le projet conserve son état utile.
+	}
+	if nextStatus != currentStatus {
+		if reason != "" {
+			_, _ = s.db().ExecContext(r.Context(),
+				`UPDATE projects SET status = ?, failure_stage = 'cancelled',
+				 failure_error = ?, updated_at = datetime('now') WHERE id = ?`,
+				nextStatus, reason, id)
+		} else {
+			_, _ = s.db().ExecContext(r.Context(),
+				`UPDATE projects SET status = ?, failure_stage = NULL,
+				 failure_error = NULL, updated_at = datetime('now') WHERE id = ?`,
+				nextStatus, id)
+		}
+	}
 	if s.eventBus != nil {
 		_, _ = s.eventBus.Publish(r.Context(), "project.cancelled", "api",
-			map[string]string{"project_id": id})
+			map[string]any{
+				"project_id":  id,
+				"prev_status": currentStatus,
+				"new_status":  nextStatus,
+			})
 	}
-	writeJSON(w, map[string]string{"project_id": id, "status": "cancelled"})
+	writeJSON(w, map[string]any{
+		"project_id":  id,
+		"status":      "cancelled",
+		"new_status":  nextStatus,
+		"prev_status": currentStatus,
+	})
 }
 
 // handleRetryArchitect relance le pipeline BMAD depuis le début pour

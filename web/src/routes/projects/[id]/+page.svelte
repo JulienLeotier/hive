@@ -146,7 +146,15 @@
 
 	async function cancelRun() {
 		const id = $page.params.id ?? '';
-		if (!confirm('Annuler le build BMAD en cours ? Les skills Claude actuellement en vol seront tuées.')) return;
+		// Message contextuel : pour une itération brownfield ou un
+		// build en cours avec des epics déjà livrés, le projet revient
+		// à 'shipped' (pas à 'failed'). Pour un premier build, il
+		// passe en 'failed'.
+		const hasEpics = (project?.epics?.length ?? 0) > 0;
+		const msg = hasEpics
+			? "Annuler la skill BMAD en cours ? Le projet conservera son état actuel — tu pourras relancer une itération plus tard."
+			: "Annuler le build BMAD en cours ? Les skills Claude en vol seront tuées et le projet passera en failed.";
+		if (!confirm(msg)) return;
 		cancelling = true;
 		actionError = '';
 		try {
@@ -1645,16 +1653,17 @@
 		border-radius: 6px;
 		font-size: 0.82rem;
 		transition: border-color 0.1s;
-		overflow: hidden;
 	}
 	.phase-row {
 		display: flex;
 		align-items: center;
 		gap: 0.8rem;
-		padding: 0.6rem 1rem;
+		padding: 0.7rem 1rem;
 		width: 100%;
+		min-height: 52px;
 		background: transparent;
 		border: none;
+		border-radius: 6px;
 		text-align: left;
 		cursor: pointer;
 		color: inherit;
