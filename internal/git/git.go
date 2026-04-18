@@ -418,12 +418,10 @@ func EnsureStoryPushed(ctx context.Context, workdir, branch, storyTitle string) 
 		return "", nil //nolint:nilerr // non-repo is a valid state
 	}
 
-	// Ensure the requested branch is checked out (best-effort).
-	if branch != "" {
-		_ = runIn(ctx, workdir, "git", "checkout", "-B", branch)
-	}
-
-	// Stage + commit if there are changes.
+	// Check tree state AVANT tout switch de branche : si working tree
+	// clean ET pas de commits ahead d'origin, il n'y a littéralement
+	// rien à PR-er (BMAD a probablement déjà committé ET pushé sur
+	// main). On s'arrête là silencieusement — pas de faux PR vide.
 	statusCtx, cancel := context.WithCancel(ctx)
 	statusCmd := exec.CommandContext(statusCtx, "git", "-C", workdir, "status", "--porcelain")
 	statusOut, err := statusCmd.Output()
@@ -431,7 +429,31 @@ func EnsureStoryPushed(ctx context.Context, workdir, branch, storyTitle string) 
 	if err != nil {
 		return "", fmt.Errorf("git status: %w", err)
 	}
-	if len(strings.TrimSpace(string(statusOut))) > 0 {
+	hasUncommitted := len(strings.TrimSpace(string(statusOut))) > 0
+	hasAheadCommits := commitsAheadOfOrigin(ctx, workdir)
+	if !hasUncommitted && !hasAheadCommits {
+		return "", nil
+	}
+
+	// Ensure a feature branch is checked out. Cas 1 : BMAD a fourni un
+	// nom de branche → on y switch. Cas 2 : branch vide ET on est sur
+	// la branche par défaut (main/master) → on fabrique un feat/<slug>
+	// à partir du storyTitle. Sans ce fallback, `gh pr create` fail
+	// plus bas avec "could not find any commits between origin/main
+	// and main" puisque main == default branch on ne peut pas ouvrir
+	// de PR vers elle-même.
+	if branch == "" {
+		cur := currentBranch(ctx, workdir)
+		if cur == "" || cur == "main" || cur == "master" {
+			branch = "feat/" + branchSlug(storyTitle)
+		}
+	}
+	if branch != "" {
+		_ = runIn(ctx, workdir, "git", "checkout", "-B", branch)
+	}
+
+	// Stage + commit if there are changes.
+	if hasUncommitted {
 		if err := runIn(ctx, workdir, "git", "add", "-A"); err != nil {
 			return "", err
 		}
@@ -628,6 +650,64 @@ func ensureInitialCommit(ctx context.Context, workdir string) error {
 		return fmt.Errorf("git commit: %w", err)
 	}
 	return nil
+}
+
+// commitsAheadOfOrigin retourne true si HEAD a des commits qui ne sont
+// pas encore sur origin/<current branch>. Best-effort : si on n'a pas
+// d'upstream configuré, on considère qu'il y a potentiellement du
+// travail à push (plus safe que d'abandonner silencieusement).
+func commitsAheadOfOrigin(ctx context.Context, workdir string) bool {
+	c, cancel := context.WithCancel(ctx)
+	defer cancel()
+	// rev-list @{u}..HEAD count : nb de commits ahead de l'upstream.
+	out, err := exec.CommandContext(c, "git", "-C", workdir,
+		"rev-list", "--count", "@{u}..HEAD").Output()
+	if err != nil {
+		// Pas d'upstream : il y a (a priori) du travail non pushé.
+		return true
+	}
+	return strings.TrimSpace(string(out)) != "0"
+}
+
+// currentBranch retourne la branche courante du repo, ou "" si on est
+// en detached HEAD / pas un repo / git indisponible. Best-effort :
+// erreur silencieuse, le caller décide quoi faire.
+func currentBranch(ctx context.Context, workdir string) string {
+	brCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	out, err := exec.CommandContext(brCtx, "git", "-C", workdir, "rev-parse", "--abbrev-ref", "HEAD").Output()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(out))
+}
+
+// branchSlug construit un nom de branche feature lisible à partir
+// d'un titre de story. "Bootstrap the monorepo" → "bootstrap-the-monorepo".
+// Fallback sur un suffixe horodaté si rien d'exploitable.
+func branchSlug(title string) string {
+	title = strings.ToLower(strings.TrimSpace(title))
+	var b strings.Builder
+	for _, r := range title {
+		switch {
+		case r >= 'a' && r <= 'z', r >= '0' && r <= '9':
+			b.WriteRune(r)
+		case r == ' ', r == '-', r == '_', r == '/':
+			b.WriteRune('-')
+		}
+	}
+	out := strings.Trim(b.String(), "-")
+	// Collapse multiples "-" consécutifs en un seul.
+	for strings.Contains(out, "--") {
+		out = strings.ReplaceAll(out, "--", "-")
+	}
+	if len(out) > 50 {
+		out = strings.TrimRight(out[:50], "-")
+	}
+	if out == "" {
+		return fmt.Sprintf("story-%d", os.Getpid())
+	}
+	return out
 }
 
 func truncate(s string, n int) string {
