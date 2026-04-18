@@ -404,6 +404,11 @@
 	let regenerating = $state(false);
 	let prdError = $state('');
 
+	// Onglet actif. Les sections du détail projet sont groupées en
+	// tabs pour éviter la page-à-rallonge. Default = overview.
+	type Tab = 'overview' | 'stories' | 'prd' | 'activity';
+	let activeTab = $state<Tab>('overview');
+
 	function startEditPRD() {
 		prdDraft = project?.prd ?? '';
 		editingPRD = true;
@@ -623,6 +628,44 @@
 			<div class="err">{actionError}</div>
 		{/if}
 
+		{#if project.status !== 'draft'}
+			<nav class="tabs-nav" aria-label="Navigation du projet">
+				<button type="button"
+					class="tab"
+					class:active={activeTab === 'overview'}
+					onclick={() => (activeTab = 'overview')}>
+					<span class="tab-icon">⊞</span> Vue d'ensemble
+				</button>
+				<button type="button"
+					class="tab"
+					class:active={activeTab === 'stories'}
+					onclick={() => (activeTab = 'stories')}>
+					<span class="tab-icon">▦</span> Stories
+					{#if project.epics && project.epics.length > 0}
+						<span class="tab-badge">{totalStories}</span>
+					{/if}
+				</button>
+				{#if project.prd}
+					<button type="button"
+						class="tab"
+						class:active={activeTab === 'prd'}
+						onclick={() => (activeTab = 'prd')}>
+						<span class="tab-icon">📄</span> PRD
+					</button>
+				{/if}
+				<button type="button"
+					class="tab"
+					class:active={activeTab === 'activity'}
+					onclick={() => (activeTab = 'activity')}>
+					<span class="tab-icon">◈</span> Activité
+					{#if activity.length > 0}
+						<span class="tab-badge">{activity.length}</span>
+					{/if}
+				</button>
+			</nav>
+		{/if}
+
+		{#if activeTab === 'overview' && project.status !== 'draft'}
 		{#if (project.status === 'planning' || project.status === 'building') && phases.length > 0}
 			{@const running = phases.find((s) => s.status === 'running')}
 			{@const done = phases.filter((s) => s.status === 'done').length}
@@ -717,6 +760,8 @@
 				<div><strong>{project.epics?.length ?? 0}</strong><span>epics</span></div>
 			</div>
 		</section>
+		{/if}
+		<!-- /overview tab -->
 
 		{#if project.status === 'draft'}
 			<section class="intake">
@@ -801,21 +846,16 @@
 					{/if}
 				{/if}
 			</section>
-		{:else if project.prd}
+		{/if}
+		<!-- /draft intake -->
+
+		{#if activeTab === 'prd' && project.prd && project.status !== 'draft'}
 			{@const prdLines = project.prd.split('\n').length}
 			{@const prdBytes = new Blob([project.prd]).size}
 			<section class="panel">
 				<div class="prd-head">
 					<h3>
-						<button type="button"
-							class="prd-toggle"
-							onclick={() => (prdExpanded = !prdExpanded)}
-							disabled={editingPRD}
-							aria-expanded={prdExpanded || editingPRD}
-							title={prdExpanded ? 'Replier' : 'Déplier'}>
-							<span class="chev" class:open={prdExpanded || editingPRD}>▸</span>
-							PRD
-						</button>
+						PRD
 						<span class="prd-meta">{prdLines} lignes · {(prdBytes / 1024).toFixed(1)} KB</span>
 					</h3>
 					<div class="prd-actions">
@@ -827,7 +867,7 @@
 								Annuler
 							</button>
 						{:else}
-							<button type="button" onclick={() => { startEditPRD(); prdExpanded = true; }}>✎ Éditer</button>
+							<button type="button" onclick={startEditPRD}>✎ Éditer</button>
 							{#if project.status !== 'shipped'}
 								<button
 									type="button"
@@ -845,25 +885,13 @@
 				{#if prdError}<div class="err">{prdError}</div>{/if}
 				{#if editingPRD}
 					<textarea class="prd-editor" rows="18" bind:value={prdDraft}></textarea>
-				{:else if prdExpanded}
-					<pre class="prd">{project.prd}</pre>
 				{:else}
-					<div class="prd-preview" onclick={() => (prdExpanded = true)}
-						onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); prdExpanded = true; } }}
-						role="button"
-						tabindex="0">
-						<pre class="prd prd-snippet">{project.prd.split('\n').slice(0, 6).join('\n')}</pre>
-						<div class="prd-fade">
-							<button type="button" class="prd-expand-btn">
-								Afficher les {prdLines} lignes →
-							</button>
-						</div>
-					</div>
+					<pre class="prd">{project.prd}</pre>
 				{/if}
 			</section>
 		{/if}
 
-		{#if activity.length > 0}
+		{#if activeTab === 'activity' && activity.length > 0 && project.status !== 'draft'}
 			<section class="activity">
 				<h2>Activité <span class="count">{activity.length}</span></h2>
 				<ul class="feed">
@@ -884,6 +912,7 @@
 			</section>
 		{/if}
 
+		{#if activeTab === 'stories' && project.status !== 'draft'}
 		<section class="tree">
 			<h2>Découpage du travail</h2>
 			{#if !project.epics || project.epics.length === 0}
@@ -962,6 +991,8 @@
 				{/each}
 			{/if}
 		</section>
+		{/if}
+		<!-- /stories tab -->
 	{/if}
 </main>
 
@@ -981,6 +1012,70 @@
 	h2 { font-size: 1.05rem; margin: 0 0 0.75rem 0; }
 	h3 { font-size: 0.95rem; margin: 0 0 0.5rem 0; }
 	.muted { color: var(--muted); }
+
+	/* ===== Tabs nav ===== */
+	.tabs-nav {
+		display: flex;
+		gap: 0.25rem;
+		padding: 0.25rem;
+		background: var(--bg-panel);
+		border: 1px solid var(--border);
+		border-radius: 10px;
+		margin: 0.5rem 0;
+		overflow-x: auto;
+		scrollbar-width: none;
+	}
+	.tabs-nav::-webkit-scrollbar { display: none; }
+	.tab {
+		display: inline-flex;
+		align-items: center;
+		gap: 0.45rem;
+		padding: 0.55rem 0.95rem;
+		background: transparent;
+		border: none;
+		border-radius: 6px;
+		color: var(--text-muted);
+		font: inherit;
+		font-size: 0.85rem;
+		font-weight: 600;
+		cursor: pointer;
+		white-space: nowrap;
+		transition: background 0.1s, color 0.1s;
+	}
+	.tab:hover {
+		background: var(--bg-hover);
+		color: var(--text);
+	}
+	.tab.active {
+		background: color-mix(in srgb, var(--accent) 14%, transparent);
+		color: var(--accent);
+	}
+	.tab-icon {
+		font-size: 0.95rem;
+		opacity: 0.85;
+	}
+	.tab-badge {
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		min-width: 20px;
+		height: 20px;
+		padding: 0 0.5rem;
+		background: var(--bg-hover);
+		color: var(--text-muted);
+		border-radius: 999px;
+		font-size: 0.7rem;
+		font-weight: 700;
+		margin-left: 0.15rem;
+	}
+	.tab.active .tab-badge {
+		background: color-mix(in srgb, var(--accent) 22%, transparent);
+		color: var(--accent);
+	}
+	@media (max-width: 767px) {
+		.tab { padding: 0.5rem 0.7rem; font-size: 0.8rem; }
+		.tab-icon { display: none; }
+	}
 
 	/* ===== Hero header ===== */
 	.hero {
@@ -1595,29 +1690,6 @@
 		gap: 0.5rem;
 		font-size: 1rem;
 	}
-	.prd-toggle {
-		display: inline-flex;
-		align-items: center;
-		gap: 0.35rem;
-		background: transparent;
-		border: none;
-		padding: 0.25rem 0.4rem;
-		margin: -0.25rem -0.4rem;
-		border-radius: 4px;
-		cursor: pointer;
-		color: inherit;
-		font: inherit;
-		font-weight: 700;
-	}
-	.prd-toggle:hover { background: var(--bg-hover); }
-	.prd-toggle:disabled { cursor: default; opacity: 0.7; }
-	.prd-toggle .chev {
-		display: inline-block;
-		font-size: 0.75rem;
-		transition: transform 0.15s;
-		color: var(--text-muted);
-	}
-	.prd-toggle .chev.open { transform: rotate(90deg); }
 	.prd-meta {
 		font-size: 0.7rem;
 		color: var(--text-muted);
