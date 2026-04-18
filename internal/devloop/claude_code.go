@@ -27,7 +27,8 @@ type ClaudeCodeDev struct {
 	runner   *bmad.Runner
 	fallback DevAgent
 	timeout  time.Duration
-	db       *sql.DB // branch to track skill cost + sync sprint-status ; nil = no tracking
+	db       *sql.DB   // branch to track skill cost + sync sprint-status ; nil = no tracking
+	publish  Publisher // branch to emit WS events (bmad_step_output) ; nil = no live streaming UI
 }
 
 func NewClaudeCodeDev() DevAgent {
@@ -52,6 +53,14 @@ func (d *ClaudeCodeDev) WithDB(db *sql.DB) *ClaudeCodeDev {
 	return d
 }
 
+// WithPublisher branche l'event bus pour que chaque event stream-json
+// de Claude soit diffusé en WS (project.bmad_step_output) et que la
+// console UI se remplisse en live, pas juste à la fin du skill.
+func (d *ClaudeCodeDev) WithPublisher(p Publisher) *ClaudeCodeDev {
+	d.publish = p
+	return d
+}
+
 func (*ClaudeCodeDev) Name() string { return "bmad-dev" }
 
 // Develop lance la séquence /bmad-create-story puis /bmad-dev-story.
@@ -72,7 +81,7 @@ func (d *ClaudeCodeDev) Develop(ctx context.Context, proj ProjectContext, story 
 	// Reviewer puisse détecter la story que la skill a traitée.
 	pre := snapshotSprint(workdir)
 
-	obs := makeDevloopObserver(d.db, proj.ID, workdir, "story")
+	obs := makeDevloopObserver(d.db, d.publish, proj.ID, workdir, "story")
 	history, err := d.runner.RunSequenceObserved(callCtx, workdir, bmad.StorySequence, obs)
 	if err != nil {
 		slog.Warn("devloop dev: séquence BMAD échouée — fallback scripted", "error", err)
@@ -159,6 +168,7 @@ type ClaudeCodeReviewer struct {
 	fallback ReviewerAgent
 	timeout  time.Duration
 	db       *sql.DB
+	publish  Publisher
 }
 
 func NewClaudeCodeReviewer() ReviewerAgent {
@@ -179,6 +189,13 @@ func (r *ClaudeCodeReviewer) WithDB(db *sql.DB) *ClaudeCodeReviewer {
 	return r
 }
 
+// WithPublisher — même rôle que ClaudeCodeDev.WithPublisher : broadcast
+// les chunks stream-json pour que la console UI défile en live.
+func (r *ClaudeCodeReviewer) WithPublisher(p Publisher) *ClaudeCodeReviewer {
+	r.publish = p
+	return r
+}
+
 func (*ClaudeCodeReviewer) Name() string { return "bmad-reviewer" }
 
 // Review lance /bmad-code-review. Après coup, on parse
@@ -194,7 +211,7 @@ func (r *ClaudeCodeReviewer) Review(ctx context.Context, proj ProjectContext, st
 	}
 	defer cancel()
 
-	obs := makeDevloopObserver(r.db, proj.ID, workdir, "review")
+	obs := makeDevloopObserver(r.db, r.publish, proj.ID, workdir, "review")
 	history, err := r.runner.RunSequenceObserved(callCtx, workdir, bmad.ReviewSequence, obs)
 	if err != nil {
 		slog.Warn("devloop reviewer: séquence BMAD échouée — fallback scripted", "error", err)
@@ -282,8 +299,9 @@ func countDecisionNeeded(reply string) int {
 // /bmad-correct-course qui committe la décision dans la story.md.
 // Après ça, le Dev reprendra avec la nouvelle spec au prochain tick.
 type ClaudeCodeArchitect struct {
-	runner *bmad.Runner
-	db     *sql.DB
+	runner  *bmad.Runner
+	db      *sql.DB
+	publish Publisher
 }
 
 // NewClaudeCodeArchitect construit l'agent. Retourne nil si le Claude
@@ -304,6 +322,13 @@ func (a *ClaudeCodeArchitect) WithDB(db *sql.DB) *ClaudeCodeArchitect {
 	return a
 }
 
+// WithPublisher broadcast les chunks stream-json des skills architect
+// pour que la console UI défile en live pendant un correct-course.
+func (a *ClaudeCodeArchitect) WithPublisher(p Publisher) *ClaudeCodeArchitect {
+	a.publish = p
+	return a
+}
+
 func (*ClaudeCodeArchitect) Name() string { return "bmad-architect" }
 
 // Resolve lance /bmad-agent-architect puis /bmad-correct-course avec
@@ -316,7 +341,7 @@ func (a *ClaudeCodeArchitect) Resolve(ctx context.Context, proj ProjectContext, 
 		return fmt.Errorf("architect: runner indisponible")
 	}
 	workdir := pickWorkdir(proj)
-	obs := makeDevloopObserver(a.db, proj.ID, workdir, "architect")
+	obs := makeDevloopObserver(a.db, a.publish, proj.ID, workdir, "architect")
 	_, err := a.runner.RunSequenceObserved(ctx, workdir, bmad.ArchitectEscalationSequence, obs)
 	if err != nil {
 		return fmt.Errorf("architect escalation: %w", err)
@@ -341,16 +366,21 @@ func firstLine(s string) string {
 //
 // Si db est nil, renvoie un observer neutre (pas de tracking). Permet
 // au fallback scripted de tourner sans polluer la DB.
-func makeDevloopObserver(db *sql.DB, projectID, workdir, phase string) bmad.StepObserver {
+func makeDevloopObserver(db *sql.DB, publish Publisher, projectID, workdir, phase string) bmad.StepObserver {
 	if db == nil || projectID == "" {
 		return bmad.StepObserver{}
 	}
 	// stepID capture par closure entre OnStart et OnFinish. Les skills
 	// d'une sequence tournent sequentiellement, donc une seule variable
-	// suffit.
-	var stepID int64
+	// suffit. buffer accumule les events stream-json pour flush DB +
+	// broadcast WS en live — permet à la console UI de défiler.
+	var (
+		stepID int64
+		buffer strings.Builder
+	)
 	return bmad.StepObserver{
 		OnStart: func(_, _ int, cmd string) {
+			buffer.Reset()
 			res, err := db.Exec(
 				`INSERT INTO bmad_phase_steps (project_id, phase, command, status)
 				 VALUES (?, ?, ?, 'running')`,
@@ -362,6 +392,28 @@ func makeDevloopObserver(db *sql.DB, projectID, workdir, phase string) bmad.Step
 				return
 			}
 			stepID, _ = res.LastInsertId()
+		},
+		OnChunk: func(_, _ int, cmd string, evt bmad.StreamEvent) {
+			if evt.Text == "" {
+				return
+			}
+			line := "[" + evt.Type + "] " + evt.Text + "\n"
+			buffer.WriteString(line)
+			if stepID > 0 {
+				_, _ = db.Exec(
+					`UPDATE bmad_phase_steps SET reply_full = ? WHERE id = ?`,
+					buffer.String(), stepID)
+			}
+			if publish != nil {
+				_ = publish(context.Background(), "project.bmad_step_output", "devloop",
+					map[string]any{
+						"project_id": projectID,
+						"step_id":    stepID,
+						"command":    cmd,
+						"chunk":      line,
+						"event_type": evt.Type,
+					})
+			}
 		},
 		OnFinish: func(_, _ int, cmd string, r bmad.Result, err error) {
 			status := "done"

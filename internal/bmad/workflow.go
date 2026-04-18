@@ -181,7 +181,7 @@ func concat(slices ...[]string) []string {
 // StepObserver est notifié à l'entrée et à la sortie de chaque
 // invocation de skill pendant RunSequence. Le supervisor s'en sert
 // pour persister la progression + émettre des événements WebSocket
-// "skill X/Y started", "skill done", etc. Les deux callbacks sont
+// "skill X/Y started", "skill done", etc. Tous les callbacks sont
 // optionnels.
 type StepObserver struct {
 	// OnStart reçoit l'index (1-based) et la commande qui va démarrer.
@@ -189,6 +189,12 @@ type StepObserver struct {
 	// OnFinish reçoit l'index, la commande, le résultat et l'erreur
 	// éventuelle. Sert à persister tokens/cost/status=done|failed.
 	OnFinish func(index, total int, command string, res Result, err error)
+	// OnChunk reçoit CHAQUE event NDJSON stream-json au fur et à
+	// mesure que Claude CLI les émet (assistant messages, tool_use,
+	// tool_results, etc.). Présent => RunSequenceObserved bascule sur
+	// InvokeStream pour que la console UI se remplisse en temps réel.
+	// Absent => comportement legacy, Invoke buffer tout jusqu'à la fin.
+	OnChunk func(index, total int, command string, event StreamEvent)
 }
 
 // RunSequence exécute une liste de slash-commands dans l'ordre, une
@@ -212,7 +218,18 @@ func (r *Runner) RunSequenceObserved(ctx context.Context, workdir string, cmds [
 		if obs.OnStart != nil {
 			obs.OnStart(i+1, total, cmd)
 		}
-		res, err := r.Invoke(ctx, workdir, cmd, nil)
+		// Streaming si OnChunk branché ; sinon legacy Invoke buffered.
+		var (
+			res Result
+			err error
+		)
+		if obs.OnChunk != nil {
+			idx, tot, c := i+1, total, cmd
+			res, err = r.InvokeStream(ctx, workdir, cmd, nil,
+				func(evt StreamEvent) { obs.OnChunk(idx, tot, c, evt) })
+		} else {
+			res, err = r.Invoke(ctx, workdir, cmd, nil)
+		}
 		history = append(history, PhaseStep{Command: cmd, Reply: res.Text})
 		if obs.OnFinish != nil {
 			obs.OnFinish(i+1, total, cmd, res, err)

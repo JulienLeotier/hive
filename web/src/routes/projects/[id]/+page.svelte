@@ -106,6 +106,18 @@
 	};
 	let consoleStep = $state<PhaseStepFull | null>(null);
 	let consoleLoading = $state(false);
+	let consoleBodyEl: HTMLDivElement | undefined = $state(undefined);
+
+	// Auto-scroll : dès que reply_full change (chunk WS ou reload),
+	// on glisse la vue au bas du drawer pour que l'opérateur voit
+	// toujours les derniers events sans scroller à la main.
+	$effect(() => {
+		if (consoleStep?.reply_full && consoleBodyEl) {
+			queueMicrotask(() => {
+				if (consoleBodyEl) consoleBodyEl.scrollTop = consoleBodyEl.scrollHeight;
+			});
+		}
+	});
 
 	async function openConsole(stepID: number) {
 		consoleLoading = true;
@@ -402,6 +414,23 @@
 					// BMAD step events : refresh phases panel.
 					if (evt.type === 'project.bmad_step_started' || evt.type === 'project.bmad_step_finished') {
 						loadPhases();
+					}
+					// Stream-json chunks : append au drawer console en live
+					// quand il est ouvert sur la même step. Sans ce branch,
+					// le reply_full ne se remplit qu'après la fin du skill.
+					if (evt.type === 'project.bmad_step_output' && consoleStep) {
+						const payload = evt._parsed ?? (() => {
+							try { return JSON.parse(evt.payload); } catch { return null; }
+						})();
+						if (payload && payload.step_id === consoleStep.id) {
+							const chunk = String(payload.chunk ?? '');
+							if (chunk) {
+								consoleStep = {
+									...consoleStep,
+									reply_full: (consoleStep.reply_full ?? '') + chunk
+								};
+							}
+						}
 					}
 				} catch {
 					/* ignore non-JSON frames */
@@ -1078,17 +1107,22 @@
 					<pre>{consoleStep.error}</pre>
 				</div>
 			{/if}
-			<div class="console-body">
+			<div class="console-body" bind:this={consoleBodyEl}>
 				{#if consoleStep.reply_full}
 					<pre class="console-pre">{consoleStep.reply_full}</pre>
+					{#if consoleStep.status === 'running'}
+						<div class="console-live">
+							<span class="live-dot big"></span>
+							En cours — nouveaux events affichés au fur et à mesure
+						</div>
+					{/if}
+				{:else if consoleStep.status === 'running'}
+					<div class="console-live">
+						<span class="live-dot big"></span>
+						Skill démarrée — les events apparaîtront dès que Claude répondra.
+					</div>
 				{:else}
-					<p class="empty">
-						{#if consoleStep.status === 'running'}
-							Skill en cours — la console s'affichera quand BMAD aura terminé cette étape.
-						{:else}
-							Aucune sortie console pour ce step.
-						{/if}
-					</p>
+					<p class="empty">Aucune sortie console pour ce step.</p>
 				{/if}
 			</div>
 		{/if}
@@ -2332,5 +2366,17 @@
 		word-break: break-word;
 		color: var(--text);
 		margin: 0;
+	}
+	.console-live {
+		display: flex;
+		align-items: center;
+		gap: 0.5rem;
+		margin-top: 0.75rem;
+		padding: 0.5rem 0.75rem;
+		background: color-mix(in srgb, var(--accent) 10%, transparent);
+		border-radius: 6px;
+		color: var(--accent);
+		font-size: 0.8rem;
+		font-style: italic;
 	}
 </style>

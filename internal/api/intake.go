@@ -989,7 +989,32 @@ func (s *Server) trackedInvoke(
 			"command":    label,
 		})
 	}
-	out, invErr := runner.Invoke(ctx, workdir, goal, nil)
+	// Streaming : chaque event NDJSON émis par le CLI Claude est
+	// flushé en DB (reply_full) + broadcast WS pour que la console UI
+	// défile en live. SQLite tient des UPDATE par chunk sans broncher.
+	var streamBuf strings.Builder
+	out, invErr := runner.InvokeStream(ctx, workdir, goal, nil,
+		func(evt bmad.StreamEvent) {
+			if evt.Text == "" {
+				return
+			}
+			line := "[" + evt.Type + "] " + evt.Text + "\n"
+			streamBuf.WriteString(line)
+			if stepID > 0 {
+				_, _ = s.db().ExecContext(ctx,
+					`UPDATE bmad_phase_steps SET reply_full = ? WHERE id = ?`,
+					streamBuf.String(), stepID)
+			}
+			if s.eventBus != nil {
+				_, _ = s.eventBus.Publish(ctx, "project.bmad_step_output", "api", map[string]any{
+					"project_id": projectID,
+					"step_id":    stepID,
+					"command":    label,
+					"chunk":      line,
+					"event_type": evt.Type,
+				})
+			}
+		})
 	status := "done"
 	errText := ""
 	if invErr != nil {
@@ -1035,12 +1060,21 @@ func (s *Server) stepObserver(ctx context.Context, projectID, phase string) bmad
 	// séquentiellement par séquence, mais on reste thread-safe si un
 	// jour on parallélise.
 	stepStart := make(map[string]time.Time)
+	// Buffers de streaming : on accumule les events stream-json au fur
+	// et à mesure et on flush en DB + WS pour que l'UI voie la console
+	// défiler en live. Un par (command) car les OnStart/OnFinish
+	// tournent séquentiellement dans une séquence mais on veut des
+	// clés distinctes au cas où une future parallélisation les
+	// entrelacerait.
+	buffers := make(map[string]*strings.Builder)
+	stepIDs := make(map[string]int64)
 	var mu sync.Mutex
 
 	return bmad.StepObserver{
 		OnStart: func(index, total int, command string) {
 			mu.Lock()
 			stepStart[command] = time.Now()
+			buffers[command] = &strings.Builder{}
 			mu.Unlock()
 			res, err := s.db().ExecContext(ctx,
 				`INSERT INTO bmad_phase_steps (project_id, phase, command, status)
@@ -1051,6 +1085,9 @@ func (s *Server) stepObserver(ctx context.Context, projectID, phase string) bmad
 				return
 			}
 			id, _ := res.LastInsertId()
+			mu.Lock()
+			stepIDs[command] = id
+			mu.Unlock()
 			if s.eventBus != nil {
 				_, _ = s.eventBus.Publish(ctx, "project.bmad_step_started", "api", map[string]any{
 					"project_id": projectID,
@@ -1059,6 +1096,40 @@ func (s *Server) stepObserver(ctx context.Context, projectID, phase string) bmad
 					"index":      index,
 					"total":      total,
 					"command":    command,
+				})
+			}
+		},
+		OnChunk: func(_, _ int, command string, evt bmad.StreamEvent) {
+			if evt.Text == "" {
+				return
+			}
+			mu.Lock()
+			buf := buffers[command]
+			id := stepIDs[command]
+			mu.Unlock()
+			if buf == nil {
+				return
+			}
+			line := "[" + evt.Type + "] " + evt.Text + "\n"
+			mu.Lock()
+			buf.WriteString(line)
+			accumulated := buf.String()
+			mu.Unlock()
+			// Flush DB à chaque chunk — SQLite + une skill qui émet
+			// 10-50 events au total tient sans broncher. Évite la
+			// complexité d'un batcher + timer.
+			if id > 0 {
+				_, _ = s.db().ExecContext(ctx,
+					`UPDATE bmad_phase_steps SET reply_full = ? WHERE id = ?`,
+					accumulated, id)
+			}
+			if s.eventBus != nil {
+				_, _ = s.eventBus.Publish(ctx, "project.bmad_step_output", "api", map[string]any{
+					"project_id": projectID,
+					"step_id":    id,
+					"command":    command,
+					"chunk":      line,
+					"event_type": evt.Type,
 				})
 			}
 		},
@@ -1074,6 +1145,8 @@ func (s *Server) stepObserver(ctx context.Context, projectID, phase string) bmad
 			mu.Lock()
 			startT, ok := stepStart[command]
 			delete(stepStart, command)
+			delete(buffers, command)
+			delete(stepIDs, command)
 			mu.Unlock()
 			if ok {
 				metrics.BMADSkillDuration.WithLabelValues(command).Observe(time.Since(startT).Seconds())
