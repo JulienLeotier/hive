@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"os"
 	"os/exec"
 	"strings"
 	"time"
@@ -113,9 +114,17 @@ func (a *ClaudeCodeAgent) FinalPRD(
 	return text, nil
 }
 
-// runCLI executes `claude --print --format json` (or whatever the
-// operator's alias is; if no-arg execution fails we retry with --print
-// disabled). Stdin carries the full prompt. Output is the raw CLI stdout.
+// runCLI executes `claude --print` dans un répertoire temporaire
+// isolé. Sans cette isolation, le CLI Claude hériterait du cwd du
+// serveur Hive (/Users/.../hive), voyait go.mod + internal/*.go et
+// biaisait toutes les recommandations stack vers Go. Le PM d'intake
+// doit rester neutre — il ne sait rien du stack que Hive lui-même
+// utilise. Le projet BMAD qu'il est en train d'aider à planifier
+// peut être en n'importe quel langage.
+//
+// Stdin porte le prompt ; le scratch dir est nettoyé à la sortie.
+// Si la création du scratch échoue (disque plein, permissions), on
+// fallback sur le cwd — le warning stack sera juste moins stable.
 func (a *ClaudeCodeAgent) runCLI(ctx context.Context, prompt string) ([]byte, error) {
 	callCtx := ctx
 	cancel := func() {}
@@ -124,9 +133,18 @@ func (a *ClaudeCodeAgent) runCLI(ctx context.Context, prompt string) ([]byte, er
 	}
 	defer cancel()
 
-	// --print sends the response straight to stdout without interactive
-	// pager; --output-format json wraps it so we can parse reliably.
+	scratch, err := os.MkdirTemp("", "hive-intake-*")
+	if err != nil {
+		slog.Warn("intake: scratch dir failed, using cwd", "error", err)
+		scratch = ""
+	} else {
+		defer os.RemoveAll(scratch)
+	}
+
 	cmd := exec.CommandContext(callCtx, a.cliPath, "--print", "--output-format", "text")
+	if scratch != "" {
+		cmd.Dir = scratch
+	}
 	cmd.Stdin = strings.NewReader(prompt)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
@@ -150,6 +168,15 @@ func buildReplyPrompt(projectIdea string, history []Message) string {
 	b.WriteString("additional features, integrations, or roles. Ask about the 1-2 core flows and the stack, then be done.\n")
 	b.WriteString("If the user tells you to 'just figure it out' or 'use defaults', accept it — state the minimal ")
 	b.WriteString("defaults you picked (stack, scope, persistence) in one message, then set done=true.\n\n")
+	b.WriteString("STACK DEFAULTS — pick the LEANEST viable. Do NOT default to Go, Python, React or any heavy framework ")
+	b.WriteString("unless the user explicitly asks for one OR the feature set genuinely requires it. Reference table :\n")
+	b.WriteString("- Simple web app (todo, counter, form, static site) → vanilla HTML + CSS + JS + localStorage, NO build step, NO backend.\n")
+	b.WriteString("- Web app with shared data between users → minimal backend (pick the language the user already uses). ")
+	b.WriteString("Still default to SQLite, not Postgres.\n")
+	b.WriteString("- CLI tool → the language the user already uses, or a single Python / Node script.\n")
+	b.WriteString("- Mobile → only if explicitly mobile ; otherwise PWA wins.\n")
+	b.WriteString("Do NOT let your own working environment bias the answer. The stack is chosen FOR the user's problem, ")
+	b.WriteString("not based on what you were trained on or what looks impressive.\n\n")
 	b.WriteString("When you have enough to write the brief, set done=true and reply with a one-sentence handoff.\n\n")
 	b.WriteString("Respond with ONLY a single JSON object of the form ")
 	b.WriteString(`{"reply": "<your next message to the user>", "done": <boolean>}.`)
@@ -185,7 +212,9 @@ func buildPRDPrompt(projectIdea string, history []Message) string {
 	b.WriteString("the brief must be SMALL (1-2 epics, < 10 stories total). Do NOT brainstorm features they didn't ask for.\n")
 	b.WriteString("- Every feature in In-scope must be traceable to something the user explicitly asked for or confirmed.\n")
 	b.WriteString("- Non-goals must be EXPLICIT and LONG — list everything a typical product in this space has that we are NOT building.\n")
-	b.WriteString("- Stack must be the leanest viable. No framework if vanilla works. No DB if localStorage works. No backend if static works.\n\n")
+	b.WriteString("- Stack must be the leanest viable. No framework if vanilla works. No DB if localStorage works. No backend if static works.\n")
+	b.WriteString("- DEFAULT STACK for simple web apps = vanilla HTML + CSS + JS + localStorage, NO build step, NO backend. ")
+	b.WriteString("Do NOT default to Go, Python, React, Svelte or any stack that happens to be in the PM agent's environment.\n\n")
 	b.WriteString("OUTPUT FORMAT — use EXACTLY these sections :\n")
 	b.WriteString("```\n")
 	b.WriteString("# Product Brief — <name>\n\n")
