@@ -336,7 +336,8 @@ func (s *Server) runIterationAsync(projectID, idea, seedDoc string) {
 		"`json-hive` à la fin contenant TOUS les epics et stories (anciens + nouveaux) " +
 		"dans ce schéma : [{\"title\":\"\",\"description\":\"\",\"stories\":" +
 		"[{\"title\":\"\",\"description\":\"\",\"acceptance_criteria\":[]}]}]"
-	res, err := runner.Invoke(ctx, workdir, ingestGoal, nil)
+	res, err := s.trackedInvoke(ctx, runner, projectID, "iteration",
+		"hive-ingest-iteration", workdir, ingestGoal)
 	if err != nil {
 		fail("ingest-json", err)
 		return
@@ -732,7 +733,8 @@ func (s *Server) runArchitectAsyncInternal(projectID, idea, seedDoc string, from
 		"\"acceptance_criteria\":[\"AC\"]}]}]\n" +
 		"```\nLe `key` de chaque story DOIT correspondre exactement à celui utilisé par BMAD " +
 		"dans sprint-status.yaml. Aucune prose après le bloc."
-	res, err := runner.Invoke(ctx, workdir, ingestGoal, nil)
+	res, err := s.trackedInvoke(ctx, runner, projectID, phaseLabel,
+		"hive-ingest-epics", workdir, ingestGoal)
 	if err != nil {
 		fail("ingest-json", err)
 		return
@@ -882,6 +884,72 @@ func readFirst(workdir string, rels ...string) (string, error) {
 //
 // Les insertions échouées ne plantent pas le pipeline — au pire le
 // dashboard n'a pas l'entrée, mais BMAD continue d'avancer.
+// trackedInvoke wraps runner.Invoke with the same phase tracking that
+// stepObserver does for RunSequence skills. Used for one-shot calls
+// (ingest-json, retrospective, etc.) that wouldn't otherwise show up
+// in the UI's phase panel — leaving the operator staring at "100%
+// avancement" while Claude is still clearly working.
+func (s *Server) trackedInvoke(
+	ctx context.Context,
+	runner *bmad.Runner,
+	projectID, phase, label, workdir, goal string,
+) (bmad.Result, error) {
+	start := time.Now()
+	res, err := s.db().ExecContext(ctx,
+		`INSERT INTO bmad_phase_steps (project_id, phase, command, status)
+		 VALUES (?, ?, ?, 'running')`,
+		projectID, phase, label)
+	var stepID int64
+	if err == nil {
+		stepID, _ = res.LastInsertId()
+	}
+	if s.eventBus != nil {
+		_, _ = s.eventBus.Publish(ctx, "project.bmad_step_started", "api", map[string]any{
+			"project_id": projectID,
+			"phase":      phase,
+			"step_id":    stepID,
+			"command":    label,
+		})
+	}
+	out, invErr := runner.Invoke(ctx, workdir, goal, nil)
+	status := "done"
+	errText := ""
+	if invErr != nil {
+		status = "failed"
+		errText = invErr.Error()
+	}
+	preview := out.Text
+	if len(preview) > 600 {
+		preview = preview[:600] + "…"
+	}
+	_, _ = s.db().ExecContext(ctx,
+		`UPDATE bmad_phase_steps
+		 SET finished_at = datetime('now'), status = ?,
+		     input_tokens = ?, output_tokens = ?, cost_usd = ?,
+		     reply_preview = ?, error_text = ?
+		 WHERE id = ?`,
+		status, out.InputTokens, out.OutputTokens, out.CostUSD, preview, errText, stepID)
+	if out.CostUSD > 0 {
+		_, _ = s.db().ExecContext(ctx,
+			`UPDATE projects SET total_cost_usd = total_cost_usd + ?,
+			 updated_at = datetime('now') WHERE id = ?`,
+			out.CostUSD, projectID)
+	}
+	if s.eventBus != nil {
+		_, _ = s.eventBus.Publish(ctx, "project.bmad_step_finished", "api", map[string]any{
+			"project_id": projectID,
+			"phase":      phase,
+			"step_id":    stepID,
+			"command":    label,
+			"status":     status,
+			"cost_usd":   out.CostUSD,
+			"error":      errText,
+		})
+	}
+	_ = start
+	return out, invErr
+}
+
 func (s *Server) stepObserver(ctx context.Context, projectID, phase string) bmad.StepObserver {
 	// stepStart[command] → time.Time pour mesurer la durée exacte par
 	// skill. On stocke sous lock léger car OnStart + OnFinish tournent
