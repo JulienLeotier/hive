@@ -1112,6 +1112,76 @@ func (s *Server) handlePhaseStep(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, out)
 }
 
+// handleRerunPhaseStep relance un skill BMAD déjà exécuté. Crée une
+// NOUVELLE row bmad_phase_steps (pas d'overwrite du vieux step) pour
+// que l'historique reste lisible. Délègue au même trackedInvoke que
+// /api/v1/bmad/run, donc streaming stream-json + WS broadcast + DB
+// tracking sont gratuits.
+//
+// Ne valide PAS le skill contre le registre UI : l'opérateur peut
+// vouloir relancer des skills d'activation (/bmad-agent-pm, etc.) qui
+// ne sont pas exposées dans le menu. On ne laisse passer que les
+// commandes /bmad-* pour bloquer une injection arbitraire.
+func (s *Server) handleRerunPhaseStep(w http.ResponseWriter, r *http.Request) {
+	if s.projectStore == nil {
+		writeError(w, http.StatusServiceUnavailable, "NO_PROJECT_STORE", "")
+		return
+	}
+	id := r.PathValue("id")
+	if id == "" {
+		writeError(w, http.StatusBadRequest, "BAD_REQUEST", "step id required")
+		return
+	}
+	var projectID, phase, command string
+	err := s.db().QueryRowContext(r.Context(),
+		`SELECT project_id, phase, command FROM bmad_phase_steps WHERE id = ?`,
+		id).Scan(&projectID, &phase, &command)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "NOT_FOUND", err.Error())
+		return
+	}
+	if !strings.HasPrefix(command, "/bmad-") {
+		writeError(w, http.StatusBadRequest, "BAD_COMMAND",
+			"seuls les skills /bmad-* peuvent être relancés")
+		return
+	}
+	proj, err := s.projectStore.GetByID(r.Context(), projectID)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "NOT_FOUND", err.Error())
+		return
+	}
+	if proj.Workdir == "" {
+		writeError(w, http.StatusConflict, "NO_WORKDIR",
+			"ce projet n'a pas de workdir configuré")
+		return
+	}
+
+	go func() { //nolint:gosec // G118: request ctx dies with the handler
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		s.registerRun(projectID, cancel)
+		defer s.clearRun(projectID)
+
+		runner := bmad.NewRunner()
+		if runner == nil {
+			slog.Warn("rerun: runner indisponible", "skill", command)
+			return
+		}
+		if _, err := s.trackedInvoke(ctx, runner, projectID, phase,
+			command+" (rerun)", proj.Workdir, command); err != nil {
+			slog.Warn("rerun failed",
+				"skill", command, "project", projectID, "error", err)
+		}
+	}()
+
+	writeJSON(w, map[string]any{
+		"project_id": projectID,
+		"skill":      command,
+		"phase":      phase,
+		"status":     "rerun-started",
+	})
+}
+
 // handleProjectPhases liste les 50 dernières invocations de skill
 // BMAD pour un projet : commande, statut (running/done/failed),
 // durée, tokens, coût. Le dashboard s'en sert pour afficher un feed

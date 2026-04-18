@@ -144,6 +144,25 @@
 		}
 	}
 
+	// rerunning[step_id] = true pendant l'appel POST /rerun pour éviter
+	// un double-clic. Reset quand le backend a accusé réception (le skill
+	// lui-même tourne en background et apparaît dans /phases).
+	let rerunning = $state<Record<number, boolean>>({});
+
+	async function rerunStep(stepID: number, command: string) {
+		if (!confirm(`Relancer ${command} ? Une nouvelle invocation sera créée dans l'historique.`)) return;
+		rerunning = { ...rerunning, [stepID]: true };
+		actionError = '';
+		try {
+			await apiPost(`/api/v1/phases/${stepID}/rerun`, {});
+			await loadPhases();
+		} catch (e) {
+			actionError = e instanceof Error ? e.message : String(e);
+		} finally {
+			rerunning = { ...rerunning, [stepID]: false };
+		}
+	}
+
 	async function cancelRun() {
 		const id = $page.params.id ?? '';
 		// Message contextuel : pour une itération brownfield ou un
@@ -811,6 +830,17 @@
 								</div>
 								<span class="phase-chev">›</span>
 							</button>
+							{#if s.status !== 'running'}
+								<button
+									type="button"
+									class="phase-rerun"
+									onclick={() => rerunStep(s.id, s.command)}
+									disabled={rerunning[s.id]}
+									title="Relancer ce skill BMAD ({s.command}) — crée une nouvelle invocation"
+								>
+									{rerunning[s.id] ? '⏳' : '↻'}
+								</button>
+							{/if}
 						</li>
 					{/each}
 				</ol>
@@ -1648,22 +1678,47 @@
 		overflow-y: auto;
 	}
 	.phase-item {
+		display: flex;
+		align-items: stretch;
 		background: var(--bg);
 		border: 1px solid var(--border);
 		border-radius: 6px;
 		font-size: 0.82rem;
 		transition: border-color 0.1s;
 	}
+	.phase-rerun {
+		flex-shrink: 0;
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		width: 36px;
+		border: none;
+		border-left: 1px solid var(--border);
+		background: transparent;
+		color: var(--text-muted);
+		cursor: pointer;
+		font-size: 0.9rem;
+		transition: background 0.1s, color 0.1s;
+	}
+	.phase-rerun:hover:not(:disabled) {
+		background: color-mix(in srgb, var(--accent) 12%, transparent);
+		color: var(--accent);
+	}
+	.phase-rerun:disabled {
+		opacity: 0.4;
+		cursor: not-allowed;
+	}
 	.phase-row {
 		display: flex;
 		align-items: center;
 		gap: 0.8rem;
 		padding: 0.7rem 1rem;
-		width: 100%;
+		flex: 1;
+		min-width: 0;
 		min-height: 52px;
 		background: transparent;
 		border: none;
-		border-radius: 6px;
+		border-radius: 6px 0 0 6px;
 		text-align: left;
 		cursor: pointer;
 		color: inherit;

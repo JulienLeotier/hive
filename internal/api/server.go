@@ -206,6 +206,7 @@ func (s *Server) routes() {
 	s.mux.Handle("GET /api/v1/bmad/skills", http.HandlerFunc(s.handleBmadSkills))
 	s.mux.Handle("POST /api/v1/bmad/run", http.HandlerFunc(s.handleBmadRun))
 	s.mux.Handle("GET /api/v1/phases/{id}", http.HandlerFunc(s.handlePhaseStep))
+	s.mux.Handle("POST /api/v1/phases/{id}/rerun", http.HandlerFunc(s.handleRerunPhaseStep))
 }
 
 // Handler returns the HTTP handler. Local-mode hive: the middleware
