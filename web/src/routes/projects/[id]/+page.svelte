@@ -782,7 +782,7 @@
 						onclick={resumeBuild}
 						disabled={retryingBuild}
 						title="Saute les steps déjà réussis, reprend au premier non-terminé">
-						{retryingBuild ? 'Reprise…' : '↻ Reprendre au step suivant'}
+						{retryingBuild ? 'Reprise…' : 'Reprendre au step suivant'}
 					</button>
 					<button
 						type="button"
@@ -790,7 +790,7 @@
 						onclick={retryBuild}
 						disabled={retryingBuild}
 						title="Relance la séquence depuis le début (coûteux)">
-						{retryingBuild ? 'Relance…' : '↻ Relancer BMAD'}
+						{retryingBuild ? 'Relance…' : 'Relancer depuis zéro'}
 					</button>
 				</div>
 			</div>
@@ -1593,24 +1593,31 @@
 		overflow-y: auto;
 	}
 	.retry-btn {
-		padding: 0.45rem 0.85rem;
+		display: inline-flex;
+		align-items: center;
+		gap: 0.35rem;
+		padding: 0.4rem 0.8rem;
 		background: var(--accent);
 		color: white;
 		border: 1px solid var(--accent);
-		border-radius: 4px;
+		border-radius: 6px;
 		cursor: pointer;
 		font-weight: 600;
-		font-size: 0.82rem;
+		font-size: 0.8rem;
+		font-family: inherit;
+		line-height: 1.25;
 		white-space: nowrap;
-		transition: opacity 0.1s, background 0.1s;
+		transition: opacity 0.1s, background 0.1s, border-color 0.1s;
 	}
-	.retry-btn:hover:not(:disabled) { opacity: 0.9; }
+	.retry-btn:hover:not(:disabled) { opacity: 0.92; }
 	.retry-btn.ghost {
-		background: transparent;
-		color: var(--accent);
+		background: var(--bg-panel);
+		color: var(--text);
+		border-color: var(--border);
 	}
 	.retry-btn.ghost:hover:not(:disabled) {
-		background: color-mix(in srgb, var(--accent) 10%, transparent);
+		border-color: var(--accent);
+		color: var(--accent);
 		opacity: 1;
 	}
 	.retry-btn:disabled { opacity: 0.5; cursor: not-allowed; }
