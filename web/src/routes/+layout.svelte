@@ -369,7 +369,7 @@
 	.sidebar {
 		background: var(--bg-panel);
 		border-right: 1px solid var(--border);
-		padding: 1.25rem 0.85rem calc(1rem + var(--safe-bottom));
+		padding: 1.25rem 0.85rem calc(1.25rem + var(--safe-bottom));
 		display: flex;
 		flex-direction: column;
 		gap: 1.25rem;
@@ -378,12 +378,19 @@
 		   pour matcher la hauteur du main. overflow:hidden empêche le
 		   sidebar dans son ensemble de scroller — seule la nav au milieu
 		   le fait si le nombre d'items dépasse (min-height:0 débloque
-		   le scroll interne d'un flex child). */
+		   le scroll interne d'un flex child).
+		   100dvh (dynamic viewport) au lieu de 100vh : sur mobile ça
+		   tient compte de la barre du navigateur qui peut apparaître/
+		   disparaître ; sur desktop c'est équivalent. box-sizing hérité
+		   de *, donc le padding est DANS les 100dvh — le footer ne
+		   dépasse pas en bas. */
 		position: sticky;
 		top: 0;
 		align-self: start;
-		height: 100vh;
+		height: 100dvh;
+		max-height: 100dvh;
 		overflow: hidden;
+		box-sizing: border-box;
 	}
 	.brand {
 		display: flex;
