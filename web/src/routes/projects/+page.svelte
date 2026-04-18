@@ -4,6 +4,7 @@
 	import { createReconnectingWS, wsURL } from '$lib/ws';
 	import FolderPicker from '$lib/FolderPicker.svelte';
 	import ListScaffold from '$lib/ListScaffold.svelte';
+	import { confirmDialog } from '$lib/confirm';
 
 	type Project = {
 		id: string;
@@ -258,12 +259,22 @@
 	}
 
 	async function removeProject(id: string, label: string) {
-		if (!confirm(`Supprimer le projet « ${label} » ? Ses epics, stories et historique de revue seront aussi effacés.`))
-			return;
-		const purgeWorkdir = confirm(
-			`Veux-tu AUSSI effacer le répertoire de travail sur disque ? ` +
-				`(annuler = garder les fichiers, OK = rm -rf)`
-		);
+		const ok = await confirmDialog({
+			title: `Supprimer « ${label} » ?`,
+			message:
+				'Ses epics, stories et historique de revue seront aussi effacés en base.',
+			confirmLabel: 'Supprimer',
+			danger: true
+		});
+		if (!ok) return;
+		const purgeWorkdir = await confirmDialog({
+			title: 'Purger aussi le workdir ?',
+			message:
+				'Veux-tu AUSSI effacer le répertoire de travail sur disque (rm -rf) ?\n\nAnnuler = garder les fichiers.',
+			confirmLabel: 'Oui, rm -rf',
+			cancelLabel: 'Non, garder',
+			danger: true
+		});
 		try {
 			const qs = purgeWorkdir ? '?purge_workdir=true' : '';
 			await apiDelete(`/api/v1/projects/${encodeURIComponent(id)}${qs}`);

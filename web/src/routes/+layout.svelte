@@ -6,6 +6,7 @@
 	import { theme, toggleTheme, applyStoredTheme } from '$lib/theme';
 	import { apiError } from '$lib/api';
 	import { wsStatus } from '$lib/wsStatus';
+	import ConfirmHost from '$lib/ConfirmHost.svelte';
 
 	let { children } = $props();
 
@@ -169,6 +170,8 @@
 		{@render children()}
 	</main>
 </div>
+
+<ConfirmHost />
 
 <style>
 	:global(:root) {

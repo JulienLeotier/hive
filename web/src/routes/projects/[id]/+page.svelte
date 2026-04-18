@@ -5,6 +5,7 @@
 	import { fmtRelative } from '$lib/format';
 	import { createReconnectingWS, wsURL } from '$lib/ws';
 	import BmadSkillRunner from '$lib/BmadSkillRunner.svelte';
+	import { confirmDialog } from '$lib/confirm';
 
 	type IntakeMessage = {
 		id: number;
@@ -150,7 +151,12 @@
 	let rerunning = $state<Record<number, boolean>>({});
 
 	async function rerunStep(stepID: number, command: string) {
-		if (!confirm(`Relancer ${command} ? Une nouvelle invocation sera créée dans l'historique.`)) return;
+		const ok = await confirmDialog({
+			title: 'Relancer ce skill ?',
+			message: `${command}\n\nUne nouvelle invocation sera créée dans l'historique.`,
+			confirmLabel: 'Relancer'
+		});
+		if (!ok) return;
 		rerunning = { ...rerunning, [stepID]: true };
 		actionError = '';
 		try {
@@ -173,7 +179,14 @@
 		const msg = hasEpics
 			? "Annuler la skill BMAD en cours ? Le projet conservera son état actuel — tu pourras relancer une itération plus tard."
 			: "Annuler le build BMAD en cours ? Les skills Claude en vol seront tuées et le projet passera en failed.";
-		if (!confirm(msg)) return;
+		const ok = await confirmDialog({
+			title: 'Annuler la skill en cours ?',
+			message: msg,
+			confirmLabel: 'Annuler la skill',
+			cancelLabel: 'Continuer',
+			danger: !hasEpics
+		});
+		if (!ok) return;
 		cancelling = true;
 		actionError = '';
 		try {
@@ -190,7 +203,12 @@
 
 	async function runRetrospective() {
 		const id = $page.params.id ?? '';
-		if (!confirm('Lancer une rétrospective BMAD sur ce projet ? /bmad-agent-dev + /bmad-retrospective tourneront en tâche de fond.')) return;
+		const ok = await confirmDialog({
+			title: 'Lancer une rétrospective ?',
+			message: '/bmad-agent-dev + /bmad-retrospective tourneront en tâche de fond.',
+			confirmLabel: 'Lancer la rétro'
+		});
+		if (!ok) return;
 		runningRetro = true;
 		actionError = '';
 		try {
@@ -523,7 +541,14 @@
 	async function regeneratePlan() {
 		const id = $page.params.id ?? '';
 		if (!id) return;
-		if (!confirm("Régénérer le plan ? L'arbre epics/stories actuel sera effacé et l'Architecte le reconstruira depuis le PRD. Autorisé uniquement avant que le dev n'ait commencé.")) return;
+		const ok = await confirmDialog({
+			title: 'Régénérer le plan ?',
+			message:
+				"L'arbre epics/stories actuel sera effacé et l'Architecte le reconstruira depuis le PRD.\n\nAutorisé uniquement avant que le dev n'ait commencé.",
+			confirmLabel: 'Régénérer',
+			danger: true
+		});
+		if (!ok) return;
 		regenerating = true;
 		prdError = '';
 		try {

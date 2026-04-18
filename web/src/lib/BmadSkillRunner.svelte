@@ -11,6 +11,7 @@
 
 	import { onMount } from 'svelte';
 	import { apiGet, apiPost } from './api';
+	import { confirmDialog } from './confirm';
 
 	type Skill = {
 		command: string;
@@ -47,7 +48,13 @@
 
 	async function run(skill: Skill) {
 		if (skill.dangerous) {
-			if (!confirm(`Lancer ${skill.name} (${skill.command}) ? Cette skill est marquée dangereuse.`)) return;
+			const ok = await confirmDialog({
+				title: `Lancer ${skill.name} ?`,
+				message: `${skill.command}\n\nCette skill est marquée dangereuse.`,
+				confirmLabel: 'Lancer',
+				danger: true
+			});
+			if (!ok) return;
 		}
 		running = skill.command;
 		error = '';
