@@ -114,9 +114,20 @@
 
 	<aside class="sidebar" class:open={drawerOpen}>
 		<a href="/" class="brand">
-			<span class="logo">⬡</span>
-			<span class="brand-text">Hive</span>
-			<span class="brand-tag">BMAD factory</span>
+			<svg class="logo" viewBox="0 0 28 32" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+				<path d="M14 2 L26 9 L26 23 L14 30 L2 23 L2 9 Z"
+					fill="none"
+					stroke="currentColor"
+					stroke-width="2.4"
+					stroke-linejoin="round"/>
+				<path d="M14 10 L20 13.5 L20 20.5 L14 24 L8 20.5 L8 13.5 Z"
+					fill="currentColor"
+					opacity="0.35"/>
+			</svg>
+			<div class="brand-txt">
+				<span class="brand-name">Hive</span>
+				<span class="brand-tag">BMAD factory</span>
+			</div>
 		</a>
 		<nav>
 			{#each navGroups as group}
@@ -372,34 +383,39 @@
 		overflow-y: auto;
 	}
 	.brand {
-		display: grid;
-		grid-template-columns: auto 1fr;
+		display: flex;
 		align-items: center;
-		gap: 0.55rem;
+		gap: 0.65rem;
 		text-decoration: none;
 		color: var(--text);
-		font-weight: 700;
-		font-size: 1.25rem;
 		padding: 0.3rem 0.5rem;
 	}
-	.brand-text {
+	.brand .logo {
+		width: 28px;
+		height: 32px;
+		color: var(--accent);
+		flex-shrink: 0;
+		filter: drop-shadow(0 0 10px color-mix(in srgb, var(--accent) 45%, transparent));
+	}
+	.brand-txt {
+		display: flex;
+		flex-direction: column;
+		gap: 0.15rem;
+		min-width: 0;
+	}
+	.brand-name {
+		font-weight: 700;
+		font-size: 1.25rem;
 		line-height: 1;
+		letter-spacing: -0.01em;
 	}
 	.brand-tag {
-		grid-column: 2;
 		font-size: 0.62rem;
 		color: var(--text-muted);
-		font-weight: 500;
+		font-weight: 600;
 		text-transform: uppercase;
-		letter-spacing: 0.1em;
+		letter-spacing: 0.12em;
 		line-height: 1;
-		margin-top: 0.25rem;
-	}
-	.logo {
-		grid-row: 1 / span 2;
-		color: var(--accent);
-		font-size: 1.75rem;
-		filter: drop-shadow(0 0 8px color-mix(in srgb, var(--accent) 40%, transparent));
 	}
 	nav {
 		display: flex;

@@ -634,7 +634,7 @@
 						<h2>Pipeline BMAD</h2>
 						{#if running}
 							<span class="running-pill">
-								<span class="spinner"></span>
+								<span class="live-dot"></span>
 								en cours
 							</span>
 						{/if}
@@ -649,18 +649,16 @@
 				<div class="phases-summary">
 					<div class="sum-item">
 						<span class="sum-num">{done}<span class="sum-total">/{total}</span></span>
-						<span class="sum-label">étapes</span>
+						<span class="sum-label">étapes terminées</span>
 					</div>
 					<div class="sum-item">
 						<span class="sum-num mono">${totalCost.toFixed(2)}</span>
-						<span class="sum-label">Claude</span>
+						<span class="sum-label">Claude cumulé</span>
 					</div>
-					{#if running}
-						<div class="sum-item flex-fill">
-							<span class="sum-num mono small">{running.command}</span>
-							<span class="sum-label">running · {running.phase}</span>
-						</div>
-					{/if}
+					<div class="sum-item flex-fill">
+						<span class="sum-num">{Math.round((done / Math.max(total, 1)) * 100)}<span class="sum-total">%</span></span>
+						<span class="sum-label">avancement</span>
+					</div>
 				</div>
 
 				{#if total > 0}
@@ -674,7 +672,7 @@
 						<li class="phase-item {s.status}">
 							<span class="phase-status">
 								{#if s.status === 'running'}
-									<span class="spinner"></span>
+									<span class="live-dot big"></span>
 								{:else if s.status === 'done'}
 									✓
 								{:else if s.status === 'failed'}
@@ -1261,16 +1259,42 @@
 	.running-pill {
 		display: inline-flex;
 		align-items: center;
-		gap: 0.4rem;
-		padding: 0.25rem 0.7rem;
-		background: color-mix(in srgb, var(--accent) 14%, transparent);
-		border: 1px solid color-mix(in srgb, var(--accent) 40%, transparent);
+		gap: 0.45rem;
+		padding: 0.25rem 0.75rem 0.25rem 0.65rem;
+		background: color-mix(in srgb, var(--warn) 14%, transparent);
+		border: 1px solid color-mix(in srgb, var(--warn) 40%, transparent);
 		border-radius: 999px;
-		font-size: 0.72rem;
-		color: var(--accent);
-		font-weight: 600;
+		font-size: 0.7rem;
+		color: var(--warn);
+		font-weight: 700;
 		text-transform: uppercase;
-		letter-spacing: 0.04em;
+		letter-spacing: 0.06em;
+	}
+
+	/* Dot pulsant : utilisé dans running-pill + phase-status.running.
+	   Ring extérieur qui grandit et fade pour donner l'effet "live". */
+	.live-dot {
+		display: inline-block;
+		width: 8px;
+		height: 8px;
+		border-radius: 50%;
+		background: currentColor;
+		position: relative;
+		flex-shrink: 0;
+	}
+	.live-dot.big { width: 10px; height: 10px; }
+	.live-dot::after {
+		content: '';
+		position: absolute;
+		inset: -4px;
+		border-radius: 50%;
+		border: 2px solid currentColor;
+		opacity: 0.6;
+		animation: live-ring 1.6s ease-out infinite;
+	}
+	@keyframes live-ring {
+		0% { transform: scale(0.6); opacity: 0.7; }
+		100% { transform: scale(1.6); opacity: 0; }
 	}
 	.btn.danger {
 		border-color: color-mix(in srgb, var(--err) 40%, var(--border));
