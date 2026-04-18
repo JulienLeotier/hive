@@ -509,24 +509,32 @@ func flattenConversation(conv *intake.Conversation) string {
 	return strings.TrimSpace(b.String())
 }
 
-// RecoverStuckPlanning re-kicks the BMAD pipeline for every project
-// left in limbo : status=planning (crashed mid-pipeline) ou failed
-// (dernier run abort). Idempotent — BMAD et le store sont safe
-// contre la ré-exécution. Safe à appeler plusieurs fois depuis
-// serve.go au démarrage.
+// RecoverStuckPlanning re-kicks the BMAD pipeline pour les projets
+// qui étaient légitimement mid-pipeline quand le serveur a crashé :
+// status=planning SANS epics et SANS run déjà enregistré.
+//
+// Règles strictes pour éviter les doubles runs :
+//   - status=planning seulement (PAS failed — un projet failed a été
+//     arrêté pour une raison, soit cost cap soit user cancel, ne pas
+//     relancer auto)
+//   - aucun run actif dans runCancels (si le serveur vient juste de
+//     hot-reload sous air, un run peut être encore registered)
+//   - epics vides (si epics>0 on est dans le devloop, pas planning)
+//
+// Bug historique : sur un hot-reload air fréquent, cette fonction
+// relançait le MÊME projet à chaque redémarrage → 3 pipelines en
+// parallèle, 3× le coût, artefacts BMAD corrompus par concurrence
+// sur le workdir.
 func (s *Server) RecoverStuckPlanning(ctx context.Context) error {
 	if s.projectStore == nil {
 		return nil
 	}
-	// On récupère aussi les projets failed : un user peut relancer
-	// explicitement via le bouton Retry, mais si on vient de crasher
-	// en plein pipeline la reprise auto est pratique.
 	rows, err := s.db().QueryContext(ctx,
 		`SELECT p.id, p.idea
 		 FROM projects p
-		 WHERE p.status IN (?, ?)
+		 WHERE p.status = ?
 		   AND NOT EXISTS (SELECT 1 FROM epics e WHERE e.project_id = p.id)`,
-		project.StatusPlanning, project.StatusFailed,
+		project.StatusPlanning,
 	)
 	if err != nil {
 		return err
@@ -545,11 +553,32 @@ func (s *Server) RecoverStuckPlanning(ctx context.Context) error {
 		return err
 	}
 	for _, st := range list {
+		// Check si un run est déjà enregistré pour ce projet (cas d'un
+		// double appel à RecoverStuckPlanning dans un même process).
+		s.runMu.Lock()
+		_, alreadyRunning := s.runCancels[st.id]
+		s.runMu.Unlock()
+		if alreadyRunning {
+			slog.Info("skip recovery: run already active", "project", st.id)
+			continue
+		}
+		// Check si le projet a DEJA des phase_steps finis — signifie que
+		// BMAD a commencé. Sur un hot-reload (air, crash-restart), on
+		// ne veut PAS relancer de zéro et brûler 30$ de tokens à
+		// nouveau. L'user cliquera "Relancer" ou "Reprendre au step"
+		// manuellement via l'UI s'il le souhaite.
+		var existingSteps int
+		_ = s.db().QueryRowContext(ctx,
+			`SELECT COUNT(*) FROM bmad_phase_steps WHERE project_id = ? AND status = 'done'`,
+			st.id).Scan(&existingSteps)
+		if existingSteps > 0 {
+			slog.Info("skip recovery: project has prior phase steps, leaving for manual retry",
+				"project", st.id, "done_steps", existingSteps)
+			continue
+		}
 		slog.Info("recovering stuck project", "project", st.id)
 		var seed string
 		if s.intakeStore != nil {
-			// Reseed depuis la conversation d'intake pour que BMAD
-			// ait le brief quand il relance create-prd/edit-prd.
 			if p, _ := s.projectStore.GetByID(ctx, st.id); p != nil {
 				if conv, _ := s.intakeStore.GetOrStart(ctx, p.ID, p.Idea, s.intakeAgentFor(p)); conv != nil {
 					seed = flattenConversation(conv)
