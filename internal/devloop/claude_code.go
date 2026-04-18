@@ -239,16 +239,24 @@ func (r *ClaudeCodeReviewer) Review(ctx context.Context, proj ProjectContext, st
 	key := activeBMADKey(output.PreSprintStatus, workdir)
 	pass := false
 	reason := "verdict indéterminé"
+	// bmadDoneStatuses : statuts BMAD (wire strings de sprint-status.yaml)
+	// qui comptent comme "story validée". Distincts de Hive storyStatusDone
+	// — dédup sémantique seulement.
+	bmadDoneStatuses := map[string]bool{
+		"ready-for-done": true,
+		"done":           true,
+		"approved":       true,
+	}
 	if key != "" {
 		if st, _ := bmad.ReadSprintStatus(workdir); st != nil {
 			status := st.StoryStatus(key)
-			switch status {
-			case "ready-for-done", "done", "approved":
+			switch {
+			case bmadDoneStatuses[status]:
 				pass = true
 				reason = "BMAD code-review : " + status
-			case "ready-for-dev":
+			case status == "ready-for-dev":
 				reason = "BMAD review : renvoyée en ready-for-dev"
-			case "":
+			case status == "":
 				reason = "story " + key + " absente de sprint-status.yaml"
 			default:
 				reason = "BMAD review : " + status

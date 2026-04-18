@@ -139,7 +139,7 @@ func (a *ClaudeCodeAgent) runCLI(ctx context.Context, prompt string) ([]byte, er
 		slog.Warn("intake: scratch dir failed, using cwd", "error", err)
 		scratch = ""
 	} else {
-		defer os.RemoveAll(scratch)
+		defer func() { _ = os.RemoveAll(scratch) }()
 	}
 
 	cmd := exec.CommandContext(callCtx, a.cliPath, "--print", "--output-format", "text")

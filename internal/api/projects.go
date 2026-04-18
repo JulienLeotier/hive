@@ -254,9 +254,9 @@ func (s *Server) handleExportProject(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Disposition", `attachment; filename="`+filename+`"`)
 
 	gz := gzip.NewWriter(w)
-	defer gz.Close()
+	defer func() { _ = gz.Close() }()
 	tw := tar.NewWriter(gz)
-	defer tw.Close()
+	defer func() { _ = tw.Close() }()
 
 	// --- 1. project.json : métadonnées + arbre epics/stories/ACs déjà
 	// chargé par GetByID (p.Epics, chaque Epic a ses stories, chaque
@@ -275,9 +275,9 @@ func (s *Server) handleExportProject(w http.ResponseWriter, r *http.Request) {
 		 FROM bmad_phase_steps WHERE project_id = ?
 		 ORDER BY id ASC`, p.ID)
 	if err == nil {
-		defer rows.Close()
+		defer func() { _ = rows.Close() }()
 		for rows.Next() {
-			var st map[string]any = make(map[string]any)
+			st := make(map[string]any)
 			var (
 				id                              int64
 				phase, cmd, startedAt, finished string
@@ -301,6 +301,7 @@ func (s *Server) handleExportProject(w http.ResponseWriter, r *http.Request) {
 				phases = append(phases, st)
 			}
 		}
+		_ = rows.Err()
 	}
 	_ = writeTarJSON(tw, "phases.json", phases)
 
@@ -324,7 +325,7 @@ func (s *Server) handleExportProject(w http.ResponseWriter, r *http.Request) {
 		`SELECT id, role, status, created_at FROM project_conversations WHERE project_id = ? ORDER BY id ASC`,
 		p.ID)
 	if cerr == nil {
-		defer cRows.Close()
+		defer func() { _ = cRows.Close() }()
 		for cRows.Next() {
 			var c conv
 			if err := cRows.Scan(&c.ID, &c.Role, &c.Status, &c.CreatedAt); err != nil {
@@ -334,16 +335,20 @@ func (s *Server) handleExportProject(w http.ResponseWriter, r *http.Request) {
 				`SELECT author, content, created_at FROM project_messages WHERE conversation_id = ? ORDER BY id ASC`,
 				c.ID)
 			if mRows != nil {
-				for mRows.Next() {
-					var m msg
-					if err := mRows.Scan(&m.Author, &m.Content, &m.CreatedAt); err == nil {
-						c.Messages = append(c.Messages, m)
+				func() {
+					defer func() { _ = mRows.Close() }()
+					for mRows.Next() {
+						var m msg
+						if err := mRows.Scan(&m.Author, &m.Content, &m.CreatedAt); err == nil {
+							c.Messages = append(c.Messages, m)
+						}
 					}
-				}
-				mRows.Close()
+					_ = mRows.Err()
+				}()
 			}
 			convs = append(convs, c)
 		}
+		_ = cRows.Err()
 	}
 	_ = writeTarJSON(tw, "intake.json", convs)
 
@@ -513,7 +518,7 @@ func (s *Server) handleCostSummary(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if phaseRows != nil {
-		defer phaseRows.Close()
+		defer func() { _ = phaseRows.Close() }()
 		for phaseRows.Next() {
 			var p phaseLine
 			if err := phaseRows.Scan(&p.Phase, &p.TotalUSD, &p.StepCount,
@@ -522,6 +527,10 @@ func (s *Server) handleCostSummary(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			out.Phases = append(out.Phases, p)
+		}
+		if err := phaseRows.Err(); err != nil {
+			writeError(w, http.StatusInternalServerError, "SCAN_FAILED", err.Error())
+			return
 		}
 	}
 
@@ -540,7 +549,7 @@ func (s *Server) handleCostSummary(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if cmdRows != nil {
-		defer cmdRows.Close()
+		defer func() { _ = cmdRows.Close() }()
 		for cmdRows.Next() {
 			var c commandLine
 			if err := cmdRows.Scan(&c.Command, &c.TotalUSD, &c.StepCount); err != nil {
@@ -548,6 +557,10 @@ func (s *Server) handleCostSummary(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			out.Commands = append(out.Commands, c)
+		}
+		if err := cmdRows.Err(); err != nil {
+			writeError(w, http.StatusInternalServerError, "SCAN_FAILED", err.Error())
+			return
 		}
 	}
 
@@ -642,7 +655,7 @@ func (s *Server) handleCostSummaryCSV(w http.ResponseWriter, r *http.Request) {
 		 FROM projects p
 		 ORDER BY p.total_cost_usd DESC, p.updated_at DESC`)
 	if err == nil {
-		defer rows.Close()
+		defer func() { _ = rows.Close() }()
 		for rows.Next() {
 			var id, name, status, failure string
 			var total, cap_ float64
@@ -658,6 +671,7 @@ func (s *Server) handleCostSummaryCSV(w http.ResponseWriter, r *http.Request) {
 				failure,
 			})
 		}
+		_ = rows.Err()
 	}
 
 	// Section 2 : par phase
@@ -674,7 +688,7 @@ func (s *Server) handleCostSummaryCSV(w http.ResponseWriter, r *http.Request) {
 		 GROUP BY phase
 		 ORDER BY 2 DESC`)
 	if perr == nil {
-		defer phaseRows.Close()
+		defer func() { _ = phaseRows.Close() }()
 		for phaseRows.Next() {
 			var phase string
 			var total float64
@@ -691,6 +705,7 @@ func (s *Server) handleCostSummaryCSV(w http.ResponseWriter, r *http.Request) {
 				fmt.Sprintf("%d", out_),
 			})
 		}
+		_ = phaseRows.Err()
 	}
 
 	// Section 3 : par commande
@@ -705,7 +720,7 @@ func (s *Server) handleCostSummaryCSV(w http.ResponseWriter, r *http.Request) {
 		 GROUP BY command
 		 ORDER BY 2 DESC`)
 	if cerr == nil {
-		defer cmdRows.Close()
+		defer func() { _ = cmdRows.Close() }()
 		for cmdRows.Next() {
 			var cmd string
 			var total float64
@@ -719,6 +734,7 @@ func (s *Server) handleCostSummaryCSV(w http.ResponseWriter, r *http.Request) {
 				fmt.Sprintf("%d", count),
 			})
 		}
+		_ = cmdRows.Err()
 	}
 }
 
@@ -1300,7 +1316,7 @@ func (s *Server) handleProjectPhases(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "QUERY_FAILED", err.Error())
 		return
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	var out []step
 	for rows.Next() {
 		var s step

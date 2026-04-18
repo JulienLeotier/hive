@@ -1,7 +1,7 @@
 package api
 
 import (
-	"fmt"
+	"encoding/json"
 	"net"
 	"net/http"
 	"sync"
@@ -117,7 +117,16 @@ func rateLimitMiddleware(l *rateLimiter, next http.Handler) http.Handler {
 		if !l.allow(ip) {
 			w.Header().Set("Retry-After", "60")
 			w.WriteHeader(http.StatusTooManyRequests)
-			fmt.Fprintf(w, `{"error":{"code":"RATE_LIMITED","message":"trop de requêtes pour %s"}}`, ip)
+			// G705: l'IP vient de headers client (tainted). On n'injecte
+			// jamais la valeur brute dans le JSON — on la JSON-encode
+			// pour neutraliser tout caractère spécial.
+			payload, _ := json.Marshal(map[string]any{
+				"error": map[string]string{
+					"code":    "RATE_LIMITED",
+					"message": "trop de requêtes pour " + ip,
+				},
+			})
+			_, _ = w.Write(payload)
 			return
 		}
 		next.ServeHTTP(w, r)
