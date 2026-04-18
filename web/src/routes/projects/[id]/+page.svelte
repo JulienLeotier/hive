@@ -769,7 +769,7 @@
 							</span>
 						{/if}
 					</div>
-					{#if running || project.status === 'planning'}
+					{#if running}
 						<button type="button" class="btn danger sm" onclick={cancelRun} disabled={cancelling}>
 							{cancelling ? 'Annulation…' : '✕ Annuler'}
 						</button>
