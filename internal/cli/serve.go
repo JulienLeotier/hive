@@ -94,6 +94,19 @@ var serveCmd = &cobra.Command{
 		if os.Getenv("HIVE_DEV_AGENT") == "scripted" {
 			devAgent = devloop.NewScriptedDev()
 			reviewerAgent = devloop.NewScriptedReviewer()
+		} else {
+			// Injection DB pour que chaque /bmad-dev-story et
+			// /bmad-code-review tracke son coût en bmad_phase_steps
+			// et resyncise sprint-status.yaml → stories Hive après
+			// chaque skill. Garantit que le dashboard /costs voit les
+			// invocations devloop et que les stories qui bougent dans
+			// BMAD en parallèle sont rattrapées en DB Hive.
+			if d, ok := devAgent.(*devloop.ClaudeCodeDev); ok {
+				d.WithDB(store.DB)
+			}
+			if r, ok := reviewerAgent.(*devloop.ClaudeCodeReviewer); ok {
+				r.WithDB(store.DB)
+			}
 		}
 		loopInterval := 10 * time.Second
 		if v := os.Getenv("HIVE_DEVLOOP_INTERVAL"); v != "" {

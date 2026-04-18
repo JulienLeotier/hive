@@ -2,6 +2,7 @@ package devloop
 
 import (
 	"context"
+	"database/sql"
 	"log/slog"
 	"strings"
 	"time"
@@ -25,6 +26,7 @@ type ClaudeCodeDev struct {
 	runner   *bmad.Runner
 	fallback DevAgent
 	timeout  time.Duration
+	db       *sql.DB // branch to track skill cost + sync sprint-status ; nil = no tracking
 }
 
 func NewClaudeCodeDev() DevAgent {
@@ -38,6 +40,15 @@ func NewClaudeCodeDev() DevAgent {
 	// prendre >30min en dev-story sur du code non trivial ; ne pas
 	// couper arbitrairement.
 	return &ClaudeCodeDev{runner: r, fallback: fallback, timeout: 0}
+}
+
+// WithDB branche la DB pour que chaque invocation /bmad-dev-story
+// track son coût en bmad_phase_steps + re-sync sprint-status.yaml
+// vers les stories Hive. Sans DB, le devloop tourne comme avant
+// (invisible aux dashboards mais fonctionnellement correct).
+func (d *ClaudeCodeDev) WithDB(db *sql.DB) *ClaudeCodeDev {
+	d.db = db
+	return d
 }
 
 func (*ClaudeCodeDev) Name() string { return "bmad-dev" }
@@ -60,7 +71,8 @@ func (d *ClaudeCodeDev) Develop(ctx context.Context, proj ProjectContext, story 
 	// Reviewer puisse détecter la story que la skill a traitée.
 	pre := snapshotSprint(workdir)
 
-	history, err := d.runner.RunSequence(callCtx, workdir, bmad.StorySequence)
+	obs := makeDevloopObserver(d.db, proj.ID, workdir, "story")
+	history, err := d.runner.RunSequenceObserved(callCtx, workdir, bmad.StorySequence, obs)
 	if err != nil {
 		slog.Warn("devloop dev: séquence BMAD échouée — fallback scripted", "error", err)
 		return d.fallback.Develop(ctx, proj, story, iteration, "")
@@ -145,6 +157,7 @@ type ClaudeCodeReviewer struct {
 	runner   *bmad.Runner
 	fallback ReviewerAgent
 	timeout  time.Duration
+	db       *sql.DB
 }
 
 func NewClaudeCodeReviewer() ReviewerAgent {
@@ -156,6 +169,13 @@ func NewClaudeCodeReviewer() ReviewerAgent {
 	}
 	// timeout 0 → hérite du parent ctx. Même logique que le Dev.
 	return &ClaudeCodeReviewer{runner: r, fallback: fallback, timeout: 0}
+}
+
+// WithDB — même rôle que ClaudeCodeDev.WithDB : active le tracking
+// cost + sync sprint-status après chaque /bmad-code-review.
+func (r *ClaudeCodeReviewer) WithDB(db *sql.DB) *ClaudeCodeReviewer {
+	r.db = db
+	return r
 }
 
 func (*ClaudeCodeReviewer) Name() string { return "bmad-reviewer" }
@@ -173,7 +193,8 @@ func (r *ClaudeCodeReviewer) Review(ctx context.Context, proj ProjectContext, st
 	}
 	defer cancel()
 
-	history, err := r.runner.RunSequence(callCtx, workdir, bmad.ReviewSequence)
+	obs := makeDevloopObserver(r.db, proj.ID, workdir, "review")
+	history, err := r.runner.RunSequenceObserved(callCtx, workdir, bmad.ReviewSequence, obs)
 	if err != nil {
 		slog.Warn("devloop reviewer: séquence BMAD échouée — fallback scripted", "error", err)
 		return r.fallback.Review(ctx, proj, story, output)
@@ -223,4 +244,71 @@ func firstLine(s string) string {
 		return strings.TrimSpace(s[:i])
 	}
 	return strings.TrimSpace(s)
+}
+
+// makeDevloopObserver construit un StepObserver qui :
+//  1. Insère une ligne running dans bmad_phase_steps à chaque skill
+//  2. L'update en done/failed avec cost + tokens à la fin
+//  3. Incrémente projects.total_cost_usd pour le dashboard /costs
+//  4. Re-syncise sprint-status.yaml → stories Hive après chaque finish
+//     (corrige le déphasage quand BMAD a touché plusieurs stories en
+//     parallèle pendant la même invocation)
+//
+// Si db est nil, renvoie un observer neutre (pas de tracking). Permet
+// au fallback scripted de tourner sans polluer la DB.
+func makeDevloopObserver(db *sql.DB, projectID, workdir, phase string) bmad.StepObserver {
+	if db == nil || projectID == "" {
+		return bmad.StepObserver{}
+	}
+	// stepID capture par closure entre OnStart et OnFinish. Les skills
+	// d'une sequence tournent sequentiellement, donc une seule variable
+	// suffit.
+	var stepID int64
+	return bmad.StepObserver{
+		OnStart: func(_, _ int, cmd string) {
+			res, err := db.Exec(
+				`INSERT INTO bmad_phase_steps (project_id, phase, command, status)
+				 VALUES (?, ?, ?, 'running')`,
+				projectID, phase, cmd)
+			if err != nil {
+				slog.Warn("devloop obs: insert running failed",
+					"project", projectID, "cmd", cmd, "error", err)
+				stepID = 0
+				return
+			}
+			stepID, _ = res.LastInsertId()
+		},
+		OnFinish: func(_, _ int, cmd string, r bmad.Result, err error) {
+			status := "done"
+			errText := ""
+			if err != nil {
+				status = "failed"
+				errText = err.Error()
+			}
+			preview := r.Text
+			if len(preview) > 600 {
+				preview = preview[:600] + "…"
+			}
+			if stepID > 0 {
+				_, _ = db.Exec(
+					`UPDATE bmad_phase_steps
+					 SET finished_at = datetime('now'), status = ?,
+					     input_tokens = ?, output_tokens = ?, cost_usd = ?,
+					     reply_preview = ?, error_text = ?
+					 WHERE id = ?`,
+					status, r.InputTokens, r.OutputTokens, r.CostUSD,
+					preview, errText, stepID)
+			}
+			if r.CostUSD > 0 {
+				_, _ = db.Exec(
+					`UPDATE projects SET total_cost_usd = total_cost_usd + ?,
+					 updated_at = datetime('now') WHERE id = ?`,
+					r.CostUSD, projectID)
+			}
+			// Re-sync sprint-status.yaml → DB stories. Fait à CHAQUE
+			// fin de skill, donc si BMAD a touché 5 stories dans une
+			// seule invocation, on les rattrape toutes d'un coup.
+			syncSprintStatus(context.Background(), db, projectID, workdir)
+		},
+	}
 }
