@@ -96,6 +96,32 @@
 	let retryingBuild = $state(false);
 	let actionError = $state('');
 
+	// Console drawer : quand l'opérateur clique sur un phase step,
+	// on fetch le full reply (reply_full) via /api/v1/phases/{id} et
+	// on l'affiche dans un panneau latéral. Distinct de reply_preview
+	// (600 premiers chars) qui reste utilisé pour la liste compacte.
+	type PhaseStepFull = PhaseStep & {
+		project_id: string;
+		reply_full?: string;
+	};
+	let consoleStep = $state<PhaseStepFull | null>(null);
+	let consoleLoading = $state(false);
+
+	async function openConsole(stepID: number) {
+		consoleLoading = true;
+		try {
+			consoleStep = (await apiGet<PhaseStepFull>(`/api/v1/phases/${stepID}`)) ?? null;
+		} catch {
+			consoleStep = null;
+		} finally {
+			consoleLoading = false;
+		}
+	}
+
+	function closeConsole() {
+		consoleStep = null;
+	}
+
 	async function loadPhases() {
 		const id = $page.params.id ?? '';
 		if (!id) return;
@@ -718,26 +744,34 @@
 				<ol class="phase-list">
 					{#each phases.slice(0, 15) as s (s.id)}
 						<li class="phase-item {s.status}">
-							<span class="phase-status">
-								{#if s.status === 'running'}
-									<span class="live-dot big"></span>
-								{:else if s.status === 'done'}
-									✓
-								{:else if s.status === 'failed'}
-									✕
-								{:else}
-									·
-								{/if}
-							</span>
-							<code class="phase-cmd">{s.command}</code>
-							<span class="phase-phase">{s.phase}</span>
-							<span class="phase-meta">
-								{#if s.cost_usd > 0}<span>${s.cost_usd.toFixed(3)}</span>{/if}
-								{#if s.input_tokens > 0 || s.output_tokens > 0}
-									<span class="tokens">{Math.round((s.input_tokens + s.output_tokens) / 1000)}k tok</span>
-								{/if}
-								<span class="phase-time">{fmtRelative(s.started_at)}</span>
-							</span>
+							<button
+								type="button"
+								class="phase-row"
+								onclick={() => openConsole(s.id)}
+								title="Voir la console Claude pour ce step"
+							>
+								<span class="phase-status">
+									{#if s.status === 'running'}
+										<span class="live-dot big"></span>
+									{:else if s.status === 'done'}
+										✓
+									{:else if s.status === 'failed'}
+										✕
+									{:else}
+										·
+									{/if}
+								</span>
+								<code class="phase-cmd">{s.command}</code>
+								<span class="phase-phase">{s.phase}</span>
+								<span class="phase-meta">
+									{#if s.cost_usd > 0}<span>${s.cost_usd.toFixed(3)}</span>{/if}
+									{#if s.input_tokens > 0 || s.output_tokens > 0}
+										<span class="tokens">{Math.round((s.input_tokens + s.output_tokens) / 1000)}k tok</span>
+									{/if}
+									<span class="phase-time">{fmtRelative(s.started_at)}</span>
+								</span>
+								<span class="phase-chev">›</span>
+							</button>
 						</li>
 					{/each}
 				</ol>
@@ -1000,6 +1034,66 @@
 		<!-- /stories tab -->
 	{/if}
 </main>
+
+{#if consoleStep || consoleLoading}
+	<!-- Backdrop + drawer : cliquer en dehors ferme la console. On
+		 garde consoleStep en state tant qu'il est rempli ; loading
+		 affiche juste un spinner vide pour que la drawer ne clignote pas. -->
+	<div
+		class="console-backdrop"
+		role="presentation"
+		onclick={closeConsole}
+		onkeydown={(e) => e.key === 'Escape' && closeConsole()}
+	></div>
+	<aside class="console-drawer" aria-label="Console Claude">
+		<header class="console-head">
+			<div class="console-title">
+				<span class="console-icon">▸</span>
+				<code>{consoleStep?.command ?? '…'}</code>
+				{#if consoleStep}
+					<span class="console-phase">{consoleStep.phase}</span>
+					<span class="console-status {consoleStep.status}">{consoleStep.status}</span>
+				{/if}
+			</div>
+			<button type="button" class="console-close" onclick={closeConsole} aria-label="Fermer">×</button>
+		</header>
+		{#if consoleLoading}
+			<div class="console-body loading"><span class="spinner"></span> Chargement…</div>
+		{:else if consoleStep}
+			<div class="console-meta">
+				<span>Démarré {fmtRelative(consoleStep.started_at)}</span>
+				{#if consoleStep.finished_at}
+					<span>Fini {fmtRelative(consoleStep.finished_at)}</span>
+				{/if}
+				{#if consoleStep.cost_usd > 0}
+					<span>${consoleStep.cost_usd.toFixed(4)}</span>
+				{/if}
+				{#if consoleStep.input_tokens > 0 || consoleStep.output_tokens > 0}
+					<span>{consoleStep.input_tokens} in · {consoleStep.output_tokens} out tokens</span>
+				{/if}
+			</div>
+			{#if consoleStep.error}
+				<div class="console-error">
+					<strong>Erreur :</strong>
+					<pre>{consoleStep.error}</pre>
+				</div>
+			{/if}
+			<div class="console-body">
+				{#if consoleStep.reply_full}
+					<pre class="console-pre">{consoleStep.reply_full}</pre>
+				{:else}
+					<p class="empty">
+						{#if consoleStep.status === 'running'}
+							Skill en cours — la console s'affichera quand BMAD aura terminé cette étape.
+						{:else}
+							Aucune sortie console pour ce step.
+						{/if}
+					</p>
+				{/if}
+			</div>
+		{/if}
+	</aside>
+{/if}
 
 <style>
 	main {
@@ -1510,16 +1604,34 @@
 		overflow-y: auto;
 	}
 	.phase-item {
-		display: grid;
-		grid-template-columns: 24px 1fr auto;
-		align-items: center;
-		gap: 0.6rem;
-		padding: 0.55rem 0.75rem;
 		background: var(--bg);
 		border: 1px solid var(--border);
 		border-radius: 6px;
 		font-size: 0.82rem;
 		transition: border-color 0.1s;
+		overflow: hidden;
+	}
+	.phase-row {
+		display: grid;
+		grid-template-columns: 24px 1fr auto 16px;
+		align-items: center;
+		gap: 0.6rem;
+		padding: 0.55rem 0.75rem;
+		width: 100%;
+		background: transparent;
+		border: none;
+		text-align: left;
+		cursor: pointer;
+		color: inherit;
+		font-family: inherit;
+		font-size: inherit;
+	}
+	.phase-row:hover {
+		background: color-mix(in srgb, var(--accent) 6%, transparent);
+	}
+	.phase-chev {
+		color: var(--text-muted);
+		font-size: 1rem;
 	}
 	.phase-item.running {
 		background: color-mix(in srgb, var(--accent) 8%, var(--bg));
@@ -2075,5 +2187,150 @@
 		display: inline-block;
 		width: 1rem;
 		margin-right: 0.4rem;
+	}
+
+	/* Console drawer — panneau latéral qui affiche la sortie complète
+	   du skill Claude (reply_full). Click hors du drawer ou bouton X
+	   ferme. Backdrop translucide pour désactiver les clics sur le
+	   contenu en arrière-plan. */
+	.console-backdrop {
+		position: fixed;
+		inset: 0;
+		background: rgba(0, 0, 0, 0.35);
+		z-index: 200;
+	}
+	.console-drawer {
+		position: fixed;
+		top: 0;
+		right: 0;
+		bottom: 0;
+		width: min(720px, 95vw);
+		background: var(--bg, #fff);
+		border-left: 1px solid var(--border);
+		box-shadow: -8px 0 24px rgba(0, 0, 0, 0.12);
+		z-index: 201;
+		display: flex;
+		flex-direction: column;
+		animation: slide-in 0.18s ease-out;
+	}
+	@keyframes slide-in {
+		from { transform: translateX(100%); }
+		to { transform: translateX(0); }
+	}
+	.console-head {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		padding: 1rem 1.25rem;
+		border-bottom: 1px solid var(--border);
+		gap: 0.75rem;
+		flex-shrink: 0;
+	}
+	.console-title {
+		display: flex;
+		align-items: center;
+		gap: 0.6rem;
+		min-width: 0;
+		flex: 1;
+	}
+	.console-icon {
+		font-size: 0.8rem;
+		color: var(--text-muted);
+	}
+	.console-title code {
+		font-family: ui-monospace, monospace;
+		font-size: 0.9rem;
+		font-weight: 600;
+		color: var(--text);
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+		min-width: 0;
+	}
+	.console-phase {
+		font-size: 0.7rem;
+		text-transform: uppercase;
+		letter-spacing: 0.05em;
+		color: var(--text-muted);
+		background: color-mix(in srgb, var(--text-muted) 15%, transparent);
+		padding: 2px 6px;
+		border-radius: 4px;
+	}
+	.console-status {
+		font-size: 0.72rem;
+		padding: 2px 8px;
+		border-radius: 10px;
+		text-transform: uppercase;
+		letter-spacing: 0.05em;
+		font-weight: 600;
+	}
+	.console-status.done {
+		background: color-mix(in srgb, var(--ok) 18%, transparent);
+		color: var(--ok);
+	}
+	.console-status.failed {
+		background: color-mix(in srgb, var(--err) 18%, transparent);
+		color: var(--err);
+	}
+	.console-status.running {
+		background: color-mix(in srgb, var(--accent) 18%, transparent);
+		color: var(--accent);
+	}
+	.console-close {
+		background: transparent;
+		border: none;
+		font-size: 1.6rem;
+		cursor: pointer;
+		color: var(--text-muted);
+		line-height: 1;
+		padding: 0 0.4rem;
+	}
+	.console-close:hover {
+		color: var(--text);
+	}
+	.console-meta {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 1rem;
+		padding: 0.6rem 1.25rem;
+		background: var(--bg-soft, rgba(0,0,0,0.02));
+		font-size: 0.78rem;
+		color: var(--text-muted);
+		font-variant-numeric: tabular-nums;
+		border-bottom: 1px solid var(--border);
+		flex-shrink: 0;
+	}
+	.console-error {
+		padding: 0.75rem 1.25rem;
+		background: color-mix(in srgb, var(--err) 10%, transparent);
+		border-bottom: 1px solid color-mix(in srgb, var(--err) 30%, var(--border));
+	}
+	.console-error pre {
+		margin: 0.4rem 0 0;
+		font-size: 0.82rem;
+		color: var(--err);
+		white-space: pre-wrap;
+		word-break: break-word;
+	}
+	.console-body {
+		flex: 1;
+		overflow-y: auto;
+		padding: 1rem 1.25rem;
+		min-height: 0;
+	}
+	.console-body.loading {
+		display: flex;
+		align-items: center;
+		gap: 0.5rem;
+		color: var(--text-muted);
+	}
+	.console-pre {
+		font-family: ui-monospace, 'SF Mono', Menlo, monospace;
+		font-size: 0.82rem;
+		line-height: 1.55;
+		white-space: pre-wrap;
+		word-break: break-word;
+		color: var(--text);
+		margin: 0;
 	}
 </style>

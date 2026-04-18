@@ -379,10 +379,10 @@ func makeDevloopObserver(db *sql.DB, projectID, workdir, phase string) bmad.Step
 					`UPDATE bmad_phase_steps
 					 SET finished_at = datetime('now'), status = ?,
 					     input_tokens = ?, output_tokens = ?, cost_usd = ?,
-					     reply_preview = ?, error_text = ?
+					     reply_preview = ?, reply_full = ?, error_text = ?
 					 WHERE id = ?`,
 					status, r.InputTokens, r.OutputTokens, r.CostUSD,
-					preview, errText, stepID)
+					preview, r.Text, errText, stepID)
 			}
 			if r.CostUSD > 0 {
 				_, _ = db.Exec(

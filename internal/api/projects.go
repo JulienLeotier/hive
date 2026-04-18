@@ -1026,6 +1026,47 @@ func (s *Server) handleRetryArchitect(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// handlePhaseStep retourne UNE row bmad_phase_steps avec sa console
+// complète (reply_full). Utilisé par le drawer "Console" du dashboard
+// pour afficher ce que Claude a réellement répondu — le preview de
+// 600 caractères dans la liste ne suffit pas pour diagnostiquer
+// pourquoi une skill a dérivé ou échoué.
+func (s *Server) handlePhaseStep(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if id == "" {
+		writeError(w, http.StatusBadRequest, "BAD_REQUEST", "step id required")
+		return
+	}
+	type step struct {
+		ID           int64   `json:"id"`
+		ProjectID    string  `json:"project_id"`
+		Phase        string  `json:"phase"`
+		Command      string  `json:"command"`
+		StartedAt    string  `json:"started_at"`
+		FinishedAt   string  `json:"finished_at,omitempty"`
+		Status       string  `json:"status"`
+		InputTokens  int     `json:"input_tokens"`
+		OutputTokens int     `json:"output_tokens"`
+		CostUSD      float64 `json:"cost_usd"`
+		ReplyFull    string  `json:"reply_full,omitempty"`
+		Error        string  `json:"error,omitempty"`
+	}
+	var out step
+	err := s.db().QueryRowContext(r.Context(),
+		`SELECT id, project_id, phase, command, started_at, COALESCE(finished_at, ''),
+		        status, input_tokens, output_tokens, cost_usd,
+		        COALESCE(reply_full, COALESCE(reply_preview, '')), COALESCE(error_text, '')
+		 FROM bmad_phase_steps WHERE id = ?`, id,
+	).Scan(&out.ID, &out.ProjectID, &out.Phase, &out.Command, &out.StartedAt,
+		&out.FinishedAt, &out.Status, &out.InputTokens, &out.OutputTokens,
+		&out.CostUSD, &out.ReplyFull, &out.Error)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "NOT_FOUND", err.Error())
+		return
+	}
+	writeJSON(w, out)
+}
+
 // handleProjectPhases liste les 50 dernières invocations de skill
 // BMAD pour un projet : commande, statut (running/done/failed),
 // durée, tokens, coût. Le dashboard s'en sert pour afficher un feed

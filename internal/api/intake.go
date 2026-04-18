@@ -1004,9 +1004,10 @@ func (s *Server) trackedInvoke(
 		`UPDATE bmad_phase_steps
 		 SET finished_at = datetime('now'), status = ?,
 		     input_tokens = ?, output_tokens = ?, cost_usd = ?,
-		     reply_preview = ?, error_text = ?
+		     reply_preview = ?, reply_full = ?, error_text = ?
 		 WHERE id = ?`,
-		status, out.InputTokens, out.OutputTokens, out.CostUSD, preview, errText, stepID)
+		status, out.InputTokens, out.OutputTokens, out.CostUSD,
+		preview, out.Text, errText, stepID)
 	if out.CostUSD > 0 {
 		_, _ = s.db().ExecContext(ctx,
 			`UPDATE projects SET total_cost_usd = total_cost_usd + ?,
@@ -1091,13 +1092,14 @@ func (s *Server) stepObserver(ctx context.Context, projectID, phase string) bmad
 				`UPDATE bmad_phase_steps
 				 SET finished_at = datetime('now'),
 				     status = ?, input_tokens = ?, output_tokens = ?,
-				     cost_usd = ?, reply_preview = ?, error_text = ?
+				     cost_usd = ?, reply_preview = ?, reply_full = ?, error_text = ?
 				 WHERE id = (
 				   SELECT id FROM bmad_phase_steps
 				   WHERE project_id = ? AND phase = ? AND command = ? AND status = 'running'
 				   ORDER BY started_at DESC LIMIT 1
 				 )`,
-				status, res.InputTokens, res.OutputTokens, res.CostUSD, preview, errText,
+				status, res.InputTokens, res.OutputTokens, res.CostUSD,
+				preview, res.Text, errText,
 				projectID, phase, command,
 			); dbErr != nil {
 				slog.Warn("bmad step log finish failed", "project", projectID, "cmd", command, "error", dbErr)
