@@ -121,9 +121,14 @@
 	/* Mêmes CSS vars que le reste du dashboard (voir +layout.svelte).
 	   Dark mode supporté via data-theme="dark" → --bg-panel, --text,
 	   --border, --accent, etc. sont tous définis selon le thème. */
+	/* .runner doit se comporter comme un enfant flex direct de
+	   .hero-actions (gap 0.5rem, flex-wrap). inline-flex + align-items
+	   stretch = même hauteur de ligne que les <a class="btn ghost">
+	   voisins, sinon la baseline décale de 1-2px. */
 	.runner {
 		position: relative;
-		display: inline-block;
+		display: inline-flex;
+		align-items: stretch;
 	}
 	.trigger {
 		display: inline-flex;
@@ -131,12 +136,15 @@
 		gap: 0.4rem;
 		padding: 0.5rem 0.9rem;
 		font-size: 0.82rem;
+		line-height: 1.25; /* match le rendu naturel de .btn (<a>) */
 		font-weight: 600;
+		font-family: inherit;
 		border-radius: 6px;
 		border: 1px solid var(--border);
 		background: var(--bg-panel);
 		color: var(--text);
 		cursor: pointer;
+		box-sizing: border-box;
 		transition: border-color 0.1s, background 0.1s, color 0.1s;
 	}
 	.trigger:hover:not(:disabled) {
