@@ -86,6 +86,22 @@ func (s *Server) clearRun(projectID string) {
 	delete(s.runCancels, projectID)
 }
 
+// RegisterRun expose registerRun au package devloop pour que chaque
+// invocation dev/review d'une story s'inscrive dans le même registre
+// que les flows planning/iteration. Sans ça, le bouton "Annuler"
+// renvoyait "aucun build BMAD en cours" alors qu'un /bmad-dev-story
+// tournait — impossible d'interrompre une story qui dérape.
+func (s *Server) RegisterRun(projectID string, cancel context.CancelFunc) {
+	s.registerRun(projectID, cancel)
+}
+
+// ClearRun expose clearRun au package devloop. Appelé en defer après
+// chaque advance() pour qu'une story terminée n'empêche pas la
+// suivante de s'enregistrer.
+func (s *Server) ClearRun(projectID string) {
+	s.clearRun(projectID)
+}
+
 // cancelRun appelle le cancel-func courant si un run tourne. Retourne
 // true si un cancel a effectivement été fait.
 func (s *Server) cancelRun(projectID string) bool {

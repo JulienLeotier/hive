@@ -242,6 +242,41 @@ func TestSupervisorCapsArchitectEscalations(t *testing.T) {
 		"après le cap d'escalations + cap d'itérations, la story doit être blocked")
 }
 
+// TestSupervisorSweepsZombiePhaseSteps mimics a crash mid-skill: a row
+// in bmad_phase_steps left in status='running' whose OnFinish never
+// fired. After Start(), the row must be marked 'failed' with an
+// explicit error_text so the dashboard stops showing a phantom
+// "/bmad-create-story en cours".
+func TestSupervisorSweepsZombiePhaseSteps(t *testing.T) {
+	st, err := storage.Open(t.TempDir())
+	require.NoError(t, err)
+	defer st.Close()
+	workdir := filepath.Join(t.TempDir(), "work")
+	projectID := seedProject(t, st.DB, workdir)
+
+	// Inject a zombie row as if a previous server had died mid-skill.
+	_, err = st.DB.Exec(
+		`INSERT INTO bmad_phase_steps (project_id, phase, command, status)
+		 VALUES (?, 'story', '/bmad-create-story', 'running')`,
+		projectID)
+	require.NoError(t, err)
+
+	sup := NewSupervisor(st.DB, NewScriptedDev(), NewScriptedReviewer(), time.Second)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	sup.Start(ctx)
+	time.Sleep(100 * time.Millisecond) // let the sweep run
+
+	var status, errText string
+	require.NoError(t, st.DB.QueryRow(
+		`SELECT status, COALESCE(error_text, '') FROM bmad_phase_steps
+		 WHERE project_id = ? AND command = '/bmad-create-story'`,
+		projectID,
+	).Scan(&status, &errText))
+	assert.Equal(t, "failed", status, "zombie row must be swept to failed")
+	assert.Contains(t, errText, "restart", "error_text must explain why")
+}
+
 func TestSupervisorIgnoresNonBuildingProjects(t *testing.T) {
 	st, err := storage.Open(t.TempDir())
 	require.NoError(t, err)

@@ -85,6 +85,14 @@ var serveCmd = &cobra.Command{
 			storage.RunRetention(supervisorCtx, store.DB, r)
 		}
 
+		// apiSrv est construit AVANT le supervisor parce que le devloop
+		// s'enregistre auprès de apiSrv (RegisterRun/ClearRun) pour
+		// partager le registre de cancellation — ce qui permet au bouton
+		// "Annuler" de l'UI de tuer une story en vol.
+		apiSrv := api.NewServer(bus).
+			WithProjectStore(project.NewStore(store.DB)).
+			WithIntakeStore(intake.NewStore(store.DB))
+
 		// BMAD dev/review loop. Polls for `building` projects and
 		// advances one story per tick until every AC passes. Honours:
 		//   HIVE_DEV_AGENT=scripted        — force scripted agents
@@ -115,7 +123,8 @@ var serveCmd = &cobra.Command{
 			}
 		}
 		supervisor := devloop.NewSupervisor(store.DB, devAgent, reviewerAgent, loopInterval).
-			WithPublisher(devloop.Publisher(bus.PublishErr))
+			WithPublisher(devloop.Publisher(bus.PublishErr)).
+			WithCancelRegistry(apiSrv)
 		// Escalation architect autonome : quand un /bmad-code-review
 		// tag des findings "decision-needed", Hive invoque
 		// /bmad-agent-architect + /bmad-correct-course pour trancher
@@ -133,10 +142,6 @@ var serveCmd = &cobra.Command{
 		slog.Info("devloop supervisor armed",
 			"dev", devAgent.Name(), "reviewer", reviewerAgent.Name(),
 			"architect", architectName, "interval", loopInterval)
-
-		apiSrv := api.NewServer(bus).
-			WithProjectStore(project.NewStore(store.DB)).
-			WithIntakeStore(intake.NewStore(store.DB))
 
 		// Pick up any projects that were mid-architect when the previous
 		// server process died. Re-runs runArchitectAsync in a detached

@@ -174,6 +174,19 @@ type ArchitectAgent interface {
 // callback so this package doesn't import event and avoids cycle risk.
 type Publisher func(ctx context.Context, eventType, source string, payload any) error
 
+// CancelRegistry permet au Supervisor d'enregistrer la cancel-func
+// d'une story en cours, pour que le bouton "Annuler" de l'UI puisse
+// interrompre un /bmad-create-story / /bmad-dev-story / /bmad-code-review
+// en plein vol. Sans ça, cancelRun() retournait "aucun build en cours"
+// alors que le devloop tournait — l'opérateur ne pouvait pas tuer une
+// story qui boucle.
+//
+// Implémenté par api.Server via RegisterRun/ClearRun.
+type CancelRegistry interface {
+	RegisterRun(projectID string, cancel context.CancelFunc)
+	ClearRun(projectID string)
+}
+
 // Supervisor drives the dev→review loop. Kept simple: one goroutine,
 // polls on a tick, advances one story per project per tick. Parallelism
 // across projects is fine (independent state) but stories within a
@@ -186,6 +199,7 @@ type Supervisor struct {
 	architect ArchitectAgent // nil = pas d'escalation decision-needed
 	git       *GitCommitter
 	publish   Publisher
+	registry  CancelRegistry // nil = cancel UI inopérant sur stories devloop
 	interval  time.Duration
 }
 
@@ -228,6 +242,15 @@ func (s *Supervisor) WithArchitect(a ArchitectAgent) *Supervisor {
 	return s
 }
 
+// WithCancelRegistry branche le registre de cancel partagé avec
+// api.Server, pour que chaque advance() d'une story expose sa
+// cancel-func au bouton "Annuler" de l'UI. Sans ça, le devloop tourne
+// des skills BMAD indestructibles tant que le serveur ne redémarre pas.
+func (s *Supervisor) WithCancelRegistry(r CancelRegistry) *Supervisor {
+	s.registry = r
+	return s
+}
+
 // emit publishes an event if a bus is wired. Silently drops errors —
 // event delivery is nice-to-have, not essential.
 func (s *Supervisor) emit(ctx context.Context, eventType string, payload any) {
@@ -258,6 +281,23 @@ func (s *Supervisor) Start(ctx context.Context) {
 		projectStatusBuilding,
 	); err != nil {
 		slog.Warn("devloop: crash-recovery sweep failed", "error", err)
+	}
+	// Sweep les bmad_phase_steps zombies : toute row en status='running'
+	// vient d'un process tué par le restart précédent (air hot-reload,
+	// crash, SIGKILL). L'OnFinish qui aurait dû les marquer 'done' ou
+	// 'failed' n'a pas pu tourner parce que son ctx était déjà cancelled.
+	// On les passe à 'failed' avec un error_text explicite pour que le
+	// dashboard n'affiche plus "/bmad-create-story en cours" éternellement.
+	if res, err := s.db.ExecContext(ctx,
+		`UPDATE bmad_phase_steps
+		 SET status = 'failed',
+		     finished_at = datetime('now'),
+		     error_text = COALESCE(NULLIF(error_text, ''), 'interrompu par un restart serveur')
+		 WHERE status = 'running'`,
+	); err != nil {
+		slog.Warn("devloop: phase_steps zombie sweep failed", "error", err)
+	} else if n, _ := res.RowsAffected(); n > 0 {
+		slog.Info("devloop: swept zombie phase_steps", "count", n)
 	}
 	go func() {
 		t := time.NewTicker(s.interval)
@@ -316,7 +356,19 @@ func (s *Supervisor) tick(ctx context.Context) {
 // advance picks the next pending story for the project, runs one
 // dev→review iteration, and updates persistence. If there's no pending
 // story left, the project graduates to `shipped`.
-func (s *Supervisor) advance(ctx context.Context, proj ProjectContext) error {
+//
+// Enregistre sa cancel-func dans le CancelRegistry partagé avec
+// api.Server AVANT de démarrer la story, pour que le bouton "Annuler"
+// puisse tuer la skill BMAD en vol. La registration est locale à cet
+// appel — si advance retourne (story done, blocked, erreur), on clear
+// aussitôt pour libérer la slot.
+func (s *Supervisor) advance(parent context.Context, proj ProjectContext) error {
+	ctx, cancel := context.WithCancel(parent)
+	defer cancel()
+	if s.registry != nil {
+		s.registry.RegisterRun(proj.ID, cancel)
+		defer s.registry.ClearRun(proj.ID)
+	}
 	story, err := s.nextStory(ctx, proj.ID)
 	if err != nil {
 		return err

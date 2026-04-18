@@ -934,7 +934,25 @@ func (s *Server) handleCancelRun(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "BAD_REQUEST", "project id required")
 		return
 	}
-	if !s.cancelRun(id) {
+	// On ne bail pas sur "aucun build en cours" : même sans run actif
+	// enregistré, des rows bmad_phase_steps peuvent être coincées en
+	// `running` (process tué par un crash/restart précédent dont l'
+	// OnFinish n'a jamais pu tourner). Le sweep ci-dessous les passe à
+	// `failed` pour que l'UI n'affiche plus "/bmad-create-story en cours"
+	// éternellement. Si cancelRun a effectivement tué un ctx, tant mieux.
+	cancelled := s.cancelRun(id)
+	if res, err := s.db().ExecContext(r.Context(),
+		`UPDATE bmad_phase_steps
+		 SET status = 'failed',
+		     finished_at = datetime('now'),
+		     error_text = COALESCE(NULLIF(error_text, ''), 'annulé par l''opérateur')
+		 WHERE project_id = ? AND status = 'running'`, id); err == nil {
+		if n, _ := res.RowsAffected(); n > 0 {
+			slog.Info("cancel: swept running phase_steps", "project", id, "count", n)
+		}
+	}
+	if !cancelled {
+		// Aucun run enregistré ET aucun zombie — rien à annuler.
 		writeError(w, http.StatusConflict, "NO_RUN",
 			"aucun build BMAD en cours pour ce projet")
 		return
