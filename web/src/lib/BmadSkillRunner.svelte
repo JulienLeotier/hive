@@ -78,7 +78,8 @@
 		disabled={skills.length === 0 || running !== null}
 		title="Lancer un skill BMAD sur ce {scope}"
 	>
-		{running ? '⏳' : '⚡'} Skill BMAD
+		<span class="trigger-icon">{running ? '⏳' : '⚡'}</span>
+		<span>Skill BMAD</span>
 		{#if skills.length > 0}
 			<span class="caret">▾</span>
 		{/if}
@@ -117,43 +118,56 @@
 </div>
 
 <style>
+	/* Mêmes CSS vars que le reste du dashboard (voir +layout.svelte).
+	   Dark mode supporté via data-theme="dark" → --bg-panel, --text,
+	   --border, --accent, etc. sont tous définis selon le thème. */
 	.runner {
 		position: relative;
 		display: inline-block;
 	}
 	.trigger {
-		background: var(--bg-soft, #f5f6fa);
-		border: 1px solid var(--border, #d7dae1);
+		display: inline-flex;
+		align-items: center;
+		gap: 0.4rem;
+		padding: 0.5rem 0.9rem;
+		font-size: 0.82rem;
+		font-weight: 600;
 		border-radius: 6px;
-		padding: 6px 10px;
-		font-size: 0.85rem;
+		border: 1px solid var(--border);
+		background: var(--bg-panel);
+		color: var(--text);
 		cursor: pointer;
-		color: var(--text, #1a1f2c);
-		font-weight: 500;
+		transition: border-color 0.1s, background 0.1s, color 0.1s;
 	}
 	.trigger:hover:not(:disabled) {
-		border-color: var(--accent, #4a64ff);
+		border-color: var(--accent);
+		color: var(--accent);
 	}
 	.trigger:disabled {
 		opacity: 0.5;
 		cursor: not-allowed;
 	}
+	.trigger-icon {
+		font-size: 0.9rem;
+		line-height: 1;
+	}
 	.caret {
 		font-size: 0.7rem;
-		margin-left: 4px;
+		opacity: 0.6;
+		margin-left: 2px;
 	}
+
 	.menu {
 		position: absolute;
 		right: 0;
-		top: 100%;
-		margin-top: 4px;
-		min-width: 280px;
-		max-height: 400px;
+		top: calc(100% + 4px);
+		min-width: 320px;
+		max-height: 420px;
 		overflow-y: auto;
-		background: var(--bg, #fff);
-		border: 1px solid var(--border, #d7dae1);
+		background: var(--bg-panel);
+		border: 1px solid var(--border);
 		border-radius: 8px;
-		box-shadow: 0 8px 24px rgba(0, 0, 0, 0.12);
+		box-shadow: 0 10px 28px rgba(0, 0, 0, 0.18);
 		z-index: 100;
 		padding: 4px;
 	}
@@ -163,13 +177,15 @@
 		text-align: left;
 		background: transparent;
 		border: none;
-		padding: 8px 10px;
+		padding: 0.6rem 0.75rem;
 		border-radius: 6px;
 		cursor: pointer;
-		font-size: 0.85rem;
+		color: var(--text);
+		font-family: inherit;
+		transition: background 0.1s;
 	}
 	.item:hover:not(:disabled) {
-		background: var(--bg-soft, #f5f6fa);
+		background: var(--bg-hover);
 	}
 	.item:disabled {
 		opacity: 0.5;
@@ -177,54 +193,63 @@
 	}
 	.item .name {
 		font-weight: 600;
-		color: var(--text, #1a1f2c);
+		font-size: 0.85rem;
+		color: var(--text);
+		display: flex;
+		align-items: center;
+		gap: 0.35rem;
 	}
 	.item .desc {
-		font-size: 0.8rem;
-		color: var(--muted, #6b7280);
+		font-size: 0.78rem;
+		color: var(--text-muted);
 		margin-top: 2px;
 	}
 	.item .cmd {
 		margin-top: 4px;
 	}
 	.item .cmd code {
-		font-size: 0.75rem;
-		color: var(--muted, #6b7280);
+		font-size: 0.72rem;
+		color: var(--text-muted);
+		font-family: ui-monospace, 'SF Mono', Menlo, monospace;
+		background: transparent;
+		padding: 0;
 	}
-	.item.dangerous .name {
-		color: var(--danger, #c23616);
-	}
-	.flag {
-		margin-left: 4px;
-	}
+	.item.dangerous .name { color: var(--err, #dc2626); }
+	.flag { font-size: 0.75rem; }
+
 	.toast {
 		position: absolute;
 		right: 0;
 		top: calc(100% + 4px);
-		padding: 8px 12px;
+		padding: 0.55rem 0.8rem;
 		border-radius: 6px;
-		font-size: 0.85rem;
+		font-size: 0.82rem;
 		z-index: 101;
-		min-width: 240px;
+		min-width: 260px;
+		border: 1px solid var(--border);
+		background: var(--bg-panel);
+		box-shadow: 0 6px 20px rgba(0, 0, 0, 0.15);
 	}
 	.toast.success {
-		background: #e7f5ec;
-		color: #1e6b3b;
-		border: 1px solid #b7e0c1;
+		background: color-mix(in srgb, var(--ok, #16a34a) 14%, var(--bg-panel));
+		border-color: color-mix(in srgb, var(--ok, #16a34a) 40%, var(--border));
+		color: var(--ok, #16a34a);
 	}
 	.toast.error {
-		background: #fdecea;
-		color: #a13023;
-		border: 1px solid #f0bfb9;
+		background: color-mix(in srgb, var(--err, #dc2626) 14%, var(--bg-panel));
+		border-color: color-mix(in srgb, var(--err, #dc2626) 40%, var(--border));
+		color: var(--err, #dc2626);
 		display: flex;
 		justify-content: space-between;
-		gap: 8px;
+		align-items: center;
+		gap: 0.5rem;
 	}
 	.toast button {
 		background: none;
 		border: none;
-		font-size: 1.1rem;
+		font-size: 1.05rem;
 		cursor: pointer;
 		color: inherit;
+		padding: 0 0.2rem;
 	}
 </style>
