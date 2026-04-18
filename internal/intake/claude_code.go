@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"syscall"
 	"time"
 )
 
@@ -142,6 +143,17 @@ func (a *ClaudeCodeAgent) runCLI(ctx context.Context, prompt string) ([]byte, er
 	}
 
 	cmd := exec.CommandContext(callCtx, a.cliPath, "--print", "--output-format", "text")
+	// Process group → ctx cancel tue aussi les children claude spawn
+	// (tool_use : node, python, etc.). Sinon les orphelins continuent
+	// après un SIGTERM du serveur. Même pattern que bmad.configureProcessGroup.
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	cmd.Cancel = func() error {
+		if cmd.Process == nil {
+			return nil
+		}
+		_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+		return nil
+	}
 	if scratch != "" {
 		cmd.Dir = scratch
 	}

@@ -208,6 +208,16 @@ var serveCmd = &cobra.Command{
 		<-done
 		slog.Info("shutting down...")
 
+		// Kill all in-flight claude CLI processes AVANT de fermer le
+		// serveur HTTP. apiSrv.Shutdown() annule runCancels + stepCancels
+		// → tous les ctx spawn de goroutines détachées se referment →
+		// cmd.Cancel fire → SIGKILL sur chaque process group → claude +
+		// ses sous-process (node, python, bash lancés par tool_use)
+		// meurent proprement. Sans ça, les orphelins continuaient en
+		// background après un air hot-reload ou un Ctrl+C.
+		apiSrv.Shutdown()
+		supervisorCancel()
+
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		return httpSrv.Shutdown(ctx)

@@ -133,6 +133,34 @@ func (s *Server) ClearStepCancel(stepID int64) {
 	delete(s.stepCancels, stepID)
 }
 
+// Shutdown tire sur tout ce qui reste en vol quand le serveur
+// s'arrête : runCancels (pipelines BMAD) + stepCancels (skills
+// individuels) sont tous appelés. Sans ce hook, les goroutines qui
+// utilisent context.WithCancel(context.Background()) (runArchitectAsync,
+// runIterationAsync, manual skill handlers, devloop agents) restaient
+// détachées, et leurs `claude --print` continuaient à tourner en
+// background après un SIGTERM / air hot-reload / crash — à consommer
+// des tokens pour rien.
+//
+// Idempotent : après l'appel les deux registres sont vides.
+func (s *Server) Shutdown() {
+	s.runMu.Lock()
+	runs := s.runCancels
+	s.runCancels = map[string]context.CancelFunc{}
+	s.runMu.Unlock()
+	for _, cancel := range runs {
+		cancel()
+	}
+
+	s.stepMu.Lock()
+	steps := s.stepCancels
+	s.stepCancels = map[int64]context.CancelFunc{}
+	s.stepMu.Unlock()
+	for _, cancel := range steps {
+		cancel()
+	}
+}
+
 // cancelStep appelle la cancel-func d'un step précis. Retourne true
 // si la func existait et a été appelée (donc un skill a été tué),
 // false si aucun run actif pour ce step_id.

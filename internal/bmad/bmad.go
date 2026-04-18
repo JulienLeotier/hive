@@ -93,6 +93,7 @@ func (r *Runner) Install(ctx context.Context, workdir string) error {
 		"--tools", "claude-code",
 		"--yes",
 	)
+	configureProcessGroup(cmd)
 	cmd.Dir = workdir
 	var combined bytes.Buffer
 	cmd.Stdout = &combined
@@ -195,6 +196,7 @@ func (r *Runner) Invoke(ctx context.Context, workdir, goal string, expectedOutpu
 	cmd := exec.CommandContext(callCtx, r.cliPath,
 		"--print", "--output-format", "json",
 		"--dangerously-skip-permissions")
+	configureProcessGroup(cmd)
 	cmd.Dir = workdir
 	cmd.Stdin = strings.NewReader(prompt)
 	var stdout, stderr bytes.Buffer

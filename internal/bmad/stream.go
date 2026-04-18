@@ -66,6 +66,7 @@ func (r *Runner) InvokeStream(
 		"--output-format", "stream-json",
 		"--verbose",
 		"--dangerously-skip-permissions")
+	configureProcessGroup(cmd)
 	cmd.Dir = workdir
 	cmd.Stdin = strings.NewReader(prompt)
 	stdout, err := cmd.StdoutPipe()
