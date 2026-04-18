@@ -14,6 +14,12 @@
 		status: string;
 		created_at: string;
 		updated_at: string;
+		total_cost_usd?: number;
+		cost_cap_usd?: number;
+		is_existing?: boolean;
+		repo_url?: string;
+		failure_stage?: string;
+		failure_error?: string;
 	};
 
 	let projects = $state<Project[]>([]);
@@ -289,70 +295,92 @@
 >
 	{#snippet controls()}
 		<div class="toolbar">
-			<button class="btn primary" onclick={() => (showForm = !showForm)}>
-				{showForm ? 'Fermer' : '+ Nouveau projet'}
+			<button class="new-btn" class:open={showForm} onclick={() => (showForm = !showForm)}>
+				<span class="new-icon">{showForm ? '✕' : '+'}</span>
+				{showForm ? 'Fermer' : 'Nouveau projet'}
 			</button>
 		</div>
 	{/snippet}
 
 	{#if showForm}
 		<form class="create-form" class:brownfield={isBrownfield} onsubmit={createProject}>
-			{#if isBrownfield}
-				<div class="brownfield-banner">
-					🏗 <strong>Mode brownfield</strong> — tu pars d'un code existant.
-					Hive lancera <code>/bmad-document-project</code> puis
-					<code>/bmad-edit-prd</code> au lieu du pipeline from-scratch.
-				</div>
-			{/if}
-			<label>
-				{isBrownfield
-					? "Qu'est-ce que tu veux ajouter ou améliorer ?"
-					: "Qu'est-ce que tu veux construire ?"}
-				<textarea
-					rows="3"
-					placeholder={isBrownfield
-						? 'Ex. ajouter l\'export PDF avec mise en page personnalisée ; ou : remplacer l\'API REST par du GraphQL.'
-						: 'Ex. une app qui aide les romanciers à écrire, éditer et recevoir du feedback IA sur leurs textes.'}
-					bind:value={idea}
-					required
-				></textarea>
-				<small>
-					{isBrownfield
-						? "Décris la feature ou l'amélioration à faire sur ce code. L'agent PM te posera des questions de suivi."
-						: "Une phrase claire. L'agent PM te posera des questions de suivi à l'étape suivante."}
-				</small>
-			</label>
-			<label>
-				Nom court
-				<input type="text" placeholder="auto-généré si vide" bind:value={name} />
-			</label>
-			<label>
-				Répertoire de travail
-				<FolderPicker bind:value={workdir}
-					placeholder="/Users/moi/projects/writers-app (optionnel)"
-					label="Choisir le répertoire de travail" />
-				<small>C'est là que le Dev commitera le code. Peut être défini plus tard.</small>
-			</label>
-			<label>
-				Dossier BMAD existant <span class="hint-pill">optionnel</span>
-				<FolderPicker bind:value={bmadOutputPath}
-					placeholder="/Users/moi/bmad-output/writers-app"
-					label="Choisir le dossier BMAD existant" />
-				<small>Si tu as déjà lancé BMAD ailleurs (PRD, epics, stories), pointe vers ce dossier et l'Architecte réutilisera les artefacts existants.</small>
-			</label>
-			{#if githubMode !== 'clone'}
-				<label>
-					Repo existant (chemin local) <span class="hint-pill">optionnel</span>
-					<FolderPicker bind:value={repoPath}
-						placeholder="/Users/moi/projects/mon-app-existante"
-						label="Choisir un repo local existant" />
-					<small>Ajoute BMAD à une base de code existante (sans la cloner depuis GitHub). Les agents Dev travaillent dans ce repo au lieu de scaffolder à partir de zéro.</small>
-				</label>
-			{/if}
+			<header class="form-head">
+				<h2 class="form-title">
+					{#if isBrownfield}
+						🏗 Nouveau projet (brownfield)
+					{:else}
+						✨ Nouveau projet
+					{/if}
+				</h2>
+				{#if isBrownfield}
+					<p class="form-sub">
+						Tu pars d'un code existant. Hive lancera <code>/bmad-document-project</code>
+						puis <code>/bmad-edit-prd</code> au lieu du pipeline from-scratch.
+					</p>
+				{:else}
+					<p class="form-sub">
+						Décris ton idée. BMAD produira le PRD, l'architecture, les stories et le code.
+					</p>
+				{/if}
+			</header>
 
-			<fieldset class="gh">
+			<fieldset class="section">
+				<legend><span class="sn">1</span> Idée</legend>
+				<label class="field">
+					<span class="label">
+						{isBrownfield
+							? "Qu'est-ce que tu veux ajouter ou améliorer ?"
+							: "Qu'est-ce que tu veux construire ?"}
+					</span>
+					<textarea
+						rows="3"
+						placeholder={isBrownfield
+							? "Ex. ajouter l'export PDF avec mise en page personnalisée."
+							: "Ex. une app qui aide les romanciers à écrire, éditer et recevoir du feedback IA."}
+						bind:value={idea}
+						required></textarea>
+					<small>
+						{isBrownfield
+							? "Décris la feature ou correction. L'agent PM te posera les questions de suivi."
+							: "Une phrase claire suffit. L'agent PM cadrera à l'étape suivante."}
+					</small>
+				</label>
+				<label class="field">
+					<span class="label">Nom court <span class="opt">optionnel</span></span>
+					<input type="text" placeholder="auto-généré si vide" bind:value={name} />
+				</label>
+			</fieldset>
+
+			<fieldset class="section">
+				<legend><span class="sn">2</span> Emplacement</legend>
+				<label class="field">
+					<span class="label">Répertoire de travail</span>
+					<FolderPicker bind:value={workdir}
+						placeholder="/Users/moi/projects/mon-app"
+						label="Choisir le répertoire de travail" />
+					<small>Le Dev commite ici. <strong>Évite</strong> un dossier personnel (Documents, Desktop, Downloads) — Hive refusera.</small>
+				</label>
+				<label class="field">
+					<span class="label">Dossier BMAD existant <span class="opt">optionnel</span></span>
+					<FolderPicker bind:value={bmadOutputPath}
+						placeholder="/Users/moi/bmad-output/mon-app"
+						label="Choisir le dossier BMAD existant" />
+					<small>Si tu as déjà un PRD/epics BMAD ailleurs, on les réutilise.</small>
+				</label>
+				{#if githubMode !== 'clone'}
+					<label class="field">
+						<span class="label">Repo local existant <span class="opt">optionnel</span></span>
+						<FolderPicker bind:value={repoPath}
+							placeholder="/Users/moi/projects/mon-repo-existant"
+							label="Choisir un repo local existant" />
+						<small>Ajoute BMAD à une base de code locale (sans passer par GitHub).</small>
+					</label>
+				{/if}
+			</fieldset>
+
+			<fieldset class="section gh">
 				<legend>
-					Intégration GitHub
+					<span class="sn">3</span> GitHub
 					{#if ghStatus?.authenticated}
 						<span class="gh-pill ok" title="Authentifié via gh">✓ {ghStatus.login}</span>
 						<button type="button" class="link" onclick={ghLogout}>Se déconnecter</button>
@@ -473,40 +501,62 @@
 				{/if}
 			</fieldset>
 
-			<fieldset class="block">
-				<legend>Budget (optionnel)</legend>
-				<label>
-					<span>Plafond de coût Claude (USD)</span>
+			<fieldset class="section">
+				<legend><span class="sn">4</span> Budget <span class="opt">optionnel</span></legend>
+				<label class="field">
+					<span class="label">Plafond de coût Claude (USD)</span>
 					<input type="number"
 						min="0"
 						step="0.5"
 						placeholder="ex. 10"
 						bind:value={costCapUSD} />
-					<small>Hive annule le run BMAD si le cumul dépasse ce montant. Laisse vide pour aucun plafond.</small>
+					<small>Hive annule le run BMAD si le cumul dépasse ce montant. Vide = illimité.</small>
 				</label>
 			</fieldset>
 
-			<button type="submit" disabled={submitting || !idea.trim()}>
-				{submitting
-					? 'Création…'
-					: isBrownfield
-						? 'Créer le projet (brownfield)'
-						: 'Créer le projet'}
-			</button>
-			{#if formError}<div class="form-error">{formError}</div>{/if}
+			<div class="form-submit">
+				<button type="submit" class="btn-submit" disabled={submitting || !idea.trim()}>
+					{submitting
+						? '⏳ Création…'
+						: isBrownfield
+							? '🏗 Créer le projet (brownfield)'
+							: '✨ Créer le projet'}
+				</button>
+				{#if formError}<div class="form-error">{formError}</div>{/if}
+			</div>
 		</form>
 	{/if}
 
 	<ul class="pj-list">
 		{#each projects as p (p.id)}
-			<li class="pj-card">
-				<a class="pj-main" href="/projects/{p.id}">
-					<div class="pj-head">
-						<strong class="pj-name">{p.name}</strong>
-						<span class="badge pj-status" style="background:{statusColor(p.status)}">{p.status}</span>
+			<li class="pj-card" class:shipped={p.status === 'shipped'}
+				class:failed={p.status === 'failed'}
+				class:running={p.status === 'planning' || p.status === 'building' || p.status === 'review'}>
+				<a class="pj-link" href="/projects/{p.id}">
+					<span class="pj-dot" style="background:{statusColor(p.status)}"
+						class:pulsing={p.status === 'planning' || p.status === 'building'}></span>
+					<div class="pj-body">
+						<div class="pj-top">
+							<strong class="pj-name">{p.name}</strong>
+							<span class="badge pj-status" style="background:{statusColor(p.status)}">{p.status}</span>
+						</div>
+						<p class="pj-idea">{p.idea}</p>
+						<div class="pj-foot">
+							<span class="pj-time">🕒 {fmtRelative(p.updated_at)}</span>
+							{#if (p.total_cost_usd ?? 0) > 0}
+								<span class="pj-cost" title="Cumul tokens Claude">
+									💰 ${(p.total_cost_usd ?? 0).toFixed(2)}
+								</span>
+							{/if}
+							{#if p.is_existing}
+								<span class="pj-tag brownfield" title="Projet basé sur un repo existant">🏗 brownfield</span>
+							{/if}
+							{#if p.failure_stage}
+								<span class="pj-tag err" title={p.failure_error ?? ''}>✕ {p.failure_stage}</span>
+							{/if}
+						</div>
 					</div>
-					<span class="pj-idea muted">{p.idea}</span>
-					<span class="pj-date muted">{fmtRelative(p.updated_at)}</span>
+					<span class="pj-chevron" aria-hidden="true">›</span>
 				</a>
 				<button class="pj-del"
 					onclick={() => removeProject(p.id, p.name)}
@@ -515,120 +565,199 @@
 			</li>
 		{/each}
 		{#if projects.length === 0 && !loading}
-			<li class="empty">Aucun projet pour l'instant. Crée le premier ci-dessus.</li>
+			<li class="list-empty">
+				<span class="empty-icon">📦</span>
+				<div>
+					<strong>Aucun projet pour l'instant.</strong>
+					<span>Clique sur « Nouveau projet » ci-dessus pour démarrer.</span>
+				</div>
+			</li>
 		{/if}
 	</ul>
 </ListScaffold>
 
 <style>
 	.toolbar {
-		margin: 1rem 0;
+		margin: 1rem 0 1.25rem;
 	}
-	.btn.primary {
-		padding: 0.5rem 1rem;
+	.new-btn {
+		display: inline-flex;
+		align-items: center;
+		gap: 0.5rem;
+		padding: 0.6rem 1.1rem;
 		background: var(--accent);
 		color: white;
 		border: none;
-		border-radius: 6px;
+		border-radius: 8px;
 		cursor: pointer;
 		font-weight: 600;
+		font-size: 0.9rem;
+		transition: background 0.1s, transform 0.05s;
 	}
+	.new-btn:hover { background: color-mix(in srgb, var(--accent) 88%, black); }
+	.new-btn.open { background: var(--bg-hover); color: var(--text); }
+	.new-btn.open:hover { background: var(--border); }
+	.new-icon {
+		display: inline-flex;
+		width: 20px;
+		height: 20px;
+		align-items: center;
+		justify-content: center;
+		font-size: 1rem;
+		line-height: 1;
+	}
+	/* ===== Create form ===== */
 	.create-form {
 		display: flex;
 		flex-direction: column;
-		gap: 0.75rem;
-		padding: 1rem;
-		background: var(--bg-alt);
+		gap: 1rem;
+		padding: 1.5rem;
+		background: var(--bg-panel);
 		border: 1px solid var(--border);
-		border-radius: 6px;
-		margin-bottom: 1rem;
-		transition: border-color 200ms ease;
+		border-radius: 12px;
+		margin-bottom: 1.5rem;
+		transition: border-color 200ms ease, box-shadow 200ms ease;
 	}
 	.create-form.brownfield {
-		border-color: var(--accent);
-		box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 30%, transparent);
+		border-color: color-mix(in srgb, var(--accent) 50%, var(--border));
+		box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 20%, transparent);
 	}
-	.brownfield-banner {
-		padding: 0.6rem 0.85rem;
-		background: color-mix(in srgb, var(--accent) 14%, var(--bg));
-		border-left: 3px solid var(--accent);
-		border-radius: 0 4px 4px 0;
-		font-size: 0.85rem;
+	.form-head {
+		padding-bottom: 0.85rem;
+		border-bottom: 1px solid var(--border);
+	}
+	.form-title {
+		margin: 0 0 0.3rem;
+		font-size: 1.15rem;
+		font-weight: 700;
 		color: var(--text);
+		text-transform: none;
+		letter-spacing: 0;
 	}
-	.brownfield-banner code {
-		font-family: ui-monospace, monospace;
-		font-size: 0.78rem;
-		background: var(--bg-alt);
-		padding: 0.05rem 0.3rem;
+	.form-sub {
+		margin: 0;
+		font-size: 0.85rem;
+		color: var(--text-muted);
+		line-height: 1.55;
+	}
+	.form-sub code {
+		background: var(--bg-hover);
+		color: var(--accent);
+		padding: 1px 6px;
 		border-radius: 3px;
+		font-size: 0.78rem;
 	}
-	.create-form label {
+	.section {
+		border: 1px solid var(--border);
+		border-radius: 10px;
+		padding: 1rem 1.1rem 0.9rem;
+		background: var(--bg-alt);
 		display: flex;
 		flex-direction: column;
-		gap: 0.3rem;
-		font-size: 0.85rem;
-		color: var(--muted);
+		gap: 0.8rem;
+		margin: 0;
 	}
-	.create-form input,
-	.create-form textarea {
-		padding: 0.5rem 0.7rem;
-		background: var(--bg);
+	.section legend {
+		padding: 0 0.5rem;
+		font-size: 0.78rem;
+		color: var(--text);
+		font-weight: 600;
+		text-transform: uppercase;
+		letter-spacing: 0.08em;
+		display: inline-flex;
+		align-items: center;
+		gap: 0.5rem;
+	}
+	.sn {
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		width: 22px;
+		height: 22px;
+		border-radius: 50%;
+		background: color-mix(in srgb, var(--accent) 15%, transparent);
+		color: var(--accent);
+		font-size: 0.75rem;
+		font-weight: 700;
+		text-transform: none;
+		letter-spacing: 0;
+	}
+	.field {
+		display: flex;
+		flex-direction: column;
+		gap: 0.35rem;
+	}
+	.field .label {
+		font-size: 0.82rem;
+		font-weight: 600;
+		color: var(--text);
+		display: flex;
+		align-items: center;
+		gap: 0.4rem;
+	}
+	.opt {
+		font-size: 0.66rem;
+		padding: 1px 8px;
+		border-radius: 999px;
+		background: var(--bg-hover);
+		color: var(--text-muted);
+		font-weight: 500;
+		text-transform: uppercase;
+		letter-spacing: 0.05em;
+	}
+	.section input:not([type='radio']),
+	.section textarea,
+	.section select {
+		padding: 0.55rem 0.75rem;
+		background: var(--bg-panel);
 		border: 1px solid var(--border);
-		border-radius: 4px;
+		border-radius: 6px;
 		color: inherit;
 		font: inherit;
+		font-size: 0.9rem;
+		transition: border-color 0.1s;
 	}
-	.create-form textarea {
+	.section input:focus,
+	.section textarea:focus,
+	.section select:focus {
+		outline: none;
+		border-color: var(--accent);
+	}
+	.section textarea {
 		resize: vertical;
 		font-family: inherit;
+		min-height: 80px;
+		line-height: 1.55;
 	}
-	.create-form button {
-		align-self: flex-start;
-		padding: 0.5rem 1rem;
+	.section small {
+		font-size: 0.76rem;
+		color: var(--text-muted);
+		line-height: 1.45;
+	}
+	.section small strong { color: var(--warn); font-weight: 600; }
+
+	.form-submit {
+		display: flex;
+		flex-direction: column;
+		gap: 0.6rem;
+	}
+	.btn-submit {
+		padding: 0.85rem 1.5rem;
 		background: var(--accent);
 		color: white;
 		border: none;
-		border-radius: 4px;
+		border-radius: 8px;
 		cursor: pointer;
-		font-weight: 600;
+		font-weight: 700;
+		font-size: 0.95rem;
+		transition: background 0.1s, transform 0.05s;
 	}
-	.create-form button:disabled {
-		opacity: 0.5;
-		cursor: not-allowed;
+	.btn-submit:hover:not(:disabled) {
+		background: color-mix(in srgb, var(--accent) 88%, black);
 	}
-	.create-form small {
-		font-size: 0.75rem;
-		color: var(--muted);
-	}
-	.hint-pill {
-		display: inline-block;
-		margin-left: 0.4rem;
-		padding: 0 0.4rem;
-		font-size: 0.65rem;
-		background: var(--bg);
-		border: 1px solid var(--border);
-		border-radius: 999px;
-		color: var(--muted);
-		text-transform: uppercase;
-		letter-spacing: 0.05em;
-	}
-	.gh {
-		border: 1px solid var(--border);
-		border-radius: 6px;
-		padding: 0.75rem 1rem;
-		background: var(--bg);
-		display: flex;
-		flex-direction: column;
-		gap: 0.4rem;
-	}
-	.gh legend {
-		font-size: 0.78rem;
-		color: var(--muted);
-		text-transform: uppercase;
-		letter-spacing: 0.05em;
-		padding: 0 0.25rem;
-	}
+	.btn-submit:active:not(:disabled) { transform: translateY(1px); }
+	.btn-submit:disabled { opacity: 0.5; cursor: not-allowed; }
+
 	.gh-pill {
 		display: inline-block;
 		margin-left: 0.4rem;
@@ -743,91 +872,189 @@
 		color: var(--err);
 		font-size: 0.85rem;
 	}
-	.muted {
-		color: var(--text-muted);
-		font-size: 0.85rem;
-	}
-	/* Liste de projets : grille desktop (table-like), cards mobile. */
+	/* ===== Liste de projets : cards modernes ===== */
 	.pj-list {
 		list-style: none;
 		padding: 0;
 		margin: 0;
 		display: flex;
 		flex-direction: column;
-		gap: 0.5rem;
+		gap: 0.55rem;
 	}
 	.pj-card {
-		display: grid;
-		grid-template-columns: 1fr auto;
-		align-items: center;
-		gap: 0.6rem;
-		padding: 0.85rem 1rem;
+		position: relative;
+		display: flex;
+		align-items: stretch;
 		background: var(--bg-panel);
 		border: 1px solid var(--border);
-		border-radius: 8px;
-		transition: border-color 0.1s, transform 0.1s;
+		border-radius: 10px;
+		transition: border-color 0.15s, transform 0.1s, box-shadow 0.15s;
+		overflow: hidden;
 	}
-	.pj-card:hover { border-color: var(--accent); }
-	.pj-main {
-		display: grid;
-		grid-template-columns: 2fr auto auto;
-		column-gap: 1rem;
-		row-gap: 0.2rem;
-		align-items: baseline;
+	.pj-card:hover {
+		border-color: var(--accent);
+		transform: translateY(-1px);
+		box-shadow: 0 4px 12px color-mix(in srgb, var(--accent) 15%, transparent);
+	}
+	.pj-card.failed { border-left: 3px solid var(--err); }
+	.pj-card.shipped { border-left: 3px solid var(--ok); }
+	.pj-card.running { border-left: 3px solid var(--warn); }
+
+	.pj-link {
+		display: flex;
+		align-items: center;
+		gap: 0.9rem;
+		flex: 1;
+		min-width: 0;
+		padding: 0.9rem 1rem;
 		color: inherit;
 		text-decoration: none;
+	}
+	.pj-dot {
+		width: 12px;
+		height: 12px;
+		border-radius: 50%;
+		flex-shrink: 0;
+	}
+	.pj-dot.pulsing {
+		box-shadow: 0 0 0 0 currentColor;
+		animation: dot-pulse 2s ease-in-out infinite;
+	}
+	@keyframes dot-pulse {
+		0% { box-shadow: 0 0 0 0 color-mix(in srgb, currentColor 60%, transparent); }
+		70% { box-shadow: 0 0 0 8px transparent; }
+		100% { box-shadow: 0 0 0 0 transparent; }
+	}
+	.pj-body {
+		flex: 1;
+		min-width: 0;
+		display: flex;
+		flex-direction: column;
+		gap: 0.25rem;
+	}
+	.pj-top {
+		display: flex;
+		align-items: center;
+		gap: 0.6rem;
 		min-width: 0;
 	}
-	.pj-head {
-		display: contents; /* desktop : name + status sur la row principale */
-	}
 	.pj-name {
+		font-size: 0.98rem;
 		font-weight: 600;
 		overflow: hidden;
 		text-overflow: ellipsis;
 		white-space: nowrap;
+		min-width: 0;
+		flex: 1;
 	}
+	.pj-link:hover .pj-name { color: var(--accent); }
 	.pj-status {
-		justify-self: start;
+		flex-shrink: 0;
+		text-transform: lowercase;
+		letter-spacing: 0.03em;
+		font-size: 0.68rem;
+		padding: 0.12rem 0.6rem;
+		border-radius: 999px;
 	}
 	.pj-idea {
-		grid-column: 1 / -1;
+		margin: 0;
+		font-size: 0.85rem;
+		color: var(--text-muted);
+		line-height: 1.5;
 		overflow: hidden;
 		text-overflow: ellipsis;
-		white-space: nowrap;
-		font-size: 0.82rem;
+		display: -webkit-box;
+		-webkit-line-clamp: 2;
+		line-clamp: 2;
+		-webkit-box-orient: vertical;
+		white-space: normal;
 	}
-	.pj-date {
-		grid-column: 1 / -1;
-		font-size: 0.75rem;
+	.pj-foot {
+		display: flex;
+		gap: 0.5rem;
+		flex-wrap: wrap;
+		font-size: 0.72rem;
+		color: var(--text-muted);
+		margin-top: 0.15rem;
 	}
-	.pj-main:hover .pj-name { color: var(--accent); }
+	.pj-time { font-variant-numeric: tabular-nums; }
+	.pj-cost {
+		font-family: ui-monospace, monospace;
+		color: var(--warn);
+		font-weight: 500;
+	}
+	.pj-tag {
+		padding: 0.1rem 0.55rem;
+		background: var(--bg-hover);
+		border-radius: 999px;
+		font-size: 0.68rem;
+		font-weight: 500;
+	}
+	.pj-tag.brownfield {
+		background: color-mix(in srgb, var(--accent) 14%, transparent);
+		color: var(--accent);
+	}
+	.pj-tag.err {
+		background: color-mix(in srgb, var(--err) 14%, transparent);
+		color: var(--err);
+	}
+	.pj-chevron {
+		font-size: 1.3rem;
+		color: var(--text-muted);
+		opacity: 0.4;
+		transition: opacity 0.1s, transform 0.1s;
+		flex-shrink: 0;
+		line-height: 1;
+	}
+	.pj-link:hover .pj-chevron {
+		opacity: 1;
+		color: var(--accent);
+		transform: translateX(2px);
+	}
 	.pj-del {
-		padding: 0.5rem 0.7rem;
+		padding: 0 0.85rem;
 		background: transparent;
 		color: var(--text-muted);
-		border: 1px solid var(--border);
-		border-radius: 4px;
+		border: none;
+		border-left: 1px solid var(--border);
 		cursor: pointer;
 		font-size: 1rem;
 		min-width: 44px;
-		min-height: 44px;
+		transition: background 0.1s, color 0.1s;
 	}
 	.pj-del:hover {
-		background: rgba(240, 80, 80, 0.15);
+		background: color-mix(in srgb, var(--err) 12%, transparent);
 		color: var(--err);
-		border-color: var(--err);
 	}
+
+	.list-empty {
+		display: flex;
+		align-items: center;
+		gap: 1rem;
+		padding: 2rem 1.5rem;
+		background: var(--bg-panel);
+		border: 1px dashed var(--border);
+		border-radius: 10px;
+		text-align: left;
+	}
+	.list-empty > div {
+		display: flex;
+		flex-direction: column;
+		gap: 0.15rem;
+	}
+	.list-empty strong { font-size: 0.95rem; color: var(--text); }
+	.list-empty span { font-size: 0.85rem; color: var(--text-muted); }
+	.empty-icon {
+		font-size: 2rem;
+		opacity: 0.5;
+	}
+
 	@media (max-width: 767px) {
-		.pj-main {
-			grid-template-columns: 1fr;
-		}
-		.pj-head {
-			display: flex;
-			justify-content: space-between;
-			align-items: center;
-			gap: 0.5rem;
-		}
-		.pj-idea { font-size: 0.85rem; }
+		.pj-link { padding: 0.75rem 0.85rem; gap: 0.7rem; }
+		.pj-top { flex-wrap: wrap; }
+		.pj-name { flex: 1 1 100%; }
+		.pj-chevron { display: none; }
+		.pj-del { border-left: none; border-top: 1px solid var(--border); padding: 0.5rem 0.85rem; min-width: auto; align-self: stretch; }
+		.pj-card { flex-direction: column; }
 	}
 </style>

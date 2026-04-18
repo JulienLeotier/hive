@@ -31,11 +31,11 @@
 			label: 'Construction',
 			items: [
 				{ href: '/', label: 'Accueil', icon: '⌂' },
-				{ href: '/projects', label: 'Projets', icon: '▤' }
+				{ href: '/projects', label: 'Projets', icon: '▦' }
 			]
 		},
 		{
-			label: 'Inspection',
+			label: 'Observabilité',
 			items: [
 				{ href: '/events', label: 'Événements', icon: '◈' },
 				{ href: '/audit', label: 'Audit', icon: '✓' },
@@ -49,6 +49,12 @@
 			]
 		}
 	];
+
+	// Détection active avec prefix matching pour /projects/[id]*, /costs, …
+	function isActive(href: string, pathname: string): boolean {
+		if (href === '/') return pathname === '/';
+		return pathname === href || pathname.startsWith(href + '/');
+	}
 
 	// Titre courant pour le header mobile (pas de sidebar visible).
 	let currentPageLabel = $derived.by(() => {
@@ -110,13 +116,14 @@
 		<a href="/" class="brand">
 			<span class="logo">⬡</span>
 			<span class="brand-text">Hive</span>
+			<span class="brand-tag">BMAD factory</span>
 		</a>
 		<nav>
 			{#each navGroups as group}
 				<div class="group">
 					<span class="group-label">{group.label}</span>
 					{#each group.items as item}
-						<a href={item.href} class:active={$page.url.pathname === item.href}>
+						<a href={item.href} class:active={isActive(item.href, $page.url.pathname)}>
 							<span class="nav-icon" aria-hidden="true">{item.icon}</span>
 							<span class="nav-text">{item.label}</span>
 						</a>
@@ -131,7 +138,10 @@
 					class:closed={$wsStatus === 'closed'}></span>
 				<span class="ws-label">{wsStatusLabel($wsStatus)}</span>
 			</div>
-			<button class="theme-toggle" onclick={toggleTheme} title="Toggle dark mode">
+			<button class="theme-toggle"
+				onclick={toggleTheme}
+				aria-label="Basculer thème clair/sombre"
+				title={$theme === 'dark' ? 'Passer en clair' : 'Passer en sombre'}>
 				{$theme === 'dark' ? '☀' : '☾'}
 			</button>
 		</div>
@@ -348,73 +358,117 @@
 	.sidebar {
 		background: var(--bg-panel);
 		border-right: 1px solid var(--border);
-		padding: 1rem;
+		padding: 1.25rem 0.85rem;
 		display: flex;
 		flex-direction: column;
 		gap: 1.5rem;
 	}
 	.brand {
-		display: flex;
+		display: grid;
+		grid-template-columns: auto 1fr;
 		align-items: center;
-		gap: 0.5rem;
+		gap: 0.55rem;
 		text-decoration: none;
 		color: var(--text);
 		font-weight: 700;
 		font-size: 1.25rem;
+		padding: 0.3rem 0.5rem;
+	}
+	.brand-text {
+		line-height: 1;
+	}
+	.brand-tag {
+		grid-column: 2;
+		font-size: 0.62rem;
+		color: var(--text-muted);
+		font-weight: 500;
+		text-transform: uppercase;
+		letter-spacing: 0.1em;
+		line-height: 1;
+		margin-top: 0.25rem;
 	}
 	.logo {
+		grid-row: 1 / span 2;
 		color: var(--accent);
-		font-size: 1.5rem;
+		font-size: 1.75rem;
+		filter: drop-shadow(0 0 8px color-mix(in srgb, var(--accent) 40%, transparent));
 	}
 	nav {
 		display: flex;
 		flex-direction: column;
-		gap: 1.25rem;
+		gap: 1.5rem;
 		flex: 1;
 	}
 	.group {
 		display: flex;
 		flex-direction: column;
-		gap: 0.125rem;
+		gap: 0.15rem;
 	}
 	.group-label {
-		font-size: 0.7rem;
+		font-size: 0.65rem;
 		color: var(--text-muted);
 		text-transform: uppercase;
-		letter-spacing: 0.08em;
-		padding: 0 0.5rem;
-		margin-bottom: 0.25rem;
+		letter-spacing: 0.12em;
+		padding: 0 0.75rem;
+		margin-bottom: 0.4rem;
+		font-weight: 700;
+		opacity: 0.8;
 	}
 	.group a {
 		display: flex;
 		align-items: center;
-		gap: 0.65rem;
+		gap: 0.7rem;
 		color: var(--text-muted);
 		text-decoration: none;
 		padding: 0.55rem 0.75rem;
-		border-radius: 4px;
-		font-size: 0.875rem;
-		transition: background 0.1s, color 0.1s;
+		border-radius: 6px;
+		font-size: 0.88rem;
+		font-weight: 500;
+		transition: background 0.12s, color 0.12s;
 		min-height: var(--tap-min);
+		position: relative;
 	}
 	.nav-icon {
-		width: 18px;
-		text-align: center;
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		width: 22px;
+		height: 22px;
 		font-size: 0.95rem;
-		opacity: 0.9;
+		flex-shrink: 0;
+		color: var(--text-muted);
+		transition: color 0.12s;
 	}
 	.group a:hover {
 		background: var(--bg-hover);
 		color: var(--text);
 	}
+	.group a:hover .nav-icon { color: var(--text); }
 	.group a.active {
+		background: color-mix(in srgb, var(--accent) 14%, transparent);
+		color: var(--accent);
+		font-weight: 600;
+	}
+	.group a.active .nav-icon { color: var(--accent); }
+	.group a.active::before {
+		content: '';
+		position: absolute;
+		left: -0.85rem;
+		top: 50%;
+		transform: translateY(-50%);
+		width: 3px;
+		height: 60%;
 		background: var(--accent);
-		color: white;
+		border-radius: 0 3px 3px 0;
 	}
 	.sidebar-footer {
 		display: flex;
 		gap: 0.5rem;
 		align-items: center;
+		padding: 0.6rem 0.75rem;
+		background: var(--bg);
+		border: 1px solid var(--border);
+		border-radius: 8px;
 	}
 	.ws-status {
 		display: flex;
