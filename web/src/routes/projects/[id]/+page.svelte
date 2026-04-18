@@ -1647,10 +1647,10 @@
 	}
 	.phase-row {
 		display: grid;
-		grid-template-columns: 24px 1fr auto 16px;
+		grid-template-columns: 24px minmax(0, 1fr) auto 20px;
 		align-items: center;
-		gap: 0.6rem;
-		padding: 0.55rem 0.75rem;
+		column-gap: 0.8rem;
+		padding: 0.6rem 1rem 0.6rem 0.85rem;
 		width: 100%;
 		background: transparent;
 		border: none;
@@ -1665,7 +1665,12 @@
 	}
 	.phase-chev {
 		color: var(--text-muted);
-		font-size: 1rem;
+		font-size: 1.1rem;
+		line-height: 1;
+		text-align: center;
+		grid-column: 4;
+		grid-row: 1 / span 2;
+		align-self: center;
 	}
 	.phase-item.running {
 		background: color-mix(in srgb, var(--accent) 8%, var(--bg));
@@ -1706,9 +1711,11 @@
 		text-overflow: ellipsis;
 		white-space: nowrap;
 		grid-column: 2;
+		grid-row: 1;
 		background: transparent;
 		padding: 0;
 		color: var(--text);
+		min-width: 0;
 	}
 	.phase-phase {
 		grid-column: 2;
@@ -1717,6 +1724,9 @@
 		color: var(--text-muted);
 		text-transform: uppercase;
 		letter-spacing: 0.05em;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
 	}
 	.phase-meta {
 		display: flex;
@@ -1728,6 +1738,7 @@
 		font-variant-numeric: tabular-nums;
 		grid-column: 3;
 		grid-row: 1 / span 2;
+		padding-left: 0.4rem;
 	}
 	.phase-meta .tokens { opacity: 0.7; }
 	.phase-time { opacity: 0.6; }
