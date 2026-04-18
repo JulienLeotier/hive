@@ -943,6 +943,7 @@
 		display: flex;
 		gap: 0.5rem;
 		margin: 0.75rem 0 0;
+		flex-wrap: wrap;
 	}
 	.tabs a {
 		padding: 0.3rem 0.7rem;
@@ -981,7 +982,24 @@
 		font-size: 0.8rem;
 	}
 	.refs dt { color: var(--muted); }
-	.refs dd { margin: 0; font-family: ui-monospace, monospace; }
+	.refs dd {
+		margin: 0;
+		font-family: ui-monospace, monospace;
+		overflow-wrap: anywhere;
+		word-break: break-all;
+	}
+	@media (max-width: 767px) {
+		.refs {
+			grid-template-columns: 1fr;
+			row-gap: 0.35rem;
+		}
+		.refs dt {
+			font-size: 0.7rem;
+			text-transform: uppercase;
+			letter-spacing: 0.05em;
+		}
+		.refs dd { margin-bottom: 0.5rem; }
+	}
 	.badge {
 		display: inline-block;
 		padding: 0.125rem 0.5rem;
@@ -1041,7 +1059,9 @@
 		background: color-mix(in srgb, var(--err) 12%, var(--bg-alt));
 		border-left: 3px solid var(--err);
 		border-radius: 0 6px 6px 0;
+		flex-wrap: wrap;
 	}
+	.fail-banner > div { flex: 1 1 200px; min-width: 0; }
 	.fail-banner code {
 		font-family: ui-monospace, monospace;
 		font-size: 0.8rem;

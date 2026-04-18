@@ -497,30 +497,27 @@
 		</form>
 	{/if}
 
-	<table>
-		<thead>
-			<tr>
-				<th>Projet</th><th>Statut</th><th>Mis à jour</th><th></th>
-			</tr>
-		</thead>
-		<tbody>
-			{#each projects as p (p.id)}
-				<tr>
-					<td>
-						<a class="pjrow" href="/projects/{p.id}">
-							<strong>{p.name}</strong>
-							<span class="muted">{p.idea}</span>
-						</a>
-					</td>
-					<td><span class="badge" style="background:{statusColor(p.status)}">{p.status}</span></td>
-					<td>{fmtRelative(p.updated_at)}</td>
-					<td>
-						<button class="row-del" onclick={() => removeProject(p.id, p.name)} title="Supprimer">✕</button>
-					</td>
-				</tr>
-			{/each}
-		</tbody>
-	</table>
+	<ul class="pj-list">
+		{#each projects as p (p.id)}
+			<li class="pj-card">
+				<a class="pj-main" href="/projects/{p.id}">
+					<div class="pj-head">
+						<strong class="pj-name">{p.name}</strong>
+						<span class="badge pj-status" style="background:{statusColor(p.status)}">{p.status}</span>
+					</div>
+					<span class="pj-idea muted">{p.idea}</span>
+					<span class="pj-date muted">{fmtRelative(p.updated_at)}</span>
+				</a>
+				<button class="pj-del"
+					onclick={() => removeProject(p.id, p.name)}
+					title="Supprimer"
+					aria-label="Supprimer {p.name}">✕</button>
+			</li>
+		{/each}
+		{#if projects.length === 0 && !loading}
+			<li class="empty">Aucun projet pour l'instant. Crée le premier ci-dessus.</li>
+		{/if}
+	</ul>
 </ListScaffold>
 
 <style>
@@ -746,32 +743,91 @@
 		color: var(--err);
 		font-size: 0.85rem;
 	}
-	.pjrow {
-		display: flex;
-		flex-direction: column;
-		gap: 0.15rem;
-		color: inherit;
-		text-decoration: none;
-	}
-	.pjrow:hover strong {
-		color: var(--accent);
-	}
 	.muted {
-		color: var(--muted);
+		color: var(--text-muted);
 		font-size: 0.85rem;
 	}
-	.row-del {
-		padding: 0.2rem 0.45rem;
-		background: transparent;
-		color: var(--muted);
-		border: 1px solid var(--border);
-		border-radius: 3px;
-		cursor: pointer;
-		font-size: 0.8rem;
+	/* Liste de projets : grille desktop (table-like), cards mobile. */
+	.pj-list {
+		list-style: none;
+		padding: 0;
+		margin: 0;
+		display: flex;
+		flex-direction: column;
+		gap: 0.5rem;
 	}
-	.row-del:hover {
+	.pj-card {
+		display: grid;
+		grid-template-columns: 1fr auto;
+		align-items: center;
+		gap: 0.6rem;
+		padding: 0.85rem 1rem;
+		background: var(--bg-panel);
+		border: 1px solid var(--border);
+		border-radius: 8px;
+		transition: border-color 0.1s, transform 0.1s;
+	}
+	.pj-card:hover { border-color: var(--accent); }
+	.pj-main {
+		display: grid;
+		grid-template-columns: 2fr auto auto;
+		column-gap: 1rem;
+		row-gap: 0.2rem;
+		align-items: baseline;
+		color: inherit;
+		text-decoration: none;
+		min-width: 0;
+	}
+	.pj-head {
+		display: contents; /* desktop : name + status sur la row principale */
+	}
+	.pj-name {
+		font-weight: 600;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+	}
+	.pj-status {
+		justify-self: start;
+	}
+	.pj-idea {
+		grid-column: 1 / -1;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+		font-size: 0.82rem;
+	}
+	.pj-date {
+		grid-column: 1 / -1;
+		font-size: 0.75rem;
+	}
+	.pj-main:hover .pj-name { color: var(--accent); }
+	.pj-del {
+		padding: 0.5rem 0.7rem;
+		background: transparent;
+		color: var(--text-muted);
+		border: 1px solid var(--border);
+		border-radius: 4px;
+		cursor: pointer;
+		font-size: 1rem;
+		min-width: 44px;
+		min-height: 44px;
+	}
+	.pj-del:hover {
 		background: rgba(240, 80, 80, 0.15);
 		color: var(--err);
 		border-color: var(--err);
+	}
+	@media (max-width: 767px) {
+		.pj-main {
+			grid-template-columns: 1fr;
+		}
+		.pj-head {
+			display: flex;
+			justify-content: space-between;
+			align-items: center;
+			gap: 0.5rem;
+		}
+		.pj-idea { font-size: 0.85rem; }
 	}
 </style>

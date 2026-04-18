@@ -170,7 +170,11 @@
 		font-size: 0.85rem;
 	}
 	.env dt { margin: 0; }
-	.env dd { margin: 0; color: var(--text-muted); }
+	.env dd { margin: 0; color: var(--text-muted); overflow-wrap: anywhere; }
+	@media (max-width: 640px) {
+		.env { grid-template-columns: 1fr; gap: 0.1rem; }
+		.env dt { margin-top: 0.5rem; }
+	}
 	a { color: var(--accent); text-decoration: none; }
 	a:hover { text-decoration: underline; }
 	.test-row {

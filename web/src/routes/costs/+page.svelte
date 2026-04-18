@@ -135,6 +135,7 @@
 	{#if summary.projects.length === 0}
 		<div class="empty">Aucun projet.</div>
 	{:else}
+		<div class="table-scroll">
 		<table>
 			<thead>
 				<tr>
@@ -171,12 +172,14 @@
 				{/each}
 			</tbody>
 		</table>
+		</div>
 	{/if}
 
 	<h2>Par phase BMAD</h2>
 	{#if summary.phases.length === 0}
 		<div class="empty">Aucune phase enregistrée.</div>
 	{:else}
+		<div class="table-scroll">
 		<table>
 			<thead>
 				<tr>
@@ -205,12 +208,14 @@
 				{/each}
 			</tbody>
 		</table>
+		</div>
 	{/if}
 
 	<h2>Top commandes BMAD</h2>
 	{#if summary.commands.length === 0}
 		<div class="empty">Aucune commande exécutée.</div>
 	{:else}
+		<div class="table-scroll">
 		<table>
 			<thead>
 				<tr>
@@ -235,6 +240,7 @@
 				{/each}
 			</tbody>
 		</table>
+		</div>
 	{/if}
 {/if}
 

@@ -88,6 +88,7 @@
 		</div>
 	{/snippet}
 
+	<div class="table-scroll">
 	<table>
 		<thead>
 			<tr><th>When</th><th>Actor</th><th>Action</th><th>Resource</th><th>Detail</th></tr>
@@ -104,6 +105,7 @@
 			{/each}
 		</tbody>
 	</table>
+	</div>
 </ListScaffold>
 
 <style>

@@ -9,19 +9,16 @@
 
 	let { children } = $props();
 
-	// Scroll-to-top on chaque nav client-side. SvelteKit le fait par
-	// défaut quand l'URL change, mais pas sur un simple changement de
-	// query-string — on garantit le comportement explicitement pour
-	// éviter les surprises quand on revient d'une page longue sur une
-	// autre (ex. /projects/[id] → /projects).
+	// État drawer mobile : fermé par défaut, ouvert quand on clique le
+	// bouton hamburger. Sur desktop la sidebar est toujours visible
+	// donc drawerOpen est ignoré par les media queries.
+	let drawerOpen = $state(false);
+
+	// Scroll-to-top + close drawer sur chaque nav client-side.
 	afterNavigate(({ from, to }) => {
-		// SvelteKit peut passer un NavigationTarget avec url=null (cas
-		// du premier hit, d'un navigateur qui rafraîchit, ou d'un
-		// `goto` sans cible). On guarde sur from?.url et to?.url pour
-		// ne pas crasher — si l'un des deux est inconnu, on ne sait
-		// pas s'il y a eu changement de route, donc on ne fait rien.
 		if (from?.url && to?.url && from.url.pathname !== to.url.pathname) {
 			window.scrollTo({ top: 0, behavior: 'instant' });
+			drawerOpen = false;
 		}
 	});
 
@@ -29,48 +26,87 @@
 		return s === 'open' ? 'live' : s === 'connecting' ? 'connexion…' : 'hors-ligne';
 	}
 
-	// BMAD-mode nav. The product is a local, single-user product factory:
-	// one idea in, one shipped product out. Everything in Build drives a
-	// project; Inspect is the debug/observability catch-all for when
-	// something goes sideways. The "Fleet" group (agents/playground/
-	// knowledge) belonged to the pre-pivot multi-agent platform and is
-	// gone from nav — the route files stay for now to avoid touching
-	// unrelated code but they are no longer part of the product surface.
 	const navGroups = [
 		{
 			label: 'Construction',
 			items: [
-				{ href: '/', label: 'Accueil' },
-				{ href: '/projects', label: 'Projets' }
+				{ href: '/', label: 'Accueil', icon: '⌂' },
+				{ href: '/projects', label: 'Projets', icon: '▤' }
 			]
 		},
 		{
 			label: 'Inspection',
 			items: [
-				{ href: '/events', label: 'Événements' },
-				{ href: '/audit', label: 'Audit' },
-				{ href: '/costs', label: 'Coûts' }
+				{ href: '/events', label: 'Événements', icon: '◈' },
+				{ href: '/audit', label: 'Audit', icon: '✓' },
+				{ href: '/costs', label: 'Coûts', icon: '$' }
 			]
 		},
 		{
 			label: 'Système',
 			items: [
-				{ href: '/settings', label: 'Réglages' }
+				{ href: '/settings', label: 'Réglages', icon: '⚙' }
 			]
 		}
 	];
 
+	// Titre courant pour le header mobile (pas de sidebar visible).
+	let currentPageLabel = $derived.by(() => {
+		const path = $page.url.pathname;
+		for (const g of navGroups) {
+			for (const i of g.items) {
+				if (i.href === path) return i.label;
+			}
+		}
+		if (path.startsWith('/projects/')) return 'Projet';
+		return 'Hive';
+	});
+
 	onMount(() => {
 		applyStoredTheme();
+		// Fermer le drawer avec Escape.
+		const onKey = (e: KeyboardEvent) => {
+			if (e.key === 'Escape') drawerOpen = false;
+		};
+		window.addEventListener('keydown', onKey);
+		return () => window.removeEventListener('keydown', onKey);
 	});
 </script>
 
 <svelte:head>
 	<link rel="icon" href={favicon} />
+	<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+	<meta name="theme-color" content="#111827" />
 </svelte:head>
 
-<div class="app">
-	<aside class="sidebar">
+<!-- Header mobile uniquement (caché en ≥768px via CSS). -->
+<header class="topbar">
+	<button
+		class="burger"
+		onclick={() => (drawerOpen = !drawerOpen)}
+		aria-label="Menu"
+		aria-expanded={drawerOpen}>
+		<span></span><span></span><span></span>
+	</button>
+	<a href="/" class="topbar-brand">
+		<span class="logo">⬡</span>
+		<span>Hive</span>
+	</a>
+	<span class="topbar-title">{currentPageLabel}</span>
+	<button class="theme-toggle sm" onclick={toggleTheme} aria-label="Theme">
+		{$theme === 'dark' ? '☀' : '☾'}
+	</button>
+</header>
+
+<div class="app" class:drawer-open={drawerOpen}>
+	<!-- Overlay mobile pour fermer le drawer au tap. -->
+	{#if drawerOpen}
+		<button class="drawer-overlay"
+			onclick={() => (drawerOpen = false)}
+			aria-label="Fermer le menu"></button>
+	{/if}
+
+	<aside class="sidebar" class:open={drawerOpen}>
 		<a href="/" class="brand">
 			<span class="logo">⬡</span>
 			<span class="brand-text">Hive</span>
@@ -81,7 +117,8 @@
 					<span class="group-label">{group.label}</span>
 					{#each group.items as item}
 						<a href={item.href} class:active={$page.url.pathname === item.href}>
-							{item.label}
+							<span class="nav-icon" aria-hidden="true">{item.icon}</span>
+							<span class="nav-text">{item.label}</span>
 						</a>
 					{/each}
 				</div>
@@ -99,6 +136,7 @@
 			</button>
 		</div>
 	</aside>
+
 	<main class="content">
 		{#if $apiError}
 			<div class="api-banner" role="alert">
@@ -124,6 +162,11 @@
 		--ok: #22c55e;
 		--warn: #f59e0b;
 		--err: #ef4444;
+
+		/* Touch targets + safe-area iOS. */
+		--tap-min: 44px;
+		--safe-top: env(safe-area-inset-top, 0);
+		--safe-bottom: env(safe-area-inset-bottom, 0);
 	}
 	:global([data-theme='dark']) {
 		--bg: #0b1220;
@@ -143,8 +186,14 @@
 		background: var(--bg);
 		color: var(--text);
 		transition: background 0.15s, color 0.15s;
+		-webkit-text-size-adjust: 100%;
+		-webkit-tap-highlight-color: transparent;
 	}
+	:global(body) { overscroll-behavior-y: none; }
 
+	/* Tables — sur desktop, rendu classique. Sur mobile, .table-responsive
+	   dans les pages convertit en cards ; en fallback on ajoute
+	   scroll-x horizontal. */
 	:global(table) {
 		width: 100%;
 		border-collapse: collapse;
@@ -176,10 +225,12 @@
 		padding: 1px 6px;
 		border-radius: 3px;
 		color: var(--accent);
+		word-break: break-all;
 	}
 	:global(h1) {
 		margin: 0 0 0.25rem;
 		font-size: 1.5rem;
+		line-height: 1.2;
 	}
 	:global(h2) {
 		margin: 1.5rem 0 0.5rem;
@@ -205,12 +256,89 @@
 		font-size: 0.7rem;
 		font-weight: 500;
 	}
+	/* Utility : scroll-x pour les tables qui n'ont pas été converties en cards. */
+	:global(.table-scroll) {
+		overflow-x: auto;
+		-webkit-overflow-scrolling: touch;
+		border-radius: 8px;
+	}
+	/* Touch-friendly : tous les boutons ≥44px de haut en tap. */
+	:global(button:not(.link):not(.crumb):not(.close):not(.dismiss)),
+	:global(a.btn) {
+		min-height: var(--tap-min);
+	}
 
+	/* ========== Topbar (mobile only) ========== */
+	.topbar {
+		display: none;
+		position: sticky;
+		top: 0;
+		z-index: 100;
+		padding: calc(var(--safe-top) + 0.4rem) 0.5rem 0.4rem;
+		background: var(--bg-panel);
+		border-bottom: 1px solid var(--border);
+		align-items: center;
+		gap: 0.5rem;
+	}
+	.burger {
+		background: transparent;
+		border: none;
+		color: var(--text);
+		padding: 0.5rem;
+		width: 44px;
+		height: 44px;
+		display: flex;
+		flex-direction: column;
+		justify-content: center;
+		gap: 4px;
+		cursor: pointer;
+		border-radius: 6px;
+	}
+	.burger span {
+		display: block;
+		width: 22px;
+		height: 2px;
+		background: var(--text);
+		border-radius: 2px;
+	}
+	.burger:hover { background: var(--bg-hover); }
+	.topbar-brand {
+		display: flex;
+		align-items: center;
+		gap: 0.4rem;
+		text-decoration: none;
+		color: var(--text);
+		font-weight: 700;
+	}
+	.topbar-title {
+		flex: 1;
+		text-align: center;
+		font-size: 0.9rem;
+		color: var(--text-muted);
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+	}
+	.theme-toggle.sm {
+		width: 44px;
+		height: 44px;
+		padding: 0;
+		display: flex;
+		align-items: center;
+		justify-content: center;
+	}
+
+	/* ========== Layout grid ========== */
 	.app {
 		display: grid;
 		grid-template-columns: 220px 1fr;
 		min-height: 100vh;
 	}
+	.drawer-overlay {
+		display: none; /* visible only on mobile via media query below */
+	}
+
+	/* ========== Sidebar ========== */
 	.sidebar {
 		background: var(--bg-panel);
 		border-right: 1px solid var(--border);
@@ -252,13 +380,22 @@
 		margin-bottom: 0.25rem;
 	}
 	.group a {
-		display: block;
+		display: flex;
+		align-items: center;
+		gap: 0.65rem;
 		color: var(--text-muted);
 		text-decoration: none;
-		padding: 0.375rem 0.75rem;
+		padding: 0.55rem 0.75rem;
 		border-radius: 4px;
 		font-size: 0.875rem;
 		transition: background 0.1s, color 0.1s;
+		min-height: var(--tap-min);
+	}
+	.nav-icon {
+		width: 18px;
+		text-align: center;
+		font-size: 0.95rem;
+		opacity: 0.9;
 	}
 	.group a:hover {
 		background: var(--bg-hover);
@@ -308,9 +445,12 @@
 	.theme-toggle:hover {
 		background: var(--bg-hover);
 	}
+
+	/* ========== Content ========== */
 	.content {
 		padding: 2rem 2.5rem;
 		max-width: 1400px;
+		min-width: 0; /* autoriser text-overflow + table-scroll */
 	}
 	.api-banner {
 		display: flex;
@@ -342,12 +482,73 @@
 		background: transparent;
 		border: none;
 		color: var(--text-muted);
-		font-size: 1.1rem;
+		font-size: 1.25rem;
 		line-height: 1;
 		cursor: pointer;
-		padding: 0 0.25rem;
+		padding: 0 0.5rem;
+		width: 32px;
+		height: 32px;
 	}
 	.api-banner .dismiss:hover {
 		color: var(--text);
+	}
+
+	/* ========== Mobile ≤ 767px : drawer comportement ========== */
+	@media (max-width: 767px) {
+		.topbar { display: flex; }
+		.app {
+			grid-template-columns: 1fr;
+		}
+		.sidebar {
+			position: fixed;
+			top: 0;
+			left: 0;
+			bottom: 0;
+			width: min(280px, 80vw);
+			padding: calc(var(--safe-top) + 1rem) 1rem calc(var(--safe-bottom) + 1rem);
+			transform: translateX(-100%);
+			transition: transform 0.22s ease;
+			z-index: 200;
+			overflow-y: auto;
+			box-shadow: 2px 0 20px rgba(0, 0, 0, 0.12);
+		}
+		.sidebar.open { transform: translateX(0); }
+		.drawer-overlay {
+			display: block;
+			position: fixed;
+			inset: 0;
+			background: rgba(0, 0, 0, 0.45);
+			z-index: 150;
+			border: none;
+			padding: 0;
+			cursor: pointer;
+			animation: fade-in 0.15s ease;
+		}
+		@keyframes fade-in {
+			from { opacity: 0; }
+			to { opacity: 1; }
+		}
+		.content {
+			padding: 1rem 1rem calc(1rem + var(--safe-bottom));
+		}
+		.group a { font-size: 0.95rem; }
+
+		/* Les H1/H2 gagnent un peu de punch sur mobile. */
+		:global(h1) { font-size: 1.35rem; }
+		:global(h2) { margin-top: 1.25rem; }
+
+		/* Tables scroll-x de base sur mobile, au cas où. */
+		:global(table) { font-size: 0.82rem; }
+		:global(th), :global(td) { padding: 0.5rem 0.6rem; }
+	}
+
+	/* Desktop ≥ 768px : sidebar toujours visible (reset transform). */
+	@media (min-width: 768px) {
+		.sidebar { transform: none !important; }
+	}
+
+	/* Tablette ≥ 768px mais < 1024px : légère réduction du padding. */
+	@media (min-width: 768px) and (max-width: 1023px) {
+		.content { padding: 1.5rem 1.75rem; }
 	}
 </style>
