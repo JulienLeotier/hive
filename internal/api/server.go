@@ -109,6 +109,17 @@ func (s *Server) ClearRun(projectID string) {
 	s.clearRun(projectID)
 }
 
+// HasRun retourne true si une advance() / pipeline est encore en
+// cours pour ce projet. Utilisé par le devloop pour skipper un tick
+// qui chevaucherait le précédent — évite deux advance() concurrents
+// sur le même workdir qui se marcheraient dessus.
+func (s *Server) HasRun(projectID string) bool {
+	s.runMu.Lock()
+	defer s.runMu.Unlock()
+	_, ok := s.runCancels[projectID]
+	return ok
+}
+
 // RegisterStepCancel garde une cancel-func par phase_step.id pour
 // permettre un cancel chirurgical depuis l'UI. Exposé au package
 // devloop (CancelRegistry interface) + utilisé directement par les

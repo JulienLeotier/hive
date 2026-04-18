@@ -362,6 +362,16 @@ const maxParallelProjects = 3
 // séquentielles — Hive ne lance pas deux dev-story concurrents sur
 // le même sprint-status.yaml. Entre projets, parallélisme sans
 // synchro : chaque projet a son workdir.
+//
+// Bug critique historique : les ticks se déclenchent toutes les 10s
+// mais un advance() peut durer plusieurs minutes. Si un tick N+1
+// démarrait pendant que tick N tournait encore, on avait deux
+// advance() concurrents sur le MÊME projet — même story pickée deux
+// fois, reviews dupliquées, counter iterations qui partait en
+// vrille. Garde-fou ci-dessous : on skip tout projet qui a déjà une
+// advance() enregistrée dans runCancels OU une skill BMAD en status
+// 'running' pour ce projet (cas où le run a été lancé via un autre
+// chemin : intake pipeline, skill manuelle).
 func (s *Supervisor) tick(ctx context.Context) {
 	projects, err := s.buildingProjects(ctx)
 	if err != nil {
@@ -374,6 +384,9 @@ func (s *Supervisor) tick(ctx context.Context) {
 	sem := make(chan struct{}, maxParallelProjects)
 	var wg sync.WaitGroup
 	for _, p := range projects {
+		if s.hasInflightWork(ctx, p.ID) {
+			continue
+		}
 		wg.Add(1)
 		go func(p ProjectContext) {
 			defer wg.Done()
@@ -385,6 +398,32 @@ func (s *Supervisor) tick(ctx context.Context) {
 		}(p)
 	}
 	wg.Wait()
+}
+
+// hasInflightWork détecte si un advance() tourne déjà sur ce projet
+// OU si une skill BMAD est en status 'running' (lancée depuis
+// n'importe quel chemin : devloop précédent, intake pipeline, skill
+// manuelle via BmadSkillRunner). Évite les races où deux ticks
+// successifs démarrent des advance() concurrents sur le même projet
+// parce que le cycle précédent prend plus longtemps que s.interval.
+func (s *Supervisor) hasInflightWork(ctx context.Context, projectID string) bool {
+	// Premier check : le registre de cancellation. Cheap, in-memory.
+	// Si une advance() a registered sa cancel-func, un tick précédent
+	// est encore vivant.
+	if reg, ok := s.registry.(interface{ HasRun(string) bool }); ok {
+		if reg.HasRun(projectID) {
+			return true
+		}
+	}
+	// Deuxième check : DB scan. Capture aussi les skills lancées par
+	// intake pipeline ou manuellement depuis l'UI — elles n'utilisent
+	// pas s.registry mais écrivent bmad_phase_steps.
+	var n int
+	_ = s.db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM bmad_phase_steps
+		 WHERE project_id = ? AND status = 'running'`, projectID,
+	).Scan(&n)
+	return n > 0
 }
 
 // advance picks the next pending story for the project, runs one
