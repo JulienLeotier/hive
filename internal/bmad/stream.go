@@ -171,11 +171,16 @@ func parseStreamLine(line []byte) StreamEvent {
 	}
 	switch head.Type {
 	case "system":
-		// init + tool list : trop verbeux pour l'UI. On marque le
-		// début de session avec un bref "[system] init".
-		return StreamEvent{Type: "system", Text: "[system] " + head.Subtype}
+		// init + tool list : trop verbeux pour l'UI. On marque
+		// simplement le démarrage de session. Le type "system" portera
+		// le badge ; pas de texte additionnel nécessaire.
+		return StreamEvent{Type: "system", Text: "session " + head.Subtype}
 	case "assistant":
-		// message.content[].text — concatène tous les blocks text.
+		// message.content[] contient soit des blocks text, soit des
+		// tool_use. On les rassemble mais on ÉMET deux StreamEvent
+		// distincts pour que l'UI puisse styler texte et tool_use
+		// différemment. Le tool_use est parsé humainement (Read path
+		// au lieu de raw JSON) par summariseToolUse.
 		var env struct {
 			Message struct {
 				Content []struct {
@@ -187,35 +192,38 @@ func parseStreamLine(line []byte) StreamEvent {
 			} `json:"message"`
 		}
 		_ = json.Unmarshal(line, &env)
+		// On fusionne en un seul event pour préserver l'ordre temporel
+		// (l'assistant fait parfois "text block → tool_use" dans le
+		// même message). Une ligne par sous-block.
 		var b strings.Builder
 		for _, c := range env.Message.Content {
 			switch c.Type {
 			case "text":
 				if c.Text != "" {
+					if b.Len() > 0 {
+						b.WriteString("\n")
+					}
 					b.WriteString(c.Text)
 				}
 			case "tool_use":
 				if b.Len() > 0 {
 					b.WriteString("\n")
 				}
-				b.WriteString("⟐ ")
-				b.WriteString(c.Name)
-				if len(c.Input) > 0 && len(c.Input) < 300 {
-					b.WriteString(" ")
-					b.Write(c.Input)
-				}
+				b.WriteString("→ ")
+				b.WriteString(summariseToolUse(c.Name, c.Input))
 			}
 		}
 		return StreamEvent{Type: "assistant", Text: strings.TrimSpace(b.String())}
 	case "user":
-		// tool results — résume au lieu de dumper le payload entier.
+		// tool results — garde juste une première ligne lisible par
+		// tool_result pour ne pas noyer la console.
 		var env struct {
 			Message struct {
 				Content []struct {
-					Type       string `json:"type"`
-					ToolUseID  string `json:"tool_use_id"`
-					Content    any    `json:"content"`
-					IsError    bool   `json:"is_error"`
+					Type      string `json:"type"`
+					ToolUseID string `json:"tool_use_id"`
+					Content   any    `json:"content"`
+					IsError   bool   `json:"is_error"`
 				} `json:"content"`
 			} `json:"message"`
 		}
@@ -228,18 +236,16 @@ func parseStreamLine(line []byte) StreamEvent {
 			if b.Len() > 0 {
 				b.WriteString("\n")
 			}
-			prefix := "↳ tool_result"
-			if c.IsError {
-				prefix = "↳ tool_result (error)"
-			}
 			preview := summariseToolResult(c.Content)
-			if preview != "" {
-				b.WriteString(prefix)
-				b.WriteString(": ")
-				b.WriteString(preview)
-			} else {
-				b.WriteString(prefix)
+			if preview == "" {
+				preview = "(ok)"
 			}
+			if c.IsError {
+				b.WriteString("✗ ")
+			} else {
+				b.WriteString("← ")
+			}
+			b.WriteString(preview)
 		}
 		return StreamEvent{Type: "tool_result", Text: strings.TrimSpace(b.String())}
 	case "result":
@@ -249,7 +255,7 @@ func parseStreamLine(line []byte) StreamEvent {
 		_ = json.Unmarshal(line, &env)
 		text := env.Result
 		if text == "" {
-			text = "[result] done"
+			text = "skill terminée"
 		}
 		return StreamEvent{Type: "result", Text: text}
 	default:
@@ -257,14 +263,17 @@ func parseStreamLine(line []byte) StreamEvent {
 	}
 }
 
-// summariseToolResult tronque le content d'un tool_result pour qu'il
-// reste lisible dans la console. Les tool results peuvent faire des
-// milliers de lignes (cat d'un gros fichier, output d'un grep) —
-// l'opérateur veut juste voir "Read(file.md)" et un extrait.
+// summariseToolResult ne garde que la PREMIÈRE ligne non vide du
+// résultat, tronquée. Les tool results peuvent faire des milliers de
+// lignes (cat d'un gros fichier, output d'un grep) — l'opérateur veut
+// juste voir "file contents: ..." sans se taper tout le dump qui
+// noie la console. S'il veut le détail complet, il regarde le step
+// dans la console du terminal / les logs.
 func summariseToolResult(content any) string {
+	var text string
 	switch v := content.(type) {
 	case string:
-		return truncate(v, 200)
+		text = v
 	case []any:
 		var b strings.Builder
 		for _, part := range v {
@@ -278,10 +287,102 @@ func summariseToolResult(content any) string {
 				}
 			}
 		}
-		return truncate(b.String(), 200)
-	default:
+		text = b.String()
+	}
+	// Première ligne significative, comptage de lignes pour
+	// contextualiser.
+	lines := strings.Split(text, "\n")
+	nonEmpty := 0
+	var first string
+	for _, ln := range lines {
+		trimmed := strings.TrimSpace(ln)
+		if trimmed == "" {
+			continue
+		}
+		if first == "" {
+			first = trimmed
+		}
+		nonEmpty++
+	}
+	if first == "" {
 		return ""
 	}
+	first = truncate(first, 140)
+	if nonEmpty > 1 {
+		return fmt.Sprintf("%s (+%d lignes)", first, nonEmpty-1)
+	}
+	return first
+}
+
+// summariseToolUse transforme un tool_use.input (JSON brut) en une
+// ligne lisible humainement, en fonction du tool. "Read src/foo.ts"
+// au lieu de "Read {\"file_path\":\"...\"}". Les tools inconnus
+// retombent sur "Name <raw input>" tronqué.
+func summariseToolUse(name string, rawInput json.RawMessage) string {
+	if len(rawInput) == 0 {
+		return name
+	}
+	var m map[string]any
+	if err := json.Unmarshal(rawInput, &m); err != nil {
+		return name
+	}
+	switch name {
+	case "Read", "Edit", "Write", "NotebookEdit":
+		if p, _ := m["file_path"].(string); p != "" {
+			return name + " " + shortPath(p)
+		}
+	case "Bash":
+		if cmd, _ := m["command"].(string); cmd != "" {
+			cmd = firstLine(cmd)
+			return "Bash $ " + truncate(cmd, 100)
+		}
+	case "Grep":
+		if p, _ := m["pattern"].(string); p != "" {
+			return "Grep " + truncate(p, 80)
+		}
+	case "Glob":
+		if p, _ := m["pattern"].(string); p != "" {
+			return "Glob " + truncate(p, 80)
+		}
+	case "Task", "Agent":
+		if d, _ := m["description"].(string); d != "" {
+			return name + ": " + truncate(d, 80)
+		}
+	case "WebFetch":
+		if u, _ := m["url"].(string); u != "" {
+			return "WebFetch " + truncate(u, 80)
+		}
+	case "Skill":
+		if s, _ := m["skill"].(string); s != "" {
+			return "Skill " + s
+		}
+	case "TodoWrite":
+		return "TodoWrite"
+	}
+	// Fallback : le name seul, ou avec input compact si court.
+	raw := string(rawInput)
+	if len(raw) < 80 {
+		return name + " " + raw
+	}
+	return name
+}
+
+// shortPath tronque un chemin absolu aux 2 derniers segments pour
+// que la console reste lisible — "/Users/julien/.../skills/foo.md"
+// au lieu de "/Users/julien/Documents/todolist/.claude/skills/foo.md".
+func shortPath(p string) string {
+	parts := strings.Split(p, "/")
+	if len(parts) <= 3 {
+		return p
+	}
+	return ".../" + strings.Join(parts[len(parts)-3:], "/")
+}
+
+func firstLine(s string) string {
+	if i := strings.Index(s, "\n"); i >= 0 {
+		return s[:i]
+	}
+	return s
 }
 
 func joinPath(dir, rel string) string {

@@ -120,6 +120,40 @@
 		}
 	});
 
+	// parseConsoleEvents transforme le reply_full (texte accumulé ligne
+	// par ligne avec préfixe [type]) en tableau d'events structurés
+	// que l'UI peut rendre avec un badge + styling par type. Les
+	// assistant messages peuvent couvrir plusieurs lignes (paragraphes)
+	// — on les agrège tant qu'on ne voit pas de nouveau `[type]` en
+	// début de ligne.
+	type ConsoleEvent = { type: string; text: string };
+	function parseConsoleEvents(raw: string): ConsoleEvent[] {
+		const events: ConsoleEvent[] = [];
+		let cur: ConsoleEvent | null = null;
+		for (const line of raw.split('\n')) {
+			const m = line.match(/^\[(\w+)\]\s?(.*)$/);
+			if (m) {
+				if (cur) events.push(cur);
+				cur = { type: m[1], text: m[2] };
+			} else if (cur) {
+				cur.text += (cur.text ? '\n' : '') + line;
+			}
+		}
+		if (cur) events.push(cur);
+		return events.filter((e) => e.text.trim() !== '' || e.type === 'system');
+	}
+
+	// typeLabel affiche un badge court par type d'event.
+	function typeLabel(type: string): string {
+		switch (type) {
+			case 'assistant': return 'Claude';
+			case 'tool_result': return 'Tool';
+			case 'system': return 'Session';
+			case 'result': return 'Final';
+			default: return type;
+		}
+	}
+
 	async function openConsole(stepID: number) {
 		consoleLoading = true;
 		try {
@@ -1211,7 +1245,15 @@
 			{/if}
 			<div class="console-body" bind:this={consoleBodyEl}>
 				{#if consoleStep.reply_full}
-					<pre class="console-pre">{consoleStep.reply_full}</pre>
+					{@const evs = parseConsoleEvents(consoleStep.reply_full)}
+					<ul class="console-events">
+						{#each evs as e, i (i)}
+							<li class="console-event {e.type}">
+								<span class="evt-badge">{typeLabel(e.type)}</span>
+								<pre class="evt-text">{e.text}</pre>
+							</li>
+						{/each}
+					</ul>
 					{#if consoleStep.status === 'running'}
 						<div class="console-live">
 							<span class="live-dot big"></span>
@@ -2518,7 +2560,35 @@
 		gap: 0.5rem;
 		color: var(--text-muted);
 	}
-	.console-pre {
+	.console-events {
+		list-style: none;
+		padding: 0;
+		margin: 0;
+		display: flex;
+		flex-direction: column;
+		gap: 0.55rem;
+	}
+	.console-event {
+		display: grid;
+		grid-template-columns: 80px 1fr;
+		gap: 0.8rem;
+		padding: 0.55rem 0.75rem;
+		border-radius: 6px;
+		border: 1px solid transparent;
+		background: var(--bg-alt, var(--bg));
+	}
+	.console-event .evt-badge {
+		font-size: 0.68rem;
+		text-transform: uppercase;
+		letter-spacing: 0.05em;
+		font-weight: 600;
+		color: var(--text-muted);
+		line-height: 1.6;
+		text-align: right;
+		padding-right: 0.2rem;
+		border-right: 2px solid var(--border);
+	}
+	.console-event .evt-text {
 		font-family: ui-monospace, 'SF Mono', Menlo, monospace;
 		font-size: 0.82rem;
 		line-height: 1.55;
@@ -2526,6 +2596,44 @@
 		word-break: break-word;
 		color: var(--text);
 		margin: 0;
+	}
+	.console-event.assistant {
+		background: color-mix(in srgb, var(--accent) 6%, var(--bg-alt, var(--bg)));
+		border-color: color-mix(in srgb, var(--accent) 20%, var(--border));
+	}
+	.console-event.assistant .evt-badge {
+		color: var(--accent);
+		border-right-color: color-mix(in srgb, var(--accent) 30%, var(--border));
+	}
+	.console-event.assistant .evt-text {
+		font-family: inherit;
+		font-size: 0.88rem;
+		line-height: 1.5;
+	}
+	.console-event.tool_result {
+		background: color-mix(in srgb, var(--text-muted) 6%, var(--bg-alt, var(--bg)));
+	}
+	.console-event.tool_result .evt-text {
+		color: var(--text-muted);
+		font-size: 0.78rem;
+	}
+	.console-event.system {
+		opacity: 0.55;
+	}
+	.console-event.system .evt-text {
+		font-size: 0.75rem;
+	}
+	.console-event.result {
+		background: color-mix(in srgb, var(--ok) 10%, var(--bg-alt, var(--bg)));
+		border-color: color-mix(in srgb, var(--ok) 30%, var(--border));
+	}
+	.console-event.result .evt-badge {
+		color: var(--ok);
+		border-right-color: color-mix(in srgb, var(--ok) 40%, var(--border));
+	}
+	.console-event.result .evt-text {
+		font-family: inherit;
+		font-weight: 500;
 	}
 	.console-live {
 		display: flex;
