@@ -51,7 +51,10 @@
 </p>
 
 <section class="card">
-	<h2 class="card-title">Notifications Slack</h2>
+	<header class="card-header">
+		<span class="card-icon">🔔</span>
+		<h2 class="card-title">Notifications Slack</h2>
+	</header>
 	{#if loading}
 		<div class="empty">Chargement…</div>
 	{:else if settings?.slack_enabled}
@@ -96,7 +99,10 @@
 </section>
 
 <section class="card">
-	<h2 class="card-title">Autres réglages via env</h2>
+	<header class="card-header">
+		<span class="card-icon">⚙</span>
+		<h2 class="card-title">Autres réglages via env</h2>
+	</header>
 	<dl class="env">
 		<dt><code>HIVE_PORT</code></dt>
 		<dd>Port HTTP (défaut : 8080)</dd>
@@ -120,12 +126,32 @@
 		padding: 1.25rem 1.5rem;
 		margin-bottom: 1.5rem;
 	}
+	.card-header {
+		display: flex;
+		align-items: center;
+		gap: 0.6rem;
+		margin-bottom: 0.8rem;
+		padding-bottom: 0.6rem;
+		border-bottom: 1px solid var(--border);
+	}
+	.card-icon {
+		font-size: 1.1rem;
+		width: 32px;
+		height: 32px;
+		border-radius: 8px;
+		background: color-mix(in srgb, var(--accent) 15%, transparent);
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		flex-shrink: 0;
+	}
 	.card-title {
-		margin: 0 0 0.8rem;
+		margin: 0;
 		text-transform: none;
 		letter-spacing: 0;
 		color: var(--text);
 		font-size: 1rem;
+		font-weight: 600;
 	}
 	.status-ok, .status-off {
 		display: inline-flex;

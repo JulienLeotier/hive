@@ -10,6 +10,7 @@
 		status: string;
 		created_at: string;
 		updated_at: string;
+		total_cost_usd?: number;
 	};
 	type Event = {
 		id: number;
@@ -26,7 +27,7 @@
 		try {
 			const [p, e] = await Promise.all([
 				apiGet<Project[]>('/api/v1/projects'),
-				apiGet<Event[]>('/api/v1/events?limit=15')
+				apiGet<Event[]>('/api/v1/events?limit=20')
 			]);
 			projects = p ?? [];
 			recentEvents = e ?? [];
@@ -44,8 +45,7 @@
 				try {
 					const evt = JSON.parse(msg.data) as Event;
 					if (!evt.type) return;
-					recentEvents = [evt, ...recentEvents].slice(0, 15);
-					// Project status may have changed — cheap refresh.
+					recentEvents = [evt, ...recentEvents].slice(0, 20);
 					if (evt.type.startsWith('project.') || evt.type.startsWith('story.')) {
 						load();
 					}
@@ -68,6 +68,10 @@
 		return c;
 	});
 
+	let totalCostUSD = $derived(
+		projects.reduce((sum, p) => sum + (p.total_cost_usd ?? 0), 0)
+	);
+
 	let active = $derived(
 		projects.filter((p) => p.status === 'building' || p.status === 'planning' || p.status === 'review')
 	);
@@ -83,233 +87,526 @@
 		};
 		return map[s] ?? 'var(--text-muted)';
 	}
+
+	function eventColor(type: string): string {
+		if (type === 'project.shipped' || type === 'story.reviewed' || type.endsWith('_done')) return 'var(--ok)';
+		if (type.endsWith('.failed') || type === 'story.blocked' || type.includes('cap_reached')) return 'var(--err)';
+		if (type.includes('warning')) return 'var(--warn)';
+		return 'var(--accent)';
+	}
+
+	function eventIcon(type: string): string {
+		if (type === 'project.shipped') return '🚀';
+		if (type.endsWith('.failed')) return '✕';
+		if (type.includes('warning')) return '⚠';
+		if (type === 'story.reviewed') return '✓';
+		if (type.startsWith('project.bmad_step')) return '●';
+		if (type.startsWith('story.dev')) return '◆';
+		if (type.startsWith('project.architect')) return '◎';
+		return '·';
+	}
 </script>
 
-<main>
-	<header class="hero">
-		<h1>Hive</h1>
-		<p class="tagline">
-			Usine à produits BMAD en local — décris ce que tu veux construire,
-			les agents BMAD l'emballent en produit livré dans ton workdir.
+<svelte:head><title>Hive</title></svelte:head>
+
+<section class="hero">
+	<div class="hero-inner">
+		<span class="hero-badge">Usine BMAD locale</span>
+		<h1 class="hero-title">Transforme une idée en produit livré.</h1>
+		<p class="hero-lede">
+			Décris ce que tu veux, les agents BMAD écrivent le PRD, l'architecture,
+			le code, la revue et poussent les PRs — dans ton workdir, sur ton Claude Code.
 		</p>
-		<a href="/projects" class="cta">Démarrer un nouveau projet →</a>
-	</header>
-
-	<section class="flow">
-		<h2>Comment ça marche</h2>
-		<ol class="steps">
-			<li><strong>Idée</strong><span>Tu décris ce que tu veux à l'agent PM.</span></li>
-			<li><strong>PRD</strong><span>Il te pose des questions puis rédige le PRD via BMAD.</span></li>
-			<li><strong>Architecte</strong><span>Décompose en epics, stories, critères d'acceptation.</span></li>
-			<li><strong>Dev + Revue</strong><span>Claude Code code, le relecteur vérifie chaque AC, itère jusqu'au vert.</span></li>
-			<li><strong>Livraison</strong><span>Chaque commit atterrit dans ton workdir. Quand toutes les ACs passent, le projet est livré.</span></li>
-		</ol>
-	</section>
-
-	<section class="summary">
-		<h2>Parc de projets</h2>
-		<div class="cards">
-			<div class="card"><strong>{projects.length}</strong><span>projets au total</span></div>
-			<div class="card"><strong style="color:var(--warn)">{counts.building + counts.review}</strong><span>en construction</span></div>
-			<div class="card"><strong style="color:var(--accent)">{counts.planning}</strong><span>en planification</span></div>
-			<div class="card"><strong style="color:var(--ok)">{counts.shipped}</strong><span>livrés</span></div>
-			<div class="card"><strong>{counts.draft}</strong><span>brouillons</span></div>
-			{#if counts.failed > 0}
-				<div class="card"><strong style="color:var(--err)">{counts.failed}</strong><span>échoués</span></div>
-			{/if}
+		<div class="hero-actions">
+			<a href="/projects" class="btn primary">Démarrer un projet →</a>
+			<a href="/costs" class="btn ghost">Voir les coûts</a>
 		</div>
-	</section>
+	</div>
+</section>
 
-	{#if active.length > 0}
-		<section>
+<section class="stats">
+	<div class="stat stat-accent">
+		<span class="stat-num">{projects.length}</span>
+		<span class="stat-label">projets</span>
+	</div>
+	<div class="stat" class:stat-warn={counts.building + counts.review > 0}>
+		<span class="stat-num">{counts.building + counts.review}</span>
+		<span class="stat-label">en construction</span>
+	</div>
+	<div class="stat" class:stat-planning={counts.planning > 0}>
+		<span class="stat-num">{counts.planning}</span>
+		<span class="stat-label">en planification</span>
+	</div>
+	<div class="stat" class:stat-ok={counts.shipped > 0}>
+		<span class="stat-num">{counts.shipped}</span>
+		<span class="stat-label">livrés</span>
+	</div>
+	{#if counts.draft > 0}
+		<div class="stat">
+			<span class="stat-num">{counts.draft}</span>
+			<span class="stat-label">brouillons</span>
+		</div>
+	{/if}
+	{#if counts.failed > 0}
+		<div class="stat stat-err">
+			<span class="stat-num">{counts.failed}</span>
+			<span class="stat-label">échoués</span>
+		</div>
+	{/if}
+	{#if totalCostUSD > 0}
+		<div class="stat stat-cost">
+			<span class="stat-num">${totalCostUSD.toFixed(2)}</span>
+			<span class="stat-label">cumul Claude</span>
+		</div>
+	{/if}
+</section>
+
+{#if active.length > 0}
+	<section>
+		<div class="sec-head">
 			<h2>En cours</h2>
-			<ul class="active-list">
-				{#each active as p (p.id)}
-					<li>
-						<a href="/projects/{p.id}">
-							<span class="badge" style="background:{statusColor(p.status)}">{p.status}</span>
+			<span class="live-pulse">
+				<span class="live-dot"></span>
+				<span>{active.length} actif{active.length > 1 ? 's' : ''}</span>
+			</span>
+		</div>
+		<ul class="active-list">
+			{#each active as p (p.id)}
+				<li>
+					<a href="/projects/{p.id}" class="active-card">
+						<span class="status-dot" style="background:{statusColor(p.status)}"></span>
+						<div class="active-main">
 							<strong>{p.name}</strong>
 							<span class="muted">{p.idea}</span>
-						</a>
-					</li>
-				{/each}
-			</ul>
-		</section>
-	{/if}
+						</div>
+						<span class="badge" style="background:{statusColor(p.status)}">{p.status}</span>
+					</a>
+				</li>
+			{/each}
+		</ul>
+	</section>
+{/if}
 
-	<section>
-		<h2>Événements récents</h2>
+<section class="two-col">
+	<div class="col">
+		<h2>Comment ça marche</h2>
+		<ol class="steps">
+			<li>
+				<span class="step-n">1</span>
+				<div>
+					<strong>Idée</strong>
+					<span>Tu décris le produit à l'agent PM, répond aux 5 questions de cadrage.</span>
+				</div>
+			</li>
+			<li>
+				<span class="step-n">2</span>
+				<div>
+					<strong>Planning BMAD</strong>
+					<span>Analyst → Product brief → PM → PRD → Architecture → Epics / stories.</span>
+				</div>
+			</li>
+			<li>
+				<span class="step-n">3</span>
+				<div>
+					<strong>Dev + revue</strong>
+					<span>Pour chaque story : <code>/bmad-dev-story</code> code, <code>/bmad-code-review</code> valide, PR poussée.</span>
+				</div>
+			</li>
+			<li>
+				<span class="step-n">4</span>
+				<div>
+					<strong>Livraison</strong>
+					<span>Quand toutes les ACs passent, le projet flippe en <code>shipped</code>.</span>
+				</div>
+			</li>
+		</ol>
+	</div>
+
+	<div class="col">
+		<h2>Activité</h2>
 		{#if recentEvents.length === 0}
-			<p class="empty">Rien pour l'instant. Lance un projet et reviens.</p>
+			<div class="empty">
+				<span class="empty-icon">◌</span>
+				Silence radio. Lance un projet pour voir passer les events BMAD.
+			</div>
 		{:else}
-			<ul class="events">
+			<ul class="timeline">
 				{#each recentEvents as e (e.id)}
 					<li>
-						<span class="t" style="color:{e.type.startsWith('project.shipped') || e.type === 'story.reviewed' ? 'var(--ok)' : e.type.endsWith('.failed') || e.type === 'story.blocked' ? 'var(--err)' : 'var(--accent)'}">{e.type}</span>
-						<span class="muted">{fmtRelative(e.created_at)}</span>
+						<span class="tl-icon" style="color:{eventColor(e.type)}">{eventIcon(e.type)}</span>
+						<div class="tl-body">
+							<span class="tl-type" style="color:{eventColor(e.type)}">{e.type}</span>
+							<span class="tl-time">{fmtRelative(e.created_at)}</span>
+						</div>
 					</li>
 				{/each}
 			</ul>
 		{/if}
-	</section>
-</main>
+	</div>
+</section>
 
 <style>
-	main {
-		display: flex;
-		flex-direction: column;
-		gap: 2rem;
-		max-width: 960px;
-	}
+	/* ===== Hero ===== */
 	.hero {
-		padding: 1.5rem 0;
+		margin: -2rem -2.5rem 2rem;
+		padding: 3rem 2.5rem;
+		background:
+			radial-gradient(ellipse at top left, color-mix(in srgb, var(--accent) 18%, transparent), transparent 60%),
+			radial-gradient(ellipse at bottom right, color-mix(in srgb, var(--accent) 10%, transparent), transparent 60%),
+			var(--bg-panel);
 		border-bottom: 1px solid var(--border);
 	}
-	.hero h1 {
-		font-size: 2.5rem;
-		margin: 0 0 0.25rem;
-	}
-	.tagline {
-		color: var(--text-muted);
-		margin: 0 0 1rem;
-		font-size: 1rem;
-		line-height: 1.5;
-	}
-	.cta {
+	.hero-inner { max-width: 720px; }
+	.hero-badge {
 		display: inline-block;
-		padding: 0.55rem 1rem;
-		background: var(--accent);
-		color: white;
+		padding: 0.2rem 0.7rem;
+		background: color-mix(in srgb, var(--accent) 18%, transparent);
+		color: var(--accent);
+		border-radius: 999px;
+		font-size: 0.7rem;
+		font-weight: 700;
+		letter-spacing: 0.08em;
+		text-transform: uppercase;
+		margin-bottom: 0.9rem;
+	}
+	.hero-title {
+		font-size: 2.4rem;
+		line-height: 1.15;
+		margin: 0 0 0.7rem;
+		letter-spacing: -0.02em;
+		font-weight: 700;
+	}
+	.hero-lede {
+		color: var(--text-muted);
+		font-size: 1.05rem;
+		line-height: 1.55;
+		margin: 0 0 1.5rem;
+	}
+	.hero-actions { display: flex; flex-wrap: wrap; gap: 0.6rem; }
+	.btn {
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		padding: 0.6rem 1.1rem;
 		border-radius: 6px;
 		text-decoration: none;
 		font-weight: 600;
 		font-size: 0.9rem;
+		transition: background 0.1s, transform 0.05s, border-color 0.1s;
 	}
-	.cta:hover { background: color-mix(in srgb, var(--accent) 85%, black); }
-
-	.flow h2, .summary h2, section h2 {
-		font-size: 0.85rem;
-		text-transform: uppercase;
-		letter-spacing: 0.08em;
-		color: var(--text-muted);
-		margin: 0 0 0.75rem;
-	}
-	.steps {
-		list-style: none;
-		padding: 0;
-		margin: 0;
-		display: grid;
-		grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
-		gap: 0.6rem;
-		counter-reset: step;
-	}
-	.steps li {
-		position: relative;
-		padding: 0.75rem 0.85rem 0.75rem 2.25rem;
-		background: var(--bg-panel);
-		border: 1px solid var(--border);
-		border-radius: 6px;
-		counter-increment: step;
-	}
-	.steps li::before {
-		content: counter(step);
-		position: absolute;
-		left: 0.75rem;
-		top: 0.7rem;
-		width: 1.25rem;
-		height: 1.25rem;
-		border-radius: 50%;
+	.btn:active { transform: translateY(1px); }
+	.btn.primary {
 		background: var(--accent);
 		color: white;
-		font-size: 0.7rem;
-		font-weight: 700;
-		display: inline-flex;
-		align-items: center;
-		justify-content: center;
+		border: 1px solid var(--accent);
 	}
-	.steps strong {
-		display: block;
-		font-size: 0.9rem;
-		margin-bottom: 0.15rem;
+	.btn.primary:hover { background: color-mix(in srgb, var(--accent) 88%, black); }
+	.btn.ghost {
+		background: transparent;
+		color: var(--text);
+		border: 1px solid var(--border);
 	}
-	.steps span {
-		font-size: 0.78rem;
-		color: var(--text-muted);
-		line-height: 1.35;
-	}
+	.btn.ghost:hover { border-color: var(--accent); color: var(--accent); }
 
-	.cards {
+	/* ===== Stats ===== */
+	.stats {
 		display: grid;
-		grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+		grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
 		gap: 0.75rem;
+		margin-bottom: 2rem;
 	}
-	.card {
-		padding: 0.9rem 1rem;
+	.stat {
+		padding: 1rem 1.1rem;
 		background: var(--bg-panel);
 		border: 1px solid var(--border);
-		border-radius: 6px;
+		border-radius: 8px;
+		display: flex;
+		flex-direction: column;
+		gap: 0.15rem;
+		position: relative;
+		overflow: hidden;
 	}
-	.card strong {
-		display: block;
+	.stat::before {
+		content: '';
+		position: absolute;
+		top: 0;
+		left: 0;
+		width: 3px;
+		height: 100%;
+		background: var(--text-muted);
+		opacity: 0.3;
+	}
+	.stat-accent::before { background: var(--accent); opacity: 1; }
+	.stat-warn::before { background: var(--warn); opacity: 1; }
+	.stat-planning::before { background: var(--accent); opacity: 1; }
+	.stat-ok::before { background: var(--ok); opacity: 1; }
+	.stat-err::before { background: var(--err); opacity: 1; }
+	.stat-cost::before { background: var(--warn); opacity: 1; }
+	.stat-num {
 		font-size: 1.75rem;
-		font-weight: 600;
+		font-weight: 700;
+		line-height: 1;
+		font-variant-numeric: tabular-nums;
+		letter-spacing: -0.02em;
 	}
-	.card span {
-		font-size: 0.75rem;
+	.stat-cost .stat-num {
+		font-family: ui-monospace, monospace;
+		font-size: 1.4rem;
+		color: var(--warn);
+	}
+	.stat-label {
+		font-size: 0.72rem;
 		color: var(--text-muted);
+		text-transform: uppercase;
+		letter-spacing: 0.06em;
+		margin-top: 0.2rem;
 	}
 
+	/* ===== Sections ===== */
+	section { margin-bottom: 2rem; }
+	section :global(h2) {
+		font-size: 0.78rem;
+		text-transform: uppercase;
+		letter-spacing: 0.1em;
+		color: var(--text-muted);
+		margin: 0 0 0.75rem;
+		font-weight: 700;
+	}
+	.sec-head {
+		display: flex;
+		justify-content: space-between;
+		align-items: center;
+		margin-bottom: 0.75rem;
+	}
+	.sec-head :global(h2) { margin: 0; }
+	.live-pulse {
+		display: inline-flex;
+		align-items: center;
+		gap: 0.4rem;
+		font-size: 0.75rem;
+		color: var(--warn);
+		font-weight: 600;
+	}
+	.live-dot {
+		width: 8px;
+		height: 8px;
+		border-radius: 50%;
+		background: var(--warn);
+		animation: pulse 1.2s ease-in-out infinite;
+	}
+	@keyframes pulse {
+		0%, 100% { opacity: 1; transform: scale(1); }
+		50% { opacity: 0.5; transform: scale(0.85); }
+	}
+
+	/* ===== Active projects ===== */
 	.active-list {
 		list-style: none;
 		padding: 0;
 		margin: 0;
 		display: flex;
 		flex-direction: column;
-		gap: 0.3rem;
+		gap: 0.5rem;
 	}
-	.active-list li a {
+	.active-card {
 		display: flex;
-		gap: 0.6rem;
+		gap: 0.9rem;
 		align-items: center;
-		padding: 0.55rem 0.75rem;
+		padding: 0.85rem 1rem;
 		background: var(--bg-panel);
 		border: 1px solid var(--border);
-		border-radius: 6px;
+		border-radius: 8px;
 		text-decoration: none;
 		color: inherit;
+		transition: border-color 0.15s, transform 0.1s;
 	}
-	.active-list li a:hover { border-color: var(--accent); }
-	.active-list .muted {
-		color: var(--text-muted);
-		font-size: 0.82rem;
+	.active-card:hover {
+		border-color: var(--accent);
+		transform: translateY(-1px);
+	}
+	.status-dot {
+		width: 10px;
+		height: 10px;
+		border-radius: 50%;
+		flex-shrink: 0;
+		box-shadow: 0 0 12px currentColor;
+	}
+	.active-main {
+		flex: 1;
+		min-width: 0;
+		display: flex;
+		flex-direction: column;
+		gap: 0.1rem;
+	}
+	.active-main strong {
+		font-size: 0.95rem;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+	}
+	.active-main .muted {
+		font-size: 0.8rem;
 		overflow: hidden;
 		text-overflow: ellipsis;
 		white-space: nowrap;
 	}
 
-	.events {
+	/* ===== Two-column layout ===== */
+	.two-col {
+		display: grid;
+		grid-template-columns: 1fr 1fr;
+		gap: 1.5rem;
+	}
+	.col { min-width: 0; }
+
+	/* ===== Steps ===== */
+	.steps {
 		list-style: none;
 		padding: 0;
 		margin: 0;
 		display: flex;
 		flex-direction: column;
-		gap: 0.25rem;
-		font-size: 0.82rem;
+		gap: 0.5rem;
 	}
-	.events li {
+	.steps li {
 		display: flex;
-		gap: 0.75rem;
-		align-items: baseline;
+		gap: 0.85rem;
+		padding: 0.8rem 1rem;
+		background: var(--bg-panel);
+		border: 1px solid var(--border);
+		border-radius: 8px;
 	}
-	.events .t { font-weight: 600; min-width: 12rem; }
+	.step-n {
+		width: 28px;
+		height: 28px;
+		border-radius: 50%;
+		background: color-mix(in srgb, var(--accent) 18%, transparent);
+		color: var(--accent);
+		font-size: 0.8rem;
+		font-weight: 700;
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		flex-shrink: 0;
+	}
+	.steps strong {
+		display: block;
+		font-size: 0.95rem;
+		margin-bottom: 0.15rem;
+	}
+	.steps span {
+		font-size: 0.82rem;
+		color: var(--text-muted);
+		line-height: 1.5;
+	}
+	.steps code {
+		background: var(--bg-hover);
+		padding: 1px 5px;
+		border-radius: 3px;
+		font-size: 0.78rem;
+		color: var(--accent);
+	}
+
+	/* ===== Timeline ===== */
+	.timeline {
+		list-style: none;
+		padding: 0;
+		margin: 0;
+		max-height: 400px;
+		overflow-y: auto;
+		display: flex;
+		flex-direction: column;
+		gap: 0.3rem;
+	}
+	.timeline li {
+		display: flex;
+		gap: 0.7rem;
+		align-items: flex-start;
+		padding: 0.5rem 0.75rem;
+		background: var(--bg-panel);
+		border: 1px solid var(--border);
+		border-radius: 6px;
+	}
+	.tl-icon {
+		font-size: 0.9rem;
+		font-family: ui-monospace, monospace;
+		width: 18px;
+		text-align: center;
+		flex-shrink: 0;
+		line-height: 1.4;
+	}
+	.tl-body {
+		flex: 1;
+		min-width: 0;
+		display: flex;
+		justify-content: space-between;
+		align-items: baseline;
+		gap: 0.5rem;
+	}
+	.tl-type {
+		font-family: ui-monospace, monospace;
+		font-size: 0.78rem;
+		font-weight: 600;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+		min-width: 0;
+	}
+	.tl-time {
+		font-size: 0.72rem;
+		color: var(--text-muted);
+		white-space: nowrap;
+		flex-shrink: 0;
+	}
+
+	/* ===== Empty state ===== */
+	.empty {
+		padding: 2rem 1rem;
+		text-align: center;
+		color: var(--text-muted);
+		background: var(--bg-panel);
+		border: 1px dashed var(--border);
+		border-radius: 8px;
+		font-style: italic;
+	}
+	.empty-icon {
+		display: block;
+		font-size: 2rem;
+		margin-bottom: 0.5rem;
+		font-style: normal;
+		opacity: 0.5;
+	}
+
 	.muted { color: var(--text-muted); font-size: 0.8rem; }
-	.empty { color: var(--text-muted); font-style: italic; }
 	.badge {
 		display: inline-block;
-		padding: 0.12rem 0.45rem;
+		padding: 0.15rem 0.55rem;
 		border-radius: 4px;
 		color: white;
 		font-size: 0.68rem;
-		font-weight: 500;
+		font-weight: 600;
+		text-transform: lowercase;
+		letter-spacing: 0.03em;
+	}
+
+	/* ===== Responsive ===== */
+	@media (max-width: 767px) {
+		.hero {
+			margin: -1rem -1rem 1.5rem;
+			padding: 2rem 1rem;
+		}
+		.hero-title { font-size: 1.7rem; }
+		.hero-lede { font-size: 0.95rem; }
+		.hero-badge { margin-bottom: 0.7rem; }
+		.stats { grid-template-columns: repeat(2, 1fr); gap: 0.5rem; }
+		.stat { padding: 0.75rem; }
+		.stat-num { font-size: 1.4rem; }
+		.two-col { grid-template-columns: 1fr; gap: 1rem; }
+		.timeline { max-height: none; }
+		.active-main .muted { font-size: 0.78rem; }
+	}
+	@media (min-width: 768px) and (max-width: 1023px) {
+		.hero { margin: -1.5rem -1.75rem 2rem; padding: 2.5rem 1.75rem; }
+		.two-col { grid-template-columns: 1fr; }
 	}
 </style>
