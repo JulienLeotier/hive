@@ -855,10 +855,20 @@
 								</div>
 								<span class="phase-chev">›</span>
 							</button>
-							{#if s.status !== 'running'}
+							{#if s.status === 'running'}
 								<button
 									type="button"
-									class="phase-rerun"
+									class="phase-action cancel"
+									onclick={cancelRun}
+									disabled={cancelling}
+									title="Annuler cette skill en cours ({s.command})"
+								>
+									{cancelling ? '⏳' : '✕'}
+								</button>
+							{:else}
+								<button
+									type="button"
+									class="phase-action"
 									onclick={() => rerunStep(s.id, s.command)}
 									disabled={rerunning[s.id]}
 									title="Relancer ce skill BMAD ({s.command}) — crée une nouvelle invocation"
@@ -1711,7 +1721,7 @@
 		font-size: 0.82rem;
 		transition: border-color 0.1s;
 	}
-	.phase-rerun {
+	.phase-action {
 		flex-shrink: 0;
 		display: flex;
 		align-items: center;
@@ -1725,11 +1735,15 @@
 		font-size: 0.9rem;
 		transition: background 0.1s, color 0.1s;
 	}
-	.phase-rerun:hover:not(:disabled) {
+	.phase-action:hover:not(:disabled) {
 		background: color-mix(in srgb, var(--accent) 12%, transparent);
 		color: var(--accent);
 	}
-	.phase-rerun:disabled {
+	.phase-action.cancel:hover:not(:disabled) {
+		background: color-mix(in srgb, var(--err, #dc2626) 14%, transparent);
+		color: var(--err, #dc2626);
+	}
+	.phase-action:disabled {
 		opacity: 0.4;
 		cursor: not-allowed;
 	}
