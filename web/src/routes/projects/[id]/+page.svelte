@@ -60,6 +60,7 @@
 		total_cost_usd?: number;
 		failure_stage?: string;
 		failure_error?: string;
+		paused?: boolean;
 		status: string;
 		created_at: string;
 		updated_at: string;
@@ -191,8 +192,8 @@
 	async function cancelStep(stepID: number, command: string) {
 		const ok = await confirmDialog({
 			title: 'Annuler ce skill ?',
-			message: `${command}\n\nSeul ce skill sera tué. Le reste du projet reste actif.`,
-			confirmLabel: 'Annuler ce skill',
+			message: `${command}\n\nLe skill sera tué et le projet mis en pause — le devloop ne relancera pas de nouvelle skill tant que tu n'auras pas cliqué Reprendre.`,
+			confirmLabel: 'Annuler + pauser',
 			cancelLabel: 'Laisser tourner',
 			danger: true
 		});
@@ -556,6 +557,22 @@
 	}
 
 	let retrying = $state<Record<string, boolean>>({});
+	let resuming = $state(false);
+
+	async function resumeProject() {
+		const id = $page.params.id ?? '';
+		if (!id) return;
+		resuming = true;
+		actionError = '';
+		try {
+			await apiPost(`/api/v1/projects/${encodeURIComponent(id)}/resume`, {});
+			await load();
+		} catch (e) {
+			actionError = e instanceof Error ? e.message : String(e);
+		} finally {
+			resuming = false;
+		}
+	}
 
 	let editingPRD = $state(false);
 	let prdDraft = $state('');
@@ -793,6 +810,22 @@
 						{retryingBuild ? 'Relance…' : 'Relancer depuis zéro'}
 					</button>
 				</div>
+			</div>
+		{/if}
+
+		{#if project.paused && !project.failure_stage}
+			<div class="pause-banner">
+				<div class="pause-text">
+					<strong>Projet en pause</strong>
+					<span>Le devloop ne reprendra aucune story tant que tu n'auras pas cliqué Reprendre.</span>
+				</div>
+				<button
+					type="button"
+					class="btn accent"
+					onclick={resumeProject}
+					disabled={resuming}>
+					{resuming ? 'Reprise…' : '▶ Reprendre'}
+				</button>
 			</div>
 		{/if}
 
@@ -1554,6 +1587,32 @@
 		font-size: 0.72rem;
 		font-weight: 600;
 	}
+	.pause-banner {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		gap: 1rem;
+		padding: 0.8rem 1rem;
+		background: color-mix(in srgb, var(--accent) 10%, var(--bg-alt));
+		border-left: 3px solid var(--accent);
+		border-radius: 0 6px 6px 0;
+		flex-wrap: wrap;
+	}
+	.pause-text {
+		display: flex;
+		flex-direction: column;
+		gap: 0.2rem;
+		flex: 1 1 280px;
+	}
+	.pause-text strong {
+		color: var(--accent);
+		font-size: 0.9rem;
+	}
+	.pause-text span {
+		font-size: 0.82rem;
+		color: var(--text-muted);
+	}
+
 	.fail-banner {
 		display: flex;
 		align-items: center;

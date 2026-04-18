@@ -998,6 +998,11 @@ func (s *Server) handleCancelRun(w http.ResponseWriter, r *http.Request) {
 				nextStatus, id)
 		}
 	}
+	// Pause systématique : un cancel = l'opérateur a décidé de STOP,
+	// le devloop ne doit pas réessayer au prochain tick. "Reprendre"
+	// clear paused=0.
+	_, _ = s.db().ExecContext(r.Context(),
+		`UPDATE projects SET paused = 1 WHERE id = ?`, id)
 	if s.eventBus != nil {
 		_, _ = s.eventBus.Publish(r.Context(), "project.cancelled", "api",
 			map[string]any{
@@ -1112,11 +1117,43 @@ func (s *Server) handlePhaseStep(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, out)
 }
 
+// handleResumeProject clear paused=0 pour que le devloop reprenne le
+// travail au prochain tick. Complémentaire du paused=1 posé par les
+// handlers de cancel. Idempotent : appeler sur un projet non pausé
+// est un no-op.
+func (s *Server) handleResumeProject(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if id == "" {
+		writeError(w, http.StatusBadRequest, "BAD_REQUEST", "project id required")
+		return
+	}
+	res, err := s.db().ExecContext(r.Context(),
+		`UPDATE projects SET paused = 0, updated_at = datetime('now') WHERE id = ?`, id)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "DB_ERROR", err.Error())
+		return
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		writeError(w, http.StatusNotFound, "NOT_FOUND", "projet introuvable")
+		return
+	}
+	if s.eventBus != nil {
+		_, _ = s.eventBus.Publish(r.Context(), "project.resumed", "api",
+			map[string]any{"project_id": id})
+	}
+	writeJSON(w, map[string]any{"project_id": id, "paused": false})
+}
+
 // handleCancelPhaseStep tue UN skill précis en s'appuyant sur
 // stepCancels (registre keyed par phase_step.id). Contrairement à
 // /projects/{id}/cancel, ce endpoint ne touche PAS à project.status
-// et ne sweep PAS les autres rows — seul le skill visé est tué. Si le
-// skill est déjà terminé, renvoie 409.
+// et ne sweep PAS les autres rows — seul le skill visé est tué.
+//
+// Marque AUSSI le projet comme paused=1 pour que le devloop ne
+// relance pas une nouvelle skill au prochain tick. Sans ce flag,
+// l'opérateur voyait son cancel immédiatement remplacé par un
+// /bmad-create-story frais 10s plus tard. L'UI doit afficher un
+// bouton "Reprendre" pour clear paused=0.
 func (s *Server) handleCancelPhaseStep(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	if id == "" {
@@ -1128,24 +1165,32 @@ func (s *Server) handleCancelPhaseStep(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "BAD_REQUEST", "step id invalide")
 		return
 	}
+	// Lookup project_id AVANT cancelStep (qui delete le registry entry).
+	var projectID string
+	_ = s.db().QueryRowContext(r.Context(),
+		`SELECT project_id FROM bmad_phase_steps WHERE id = ?`, stepID,
+	).Scan(&projectID)
+
 	if !s.cancelStep(stepID) {
 		writeError(w, http.StatusConflict, "NO_RUN",
 			"ce skill n'est plus en cours (déjà terminé ou jamais démarré)")
 		return
 	}
-	// Marque explicitement la row comme failed — sinon le ctx cancelled
-	// pourrait tuer le process claude avant que OnFinish ait le temps
-	// d'updater la DB.
 	_, _ = s.db().ExecContext(r.Context(),
 		`UPDATE bmad_phase_steps
 		 SET status = 'failed', finished_at = datetime('now'),
 		     error_text = COALESCE(NULLIF(error_text, ''), 'annulé par l''opérateur (per-step)')
 		 WHERE id = ? AND status = 'running'`, stepID)
+	if projectID != "" {
+		_, _ = s.db().ExecContext(r.Context(),
+			`UPDATE projects SET paused = 1, updated_at = datetime('now') WHERE id = ?`,
+			projectID)
+	}
 	if s.eventBus != nil {
 		_, _ = s.eventBus.Publish(r.Context(), "project.bmad_step_cancelled", "api",
-			map[string]any{"step_id": stepID})
+			map[string]any{"step_id": stepID, "project_id": projectID})
 	}
-	writeJSON(w, map[string]any{"step_id": stepID, "status": "cancelled"})
+	writeJSON(w, map[string]any{"step_id": stepID, "status": "cancelled", "project_paused": projectID != ""})
 }
 
 // handleRerunPhaseStep relance un skill BMAD déjà exécuté. Crée une

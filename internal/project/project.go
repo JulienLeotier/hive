@@ -68,6 +68,11 @@ type Project struct {
 	FailureStage string    `json:"failure_stage,omitempty"`
 	FailureError string    `json:"failure_error,omitempty"`
 	Status       string    `json:"status"`
+	// Paused : set à true par un cancel (project-level ou per-step).
+	// Le devloop filtre les projets paused=true dans buildingProjects()
+	// pour ne pas relancer de skills après cancel. Clear via
+	// /api/v1/projects/{id}/resume.
+	Paused       bool      `json:"paused"`
 	TenantID  string    `json:"tenant_id"`
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
@@ -189,6 +194,7 @@ func (s *Store) List(ctx context.Context, tenant string, limit int) ([]Project, 
 	             COALESCE(repo_url, ''), COALESCE(is_existing, 0),
 	             COALESCE(total_cost_usd, 0), COALESCE(cost_cap_usd, 0),
 	             COALESCE(failure_stage, ''), COALESCE(failure_error, ''),
+	             COALESCE(paused, 0),
 	             status, tenant_id, created_at, updated_at
 	      FROM projects`
 	args := []any{}
@@ -209,14 +215,16 @@ func (s *Store) List(ctx context.Context, tenant string, limit int) ([]Project, 
 	for rows.Next() {
 		var p Project
 		var created, updated string
-		var isExisting int
+		var isExisting, paused int
 		if err := rows.Scan(&p.ID, &p.Name, &p.Idea, &p.PRD, &p.Workdir,
 			&p.BMADOutputPath, &p.RepoPath, &p.RepoURL, &isExisting,
 			&p.TotalCostUSD, &p.CostCapUSD, &p.FailureStage, &p.FailureError,
+			&paused,
 			&p.Status, &p.TenantID, &created, &updated); err != nil {
 			return nil, err
 		}
 		p.IsExisting = isExisting == 1
+		p.Paused = paused == 1
 		p.CreatedAt, _ = time.Parse("2006-01-02 15:04:05", created)
 		p.UpdatedAt, _ = time.Parse("2006-01-02 15:04:05", updated)
 		out = append(out, p)
@@ -232,19 +240,23 @@ func (s *Store) GetByID(ctx context.Context, id string) (*Project, error) {
 	var p Project
 	var created, updated string
 	var isExisting int
+	var paused int
 	err := s.db.QueryRowContext(ctx,
 		`SELECT id, name, idea, COALESCE(prd, ''), COALESCE(workdir, ''),
 		        COALESCE(bmad_output_path, ''), COALESCE(repo_path, ''),
 		        COALESCE(repo_url, ''), COALESCE(is_existing, 0),
 		        COALESCE(total_cost_usd, 0), COALESCE(cost_cap_usd, 0),
 		        COALESCE(failure_stage, ''), COALESCE(failure_error, ''),
+		        COALESCE(paused, 0),
 		        status, tenant_id, created_at, updated_at
 		 FROM projects WHERE id = ?`, id,
 	).Scan(&p.ID, &p.Name, &p.Idea, &p.PRD, &p.Workdir,
 		&p.BMADOutputPath, &p.RepoPath, &p.RepoURL, &isExisting,
 		&p.TotalCostUSD, &p.CostCapUSD, &p.FailureStage, &p.FailureError,
+		&paused,
 		&p.Status, &p.TenantID, &created, &updated)
 	p.IsExisting = isExisting == 1
+	p.Paused = paused == 1
 	if err == sql.ErrNoRows {
 		return nil, fmt.Errorf("project %s not found", id)
 	}

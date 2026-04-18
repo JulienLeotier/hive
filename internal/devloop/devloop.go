@@ -680,11 +680,13 @@ func (s *Supervisor) advance(parent context.Context, proj ProjectContext) error 
 }
 
 // buildingProjects returns the project contexts currently in the
-// `building` state.
+// `building` state. Les projets paused=1 sont exclus — l'opérateur
+// a cliqué "Annuler" et ne veut plus que le devloop reprenne les
+// stories tant qu'il n'a pas cliqué "Reprendre".
 func (s *Supervisor) buildingProjects(ctx context.Context) ([]ProjectContext, error) {
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT id, idea, COALESCE(prd, ''), COALESCE(workdir, ''), COALESCE(repo_path, '')
-		 FROM projects WHERE status = ? ORDER BY created_at ASC`,
+		 FROM projects WHERE status = ? AND COALESCE(paused, 0) = 0 ORDER BY created_at ASC`,
 		projectStatusBuilding,
 	)
 	if err != nil {
