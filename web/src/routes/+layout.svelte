@@ -362,6 +362,14 @@
 		display: flex;
 		flex-direction: column;
 		gap: 1.5rem;
+		/* Sticky : la sidebar reste visible pendant qu'on scroll le
+		   contenu. align-self:start empêche le grid item de stretcher
+		   pour matcher la hauteur du main. */
+		position: sticky;
+		top: 0;
+		align-self: start;
+		height: 100vh;
+		overflow-y: auto;
 	}
 	.brand {
 		display: grid;
