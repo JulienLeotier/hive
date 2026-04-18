@@ -790,15 +790,17 @@
 										·
 									{/if}
 								</span>
-								<code class="phase-cmd">{s.command}</code>
-								<span class="phase-phase">{s.phase}</span>
-								<span class="phase-meta">
+								<div class="phase-main">
+									<code class="phase-cmd">{s.command}</code>
+									<span class="phase-phase">{s.phase}</span>
+								</div>
+								<div class="phase-meta">
 									{#if s.cost_usd > 0}<span>${s.cost_usd.toFixed(3)}</span>{/if}
 									{#if s.input_tokens > 0 || s.output_tokens > 0}
 										<span class="tokens">{Math.round((s.input_tokens + s.output_tokens) / 1000)}k tok</span>
 									{/if}
 									<span class="phase-time">{fmtRelative(s.started_at)}</span>
-								</span>
+								</div>
 								<span class="phase-chev">›</span>
 							</button>
 						</li>
@@ -1646,11 +1648,10 @@
 		overflow: hidden;
 	}
 	.phase-row {
-		display: grid;
-		grid-template-columns: 24px minmax(0, 1fr) auto 20px;
+		display: flex;
 		align-items: center;
-		column-gap: 0.8rem;
-		padding: 0.6rem 1rem 0.6rem 0.85rem;
+		gap: 0.8rem;
+		padding: 0.6rem 1rem;
 		width: 100%;
 		background: transparent;
 		border: none;
@@ -1663,14 +1664,18 @@
 	.phase-row:hover {
 		background: color-mix(in srgb, var(--accent) 6%, transparent);
 	}
+	.phase-main {
+		display: flex;
+		flex-direction: column;
+		min-width: 0;
+		flex: 1;
+		gap: 0.1rem;
+	}
 	.phase-chev {
 		color: var(--text-muted);
 		font-size: 1.1rem;
 		line-height: 1;
-		text-align: center;
-		grid-column: 4;
-		grid-row: 1 / span 2;
-		align-self: center;
+		flex-shrink: 0;
 	}
 	.phase-item.running {
 		background: color-mix(in srgb, var(--accent) 8%, var(--bg));
@@ -1710,16 +1715,12 @@
 		overflow: hidden;
 		text-overflow: ellipsis;
 		white-space: nowrap;
-		grid-column: 2;
-		grid-row: 1;
 		background: transparent;
 		padding: 0;
 		color: var(--text);
-		min-width: 0;
+		display: block;
 	}
 	.phase-phase {
-		grid-column: 2;
-		grid-row: 2;
 		font-size: 0.68rem;
 		color: var(--text-muted);
 		text-transform: uppercase;
@@ -1736,9 +1737,8 @@
 		font-size: 0.72rem;
 		color: var(--text-muted);
 		font-variant-numeric: tabular-nums;
-		grid-column: 3;
-		grid-row: 1 / span 2;
-		padding-left: 0.4rem;
+		flex-shrink: 0;
+		text-align: right;
 	}
 	.phase-meta .tokens { opacity: 0.7; }
 	.phase-time { opacity: 0.6; }
