@@ -4,6 +4,7 @@
 	import { apiGet, apiPost } from '$lib/api';
 	import { fmtRelative } from '$lib/format';
 	import { createReconnectingWS, wsURL } from '$lib/ws';
+	import BmadSkillRunner from '$lib/BmadSkillRunner.svelte';
 
 	type IntakeMessage = {
 		id: number;
@@ -576,6 +577,9 @@
 						{runningRetro ? 'Rétro en cours…' : 'Rétrospective'}
 					</button>
 				{/if}
+				{#if project.status !== 'draft'}
+					<BmadSkillRunner scope="project" projectId={project.id} />
+				{/if}
 			</div>
 
 			{#if project.workdir || project.repo_path || project.bmad_output_path}
@@ -962,6 +966,7 @@
 													{retrying[story.id] ? 'Relance…' : '↻ Réessayer'}
 												</button>
 											{/if}
+											<BmadSkillRunner scope="story" projectId={project.id} storyId={story.id} />
 										</div>
 										{#if story.last_review_feedback && story.status !== 'done' && story.last_review_verdict !== 'pass'}
 											<div

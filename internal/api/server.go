@@ -198,6 +198,13 @@ func (s *Server) routes() {
 	s.mux.Handle("POST /api/v1/projects/{id}/cancel", http.HandlerFunc(s.handleCancelRun))
 	s.mux.Handle("POST /api/v1/projects/{id}/retry-architect", http.HandlerFunc(s.handleRetryArchitect))
 	s.mux.Handle("POST /api/v1/projects/{id}/retrospective", http.HandlerFunc(s.handleRetrospective))
+
+	// BMAD skill console — permet de lancer manuellement n'importe quel
+	// skill BMAD (validate-prd, code-review, correct-course, etc.) sur
+	// un projet / epic / story précis, en parallèle du devloop. Utile
+	// quand l'opérateur veut forcer un re-check ou trancher un blocage.
+	s.mux.Handle("GET /api/v1/bmad/skills", http.HandlerFunc(s.handleBmadSkills))
+	s.mux.Handle("POST /api/v1/bmad/run", http.HandlerFunc(s.handleBmadRun))
 }
 
 // Handler returns the HTTP handler. Local-mode hive: the middleware
