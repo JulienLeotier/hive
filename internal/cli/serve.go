@@ -110,10 +110,14 @@ var serveCmd = &cobra.Command{
 			// invocations devloop et que les stories qui bougent dans
 			// BMAD en parallèle sont rattrapées en DB Hive.
 			if d, ok := devAgent.(*devloop.ClaudeCodeDev); ok {
-				d.WithDB(store.DB).WithPublisher(devloop.Publisher(bus.PublishErr))
+				d.WithDB(store.DB).
+					WithPublisher(devloop.Publisher(bus.PublishErr)).
+					WithCancelRegistry(apiSrv)
 			}
 			if r, ok := reviewerAgent.(*devloop.ClaudeCodeReviewer); ok {
-				r.WithDB(store.DB).WithPublisher(devloop.Publisher(bus.PublishErr))
+				r.WithDB(store.DB).
+					WithPublisher(devloop.Publisher(bus.PublishErr)).
+					WithCancelRegistry(apiSrv)
 			}
 		}
 		loopInterval := 10 * time.Second
@@ -133,7 +137,9 @@ var serveCmd = &cobra.Command{
 		architectName := "none"
 		if os.Getenv("HIVE_DEV_AGENT") != "scripted" {
 			if arch := devloop.NewClaudeCodeArchitect(); arch != nil {
-				arch.WithDB(store.DB).WithPublisher(devloop.Publisher(bus.PublishErr))
+				arch.WithDB(store.DB).
+					WithPublisher(devloop.Publisher(bus.PublishErr)).
+					WithCancelRegistry(apiSrv)
 				supervisor.WithArchitect(arch)
 				architectName = arch.Name()
 			}

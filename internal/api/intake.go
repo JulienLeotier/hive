@@ -981,6 +981,15 @@ func (s *Server) trackedInvoke(
 	if err == nil {
 		stepID, _ = res.LastInsertId()
 	}
+	// Child ctx + registre step-level : permet le cancel chirurgical
+	// via POST /api/v1/phases/{id}/cancel. Pas un sous-ctx du parent
+	// fourni — on wrap directement le parent pour que l'annulation
+	// parent-level reste effective.
+	skillCtx, skillCancel := context.WithCancel(ctx)
+	defer skillCancel()
+	s.RegisterStepCancel(stepID, skillCancel)
+	defer s.ClearStepCancel(stepID)
+
 	if s.eventBus != nil {
 		_, _ = s.eventBus.Publish(ctx, "project.bmad_step_started", "api", map[string]any{
 			"project_id": projectID,
@@ -993,7 +1002,7 @@ func (s *Server) trackedInvoke(
 	// flushé en DB (reply_full) + broadcast WS pour que la console UI
 	// défile en live. SQLite tient des UPDATE par chunk sans broncher.
 	var streamBuf strings.Builder
-	out, invErr := runner.InvokeStream(ctx, workdir, goal, nil,
+	out, invErr := runner.InvokeStream(skillCtx, workdir, goal, nil,
 		func(evt bmad.StreamEvent) {
 			if evt.Text == "" {
 				return
@@ -1071,7 +1080,7 @@ func (s *Server) stepObserver(ctx context.Context, projectID, phase string) bmad
 	var mu sync.Mutex
 
 	return bmad.StepObserver{
-		OnStart: func(index, total int, command string) {
+		OnStart: func(index, total int, command string, stepCancel context.CancelFunc) {
 			mu.Lock()
 			stepStart[command] = time.Now()
 			buffers[command] = &strings.Builder{}
@@ -1088,6 +1097,9 @@ func (s *Server) stepObserver(ctx context.Context, projectID, phase string) bmad
 			mu.Lock()
 			stepIDs[command] = id
 			mu.Unlock()
+			// Registre step-level → l'UI peut firer POST /phases/{id}/cancel
+			// pour tuer CE skill précis sans passer par le cancel du projet.
+			s.RegisterStepCancel(id, stepCancel)
 			if s.eventBus != nil {
 				_, _ = s.eventBus.Publish(ctx, "project.bmad_step_started", "api", map[string]any{
 					"project_id": projectID,
@@ -1144,10 +1156,12 @@ func (s *Server) stepObserver(ctx context.Context, projectID, phase string) bmad
 			metrics.BMADSkillCost.WithLabelValues(command, status).Add(res.CostUSD)
 			mu.Lock()
 			startT, ok := stepStart[command]
+			id := stepIDs[command]
 			delete(stepStart, command)
 			delete(buffers, command)
 			delete(stepIDs, command)
 			mu.Unlock()
+			s.ClearStepCancel(id)
 			if ok {
 				metrics.BMADSkillDuration.WithLabelValues(command).Observe(time.Since(startT).Seconds())
 			}

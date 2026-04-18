@@ -1112,6 +1112,42 @@ func (s *Server) handlePhaseStep(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, out)
 }
 
+// handleCancelPhaseStep tue UN skill précis en s'appuyant sur
+// stepCancels (registre keyed par phase_step.id). Contrairement à
+// /projects/{id}/cancel, ce endpoint ne touche PAS à project.status
+// et ne sweep PAS les autres rows — seul le skill visé est tué. Si le
+// skill est déjà terminé, renvoie 409.
+func (s *Server) handleCancelPhaseStep(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if id == "" {
+		writeError(w, http.StatusBadRequest, "BAD_REQUEST", "step id required")
+		return
+	}
+	var stepID int64
+	if _, err := fmt.Sscan(id, &stepID); err != nil || stepID <= 0 {
+		writeError(w, http.StatusBadRequest, "BAD_REQUEST", "step id invalide")
+		return
+	}
+	if !s.cancelStep(stepID) {
+		writeError(w, http.StatusConflict, "NO_RUN",
+			"ce skill n'est plus en cours (déjà terminé ou jamais démarré)")
+		return
+	}
+	// Marque explicitement la row comme failed — sinon le ctx cancelled
+	// pourrait tuer le process claude avant que OnFinish ait le temps
+	// d'updater la DB.
+	_, _ = s.db().ExecContext(r.Context(),
+		`UPDATE bmad_phase_steps
+		 SET status = 'failed', finished_at = datetime('now'),
+		     error_text = COALESCE(NULLIF(error_text, ''), 'annulé par l''opérateur (per-step)')
+		 WHERE id = ? AND status = 'running'`, stepID)
+	if s.eventBus != nil {
+		_, _ = s.eventBus.Publish(r.Context(), "project.bmad_step_cancelled", "api",
+			map[string]any{"step_id": stepID})
+	}
+	writeJSON(w, map[string]any{"step_id": stepID, "status": "cancelled"})
+}
+
 // handleRerunPhaseStep relance un skill BMAD déjà exécuté. Crée une
 // NOUVELLE row bmad_phase_steps (pas d'overwrite du vieux step) pour
 // que l'historique reste lisible. Délègue au même trackedInvoke que

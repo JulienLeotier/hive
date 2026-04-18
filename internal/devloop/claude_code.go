@@ -27,8 +27,9 @@ type ClaudeCodeDev struct {
 	runner   *bmad.Runner
 	fallback DevAgent
 	timeout  time.Duration
-	db       *sql.DB   // branch to track skill cost + sync sprint-status ; nil = no tracking
-	publish  Publisher // branch to emit WS events (bmad_step_output) ; nil = no live streaming UI
+	db       *sql.DB        // branch to track skill cost + sync sprint-status ; nil = no tracking
+	publish  Publisher      // branch to emit WS events (bmad_step_output) ; nil = no live streaming UI
+	registry CancelRegistry // branch to register per-step cancel ; nil = cancel par skill indispo
 }
 
 func NewClaudeCodeDev() DevAgent {
@@ -61,6 +62,13 @@ func (d *ClaudeCodeDev) WithPublisher(p Publisher) *ClaudeCodeDev {
 	return d
 }
 
+// WithCancelRegistry branche le registre step-level pour que l'UI
+// puisse annuler UN skill précis sans tuer toute la story.
+func (d *ClaudeCodeDev) WithCancelRegistry(r CancelRegistry) *ClaudeCodeDev {
+	d.registry = r
+	return d
+}
+
 func (*ClaudeCodeDev) Name() string { return "bmad-dev" }
 
 // Develop lance la séquence /bmad-create-story puis /bmad-dev-story.
@@ -81,7 +89,7 @@ func (d *ClaudeCodeDev) Develop(ctx context.Context, proj ProjectContext, story 
 	// Reviewer puisse détecter la story que la skill a traitée.
 	pre := snapshotSprint(workdir)
 
-	obs := makeDevloopObserver(d.db, d.publish, proj.ID, workdir, "story")
+	obs := makeDevloopObserver(d.db, d.publish, d.registry, proj.ID, workdir, "story")
 	history, err := d.runner.RunSequenceObserved(callCtx, workdir, bmad.StorySequence, obs)
 	if err != nil {
 		slog.Warn("devloop dev: séquence BMAD échouée — fallback scripted", "error", err)
@@ -169,6 +177,7 @@ type ClaudeCodeReviewer struct {
 	timeout  time.Duration
 	db       *sql.DB
 	publish  Publisher
+	registry CancelRegistry
 }
 
 func NewClaudeCodeReviewer() ReviewerAgent {
@@ -196,6 +205,12 @@ func (r *ClaudeCodeReviewer) WithPublisher(p Publisher) *ClaudeCodeReviewer {
 	return r
 }
 
+// WithCancelRegistry — même rôle que ClaudeCodeDev.WithCancelRegistry.
+func (r *ClaudeCodeReviewer) WithCancelRegistry(reg CancelRegistry) *ClaudeCodeReviewer {
+	r.registry = reg
+	return r
+}
+
 func (*ClaudeCodeReviewer) Name() string { return "bmad-reviewer" }
 
 // Review lance /bmad-code-review. Après coup, on parse
@@ -211,7 +226,7 @@ func (r *ClaudeCodeReviewer) Review(ctx context.Context, proj ProjectContext, st
 	}
 	defer cancel()
 
-	obs := makeDevloopObserver(r.db, r.publish, proj.ID, workdir, "review")
+	obs := makeDevloopObserver(r.db, r.publish, r.registry, proj.ID, workdir, "review")
 	history, err := r.runner.RunSequenceObserved(callCtx, workdir, bmad.ReviewSequence, obs)
 	if err != nil {
 		slog.Warn("devloop reviewer: séquence BMAD échouée — fallback scripted", "error", err)
@@ -299,9 +314,10 @@ func countDecisionNeeded(reply string) int {
 // /bmad-correct-course qui committe la décision dans la story.md.
 // Après ça, le Dev reprendra avec la nouvelle spec au prochain tick.
 type ClaudeCodeArchitect struct {
-	runner  *bmad.Runner
-	db      *sql.DB
-	publish Publisher
+	runner   *bmad.Runner
+	db       *sql.DB
+	publish  Publisher
+	registry CancelRegistry
 }
 
 // NewClaudeCodeArchitect construit l'agent. Retourne nil si le Claude
@@ -329,6 +345,12 @@ func (a *ClaudeCodeArchitect) WithPublisher(p Publisher) *ClaudeCodeArchitect {
 	return a
 }
 
+// WithCancelRegistry — même rôle que ClaudeCodeDev.WithCancelRegistry.
+func (a *ClaudeCodeArchitect) WithCancelRegistry(r CancelRegistry) *ClaudeCodeArchitect {
+	a.registry = r
+	return a
+}
+
 func (*ClaudeCodeArchitect) Name() string { return "bmad-architect" }
 
 // Resolve lance /bmad-agent-architect puis /bmad-correct-course avec
@@ -341,7 +363,7 @@ func (a *ClaudeCodeArchitect) Resolve(ctx context.Context, proj ProjectContext, 
 		return fmt.Errorf("architect: runner indisponible")
 	}
 	workdir := pickWorkdir(proj)
-	obs := makeDevloopObserver(a.db, a.publish, proj.ID, workdir, "architect")
+	obs := makeDevloopObserver(a.db, a.publish, a.registry, proj.ID, workdir, "architect")
 	_, err := a.runner.RunSequenceObserved(ctx, workdir, bmad.ArchitectEscalationSequence, obs)
 	if err != nil {
 		return fmt.Errorf("architect escalation: %w", err)
@@ -366,7 +388,7 @@ func firstLine(s string) string {
 //
 // Si db est nil, renvoie un observer neutre (pas de tracking). Permet
 // au fallback scripted de tourner sans polluer la DB.
-func makeDevloopObserver(db *sql.DB, publish Publisher, projectID, workdir, phase string) bmad.StepObserver {
+func makeDevloopObserver(db *sql.DB, publish Publisher, registry CancelRegistry, projectID, workdir, phase string) bmad.StepObserver {
 	if db == nil || projectID == "" {
 		return bmad.StepObserver{}
 	}
@@ -379,7 +401,7 @@ func makeDevloopObserver(db *sql.DB, publish Publisher, projectID, workdir, phas
 		buffer strings.Builder
 	)
 	return bmad.StepObserver{
-		OnStart: func(_, _ int, cmd string) {
+		OnStart: func(_, _ int, cmd string, stepCancel context.CancelFunc) {
 			buffer.Reset()
 			res, err := db.Exec(
 				`INSERT INTO bmad_phase_steps (project_id, phase, command, status)
@@ -392,6 +414,9 @@ func makeDevloopObserver(db *sql.DB, publish Publisher, projectID, workdir, phas
 				return
 			}
 			stepID, _ = res.LastInsertId()
+			if registry != nil {
+				registry.RegisterStepCancel(stepID, stepCancel)
+			}
 		},
 		OnChunk: func(_, _ int, cmd string, evt bmad.StreamEvent) {
 			if evt.Text == "" {
@@ -435,6 +460,9 @@ func makeDevloopObserver(db *sql.DB, publish Publisher, projectID, workdir, phas
 					 WHERE id = ?`,
 					status, r.InputTokens, r.OutputTokens, r.CostUSD,
 					preview, r.Text, errText, stepID)
+				if registry != nil {
+					registry.ClearStepCancel(stepID)
+				}
 			}
 			if r.CostUSD > 0 {
 				_, _ = db.Exec(

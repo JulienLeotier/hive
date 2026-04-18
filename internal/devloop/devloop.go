@@ -181,10 +181,16 @@ type Publisher func(ctx context.Context, eventType, source string, payload any) 
 // alors que le devloop tournait — l'opérateur ne pouvait pas tuer une
 // story qui boucle.
 //
-// Implémenté par api.Server via RegisterRun/ClearRun.
+// RegisterStepCancel + ClearStepCancel permettent en plus un cancel
+// chirurgical par phase_step.id : l'UI peut tuer un skill précis sans
+// annuler toute la story.
+//
+// Implémenté par api.Server.
 type CancelRegistry interface {
 	RegisterRun(projectID string, cancel context.CancelFunc)
 	ClearRun(projectID string)
+	RegisterStepCancel(stepID int64, cancel context.CancelFunc)
+	ClearStepCancel(stepID int64)
 }
 
 // Supervisor drives the dev→review loop. Kept simple: one goroutine,

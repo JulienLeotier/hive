@@ -184,8 +184,13 @@ func concat(slices ...[]string) []string {
 // "skill X/Y started", "skill done", etc. Tous les callbacks sont
 // optionnels.
 type StepObserver struct {
-	// OnStart reçoit l'index (1-based) et la commande qui va démarrer.
-	OnStart func(index, total int, command string)
+	// OnStart reçoit l'index (1-based), la commande, et une cancel-func
+	// qui tue UNIQUEMENT ce skill (child ctx dérivé du parent de la
+	// séquence). Le caller peut enregistrer cette cancel-func dans un
+	// registre step-level pour permettre un cancel chirurgical depuis
+	// l'UI. Si cancel est appelée, le skill courant meurt ; la
+	// séquence s'arrête (Invoke renvoie err).
+	OnStart func(index, total int, command string, stepCancel context.CancelFunc)
 	// OnFinish reçoit l'index, la commande, le résultat et l'erreur
 	// éventuelle. Sert à persister tokens/cost/status=done|failed.
 	OnFinish func(index, total int, command string, res Result, err error)
@@ -215,25 +220,32 @@ func (r *Runner) RunSequenceObserved(ctx context.Context, workdir string, cmds [
 	var history []PhaseStep
 	total := len(cmds)
 	for i, cmd := range cmds {
+		// Child ctx par skill : cancel isolé, tue uniquement ce skill.
+		// Le parent ctx reste vivant pour que les skills suivants
+		// tournent si le caller le veut (actuellement on break sur err
+		// mais le ctx parent n'est pas forcément mort).
+		skillCtx, skillCancel := context.WithCancel(ctx)
 		if obs.OnStart != nil {
-			obs.OnStart(i+1, total, cmd)
+			obs.OnStart(i+1, total, cmd, skillCancel)
 		}
-		// Streaming si OnChunk branché ; sinon legacy Invoke buffered.
 		var (
 			res Result
 			err error
 		)
 		if obs.OnChunk != nil {
 			idx, tot, c := i+1, total, cmd
-			res, err = r.InvokeStream(ctx, workdir, cmd, nil,
+			res, err = r.InvokeStream(skillCtx, workdir, cmd, nil,
 				func(evt StreamEvent) { obs.OnChunk(idx, tot, c, evt) })
 		} else {
-			res, err = r.Invoke(ctx, workdir, cmd, nil)
+			res, err = r.Invoke(skillCtx, workdir, cmd, nil)
 		}
 		history = append(history, PhaseStep{Command: cmd, Reply: res.Text})
 		if obs.OnFinish != nil {
 			obs.OnFinish(i+1, total, cmd, res, err)
 		}
+		// Release le child ctx après avoir notifié OnFinish (ça
+		// unblock les observers qui attendraient éventuellement).
+		skillCancel()
 		if err != nil {
 			return history, fmt.Errorf("exec %s: %w", cmd, err)
 		}

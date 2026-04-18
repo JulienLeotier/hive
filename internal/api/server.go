@@ -51,6 +51,12 @@ type Server struct {
 	// cours et stoppe la séquence proprement.
 	runMu      sync.Mutex
 	runCancels map[string]context.CancelFunc
+	// stepCancels pour cancel chirurgical par phase_step.id. Permet
+	// à l'UI de tuer UN skill précis sans passer par le cancel
+	// project-wide. Registered dans OnStart du StepObserver,
+	// cleared dans OnFinish.
+	stepMu      sync.Mutex
+	stepCancels map[int64]context.CancelFunc
 }
 
 // NewServer builds the HTTP API. eventBus is the only required dep —
@@ -61,6 +67,7 @@ func NewServer(eventBus *event.Bus) *Server {
 		mux:         http.NewServeMux(),
 		envLookup:   os.Getenv,
 		runCancels:  map[string]context.CancelFunc{},
+		stepCancels: map[int64]context.CancelFunc{},
 		rateLimiter: newRateLimiter(),
 	}
 	s.routes()
@@ -100,6 +107,45 @@ func (s *Server) RegisterRun(projectID string, cancel context.CancelFunc) {
 // suivante de s'enregistrer.
 func (s *Server) ClearRun(projectID string) {
 	s.clearRun(projectID)
+}
+
+// RegisterStepCancel garde une cancel-func par phase_step.id pour
+// permettre un cancel chirurgical depuis l'UI. Exposé au package
+// devloop (CancelRegistry interface) + utilisé directement par les
+// observers côté intake/trackedInvoke.
+func (s *Server) RegisterStepCancel(stepID int64, cancel context.CancelFunc) {
+	if stepID <= 0 {
+		return
+	}
+	s.stepMu.Lock()
+	defer s.stepMu.Unlock()
+	s.stepCancels[stepID] = cancel
+}
+
+// ClearStepCancel retire l'entrée quand le step se termine
+// (OnFinish). Idempotent.
+func (s *Server) ClearStepCancel(stepID int64) {
+	if stepID <= 0 {
+		return
+	}
+	s.stepMu.Lock()
+	defer s.stepMu.Unlock()
+	delete(s.stepCancels, stepID)
+}
+
+// cancelStep appelle la cancel-func d'un step précis. Retourne true
+// si la func existait et a été appelée (donc un skill a été tué),
+// false si aucun run actif pour ce step_id.
+func (s *Server) cancelStep(stepID int64) bool {
+	s.stepMu.Lock()
+	defer s.stepMu.Unlock()
+	cancel, ok := s.stepCancels[stepID]
+	if !ok {
+		return false
+	}
+	cancel()
+	delete(s.stepCancels, stepID)
+	return true
 }
 
 // cancelRun appelle le cancel-func courant si un run tourne. Retourne
@@ -207,6 +253,7 @@ func (s *Server) routes() {
 	s.mux.Handle("POST /api/v1/bmad/run", http.HandlerFunc(s.handleBmadRun))
 	s.mux.Handle("GET /api/v1/phases/{id}", http.HandlerFunc(s.handlePhaseStep))
 	s.mux.Handle("POST /api/v1/phases/{id}/rerun", http.HandlerFunc(s.handleRerunPhaseStep))
+	s.mux.Handle("POST /api/v1/phases/{id}/cancel", http.HandlerFunc(s.handleCancelPhaseStep))
 }
 
 // Handler returns the HTTP handler. Local-mode hive: the middleware

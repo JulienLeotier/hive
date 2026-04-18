@@ -138,7 +138,7 @@ func TestRunSequenceObservedOrder(t *testing.T) {
 	var finishes []int
 	var startCmds []string
 	obs := StepObserver{
-		OnStart: func(i, _ int, cmd string) {
+		OnStart: func(i, _ int, cmd string, _ context.CancelFunc) {
 			starts = append(starts, i)
 			startCmds = append(startCmds, cmd)
 		},

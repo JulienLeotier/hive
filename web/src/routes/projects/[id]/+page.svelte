@@ -149,6 +149,31 @@
 	// un double-clic. Reset quand le backend a accusé réception (le skill
 	// lui-même tourne en background et apparaît dans /phases).
 	let rerunning = $state<Record<number, boolean>>({});
+	let cancellingStep = $state<Record<number, boolean>>({});
+
+	// cancelStep tue UN skill précis via /phases/{id}/cancel. Contrairement
+	// à cancelRun() (qui ferme le ctx du projet entier), ce endpoint ne
+	// touche qu'au skill ciblé et ne modifie pas project.status.
+	async function cancelStep(stepID: number, command: string) {
+		const ok = await confirmDialog({
+			title: 'Annuler ce skill ?',
+			message: `${command}\n\nSeul ce skill sera tué. Le reste du projet reste actif.`,
+			confirmLabel: 'Annuler ce skill',
+			cancelLabel: 'Laisser tourner',
+			danger: true
+		});
+		if (!ok) return;
+		cancellingStep = { ...cancellingStep, [stepID]: true };
+		actionError = '';
+		try {
+			await apiPost(`/api/v1/phases/${stepID}/cancel`, {});
+			await loadPhases();
+		} catch (e) {
+			actionError = e instanceof Error ? e.message : String(e);
+		} finally {
+			cancellingStep = { ...cancellingStep, [stepID]: false };
+		}
+	}
 
 	async function rerunStep(stepID: number, command: string) {
 		const ok = await confirmDialog({
@@ -859,11 +884,11 @@
 								<button
 									type="button"
 									class="phase-action cancel"
-									onclick={cancelRun}
-									disabled={cancelling}
-									title="Annuler cette skill en cours ({s.command})"
+									onclick={() => cancelStep(s.id, s.command)}
+									disabled={cancellingStep[s.id]}
+									title="Annuler uniquement ce skill ({s.command}) — le reste du projet continue"
 								>
-									{cancelling ? '⏳' : '✕'}
+									{cancellingStep[s.id] ? '⏳' : '✕'}
 								</button>
 							{:else}
 								<button
