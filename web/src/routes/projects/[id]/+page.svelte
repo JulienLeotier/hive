@@ -400,6 +400,7 @@
 	let editingPRD = $state(false);
 	let prdDraft = $state('');
 	let savingPRD = $state(false);
+	let prdExpanded = $state(false);
 	let regenerating = $state(false);
 	let prdError = $state('');
 
@@ -801,19 +802,32 @@
 				{/if}
 			</section>
 		{:else if project.prd}
+			{@const prdLines = project.prd.split('\n').length}
+			{@const prdBytes = new Blob([project.prd]).size}
 			<section class="panel">
 				<div class="prd-head">
-					<h3>PRD</h3>
+					<h3>
+						<button type="button"
+							class="prd-toggle"
+							onclick={() => (prdExpanded = !prdExpanded)}
+							disabled={editingPRD}
+							aria-expanded={prdExpanded || editingPRD}
+							title={prdExpanded ? 'Replier' : 'Déplier'}>
+							<span class="chev" class:open={prdExpanded || editingPRD}>▸</span>
+							PRD
+						</button>
+						<span class="prd-meta">{prdLines} lignes · {(prdBytes / 1024).toFixed(1)} KB</span>
+					</h3>
 					<div class="prd-actions">
 						{#if editingPRD}
 							<button type="button" onclick={savePRD} disabled={savingPRD || !prdDraft.trim()}>
-								{savingPRD ? 'Enregistrement…' : 'Enregistrer le PRD'}
+								{savingPRD ? 'Enregistrement…' : 'Enregistrer'}
 							</button>
 							<button type="button" onclick={() => (editingPRD = false)} disabled={savingPRD}>
 								Annuler
 							</button>
 						{:else}
-							<button type="button" onclick={startEditPRD}>✎ Éditer</button>
+							<button type="button" onclick={() => { startEditPRD(); prdExpanded = true; }}>✎ Éditer</button>
 							{#if project.status !== 'shipped'}
 								<button
 									type="button"
@@ -822,7 +836,7 @@
 									disabled={regenerating}
 									title="Efface le plan actuel et demande à l'Architecte de le reconstruire depuis le PRD. Seulement avant que le dev n'ait commencé."
 								>
-									{regenerating ? 'Régénération…' : '↻ Régénérer le plan'}
+									{regenerating ? 'Régénération…' : '↻ Régénérer'}
 								</button>
 							{/if}
 						{/if}
@@ -831,8 +845,20 @@
 				{#if prdError}<div class="err">{prdError}</div>{/if}
 				{#if editingPRD}
 					<textarea class="prd-editor" rows="18" bind:value={prdDraft}></textarea>
-				{:else}
+				{:else if prdExpanded}
 					<pre class="prd">{project.prd}</pre>
+				{:else}
+					<div class="prd-preview" onclick={() => (prdExpanded = true)}
+						onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); prdExpanded = true; } }}
+						role="button"
+						tabindex="0">
+						<pre class="prd prd-snippet">{project.prd.split('\n').slice(0, 6).join('\n')}</pre>
+						<div class="prd-fade">
+							<button type="button" class="prd-expand-btn">
+								Afficher les {prdLines} lignes →
+							</button>
+						</div>
+					</div>
 				{/if}
 			</section>
 		{/if}
@@ -1550,14 +1576,93 @@
 		padding: 0.75rem;
 		font-size: 0.85rem;
 		overflow-x: auto;
+		max-height: 600px;
+		overflow-y: auto;
+		margin: 0;
 	}
 	.prd-head {
 		display: flex;
 		justify-content: space-between;
 		align-items: center;
 		margin-bottom: 0.5rem;
+		gap: 0.5rem;
+		flex-wrap: wrap;
 	}
-	.prd-head h3 { margin: 0; }
+	.prd-head h3 {
+		margin: 0;
+		display: flex;
+		align-items: center;
+		gap: 0.5rem;
+		font-size: 1rem;
+	}
+	.prd-toggle {
+		display: inline-flex;
+		align-items: center;
+		gap: 0.35rem;
+		background: transparent;
+		border: none;
+		padding: 0.25rem 0.4rem;
+		margin: -0.25rem -0.4rem;
+		border-radius: 4px;
+		cursor: pointer;
+		color: inherit;
+		font: inherit;
+		font-weight: 700;
+	}
+	.prd-toggle:hover { background: var(--bg-hover); }
+	.prd-toggle:disabled { cursor: default; opacity: 0.7; }
+	.prd-toggle .chev {
+		display: inline-block;
+		font-size: 0.75rem;
+		transition: transform 0.15s;
+		color: var(--text-muted);
+	}
+	.prd-toggle .chev.open { transform: rotate(90deg); }
+	.prd-meta {
+		font-size: 0.7rem;
+		color: var(--text-muted);
+		font-weight: 500;
+		font-variant-numeric: tabular-nums;
+		text-transform: none;
+		letter-spacing: 0;
+	}
+
+	/* Preview collapsed : snippet + fade + bouton */
+	.prd-preview {
+		position: relative;
+		cursor: pointer;
+		border-radius: 4px;
+	}
+	.prd-snippet {
+		max-height: 140px;
+		overflow: hidden;
+		mask-image: linear-gradient(to bottom, black 40%, transparent 100%);
+		-webkit-mask-image: linear-gradient(to bottom, black 40%, transparent 100%);
+	}
+	.prd-fade {
+		display: flex;
+		justify-content: center;
+		margin-top: -1.5rem;
+		position: relative;
+		z-index: 1;
+	}
+	.prd-expand-btn {
+		padding: 0.4rem 0.9rem;
+		background: var(--bg-panel);
+		border: 1px solid var(--border);
+		border-radius: 6px;
+		color: var(--text);
+		font: inherit;
+		font-size: 0.78rem;
+		font-weight: 600;
+		cursor: pointer;
+		transition: border-color 0.1s, color 0.1s;
+		box-shadow: 0 2px 8px color-mix(in srgb, var(--text) 5%, transparent);
+	}
+	.prd-expand-btn:hover {
+		border-color: var(--accent);
+		color: var(--accent);
+	}
 	.prd-actions {
 		display: flex;
 		gap: 0.4rem;
