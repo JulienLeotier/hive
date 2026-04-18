@@ -242,6 +242,46 @@ func TestSupervisorCapsArchitectEscalations(t *testing.T) {
 		"après le cap d'escalations + cap d'itérations, la story doit être blocked")
 }
 
+// TestSupervisorFlagsInterruptedPlanningProjects mimics a crash
+// during the planning pipeline : the project is in status=planning
+// and had a bmad_phase_steps running. After boot, the sweep must :
+//  1) mark the row as failed
+//  2) flag the project with failure_stage='interrupted' so the UI
+//     displays the resume banner — sinon l'opérateur reste bloqué
+//     sur un spinner sans aucun bouton pour relancer.
+func TestSupervisorFlagsInterruptedPlanningProjects(t *testing.T) {
+	st, err := storage.Open(t.TempDir())
+	require.NoError(t, err)
+	defer st.Close()
+	workdir := filepath.Join(t.TempDir(), "work")
+	_ = seedProject(t, st.DB, workdir)
+
+	// Forcer le projet en status=planning (pas building) et simuler
+	// un skill interrompu.
+	_, err = st.DB.Exec(
+		`UPDATE projects SET status = 'planning' WHERE id = 'prj_test_TestSupervisorFlagsInterruptedPlanningProjects'`)
+	require.NoError(t, err)
+	_, err = st.DB.Exec(
+		`INSERT INTO bmad_phase_steps (project_id, phase, command, status)
+		 VALUES ('prj_test_TestSupervisorFlagsInterruptedPlanningProjects', 'planning', '/bmad-create-prd', 'running')`)
+	require.NoError(t, err)
+
+	sup := NewSupervisor(st.DB, NewScriptedDev(), NewScriptedReviewer(), time.Second)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	sup.Start(ctx)
+	time.Sleep(100 * time.Millisecond)
+
+	var stage, errText string
+	require.NoError(t, st.DB.QueryRow(
+		`SELECT COALESCE(failure_stage, ''), COALESCE(failure_error, '')
+		 FROM projects WHERE id = 'prj_test_TestSupervisorFlagsInterruptedPlanningProjects'`,
+	).Scan(&stage, &errText))
+	assert.Equal(t, "interrupted", stage, "projet planning avec skill zombie doit avoir failure_stage=interrupted")
+	assert.Contains(t, errText, "Reprendre",
+		"l'opérateur doit voir un message qui pointe vers le bouton Reprendre")
+}
+
 // TestSupervisorSweepsZombiePhaseSteps mimics a crash mid-skill: a row
 // in bmad_phase_steps left in status='running' whose OnFinish never
 // fired. After Start(), the row must be marked 'failed' with an

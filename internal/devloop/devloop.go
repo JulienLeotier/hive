@@ -305,6 +305,34 @@ func (s *Supervisor) Start(ctx context.Context) {
 	} else if n, _ := res.RowsAffected(); n > 0 {
 		slog.Info("devloop: swept zombie phase_steps", "count", n)
 	}
+	// Marque comme interrompus les projets qui étaient en plein
+	// pipeline planning (runArchitectAsync / runIterationAsync) quand
+	// le serveur a redémarré. Sans failure_stage, l'UI n'affiche pas
+	// la bannière "Reprendre au step suivant" et l'opérateur reste
+	// coincé sur un spinner qui tourne indéfiniment. On cible
+	// spécifiquement les projets qui ont des bmad_phase_steps failed
+	// avec le marker "restart serveur" — évite de polluer les projets
+	// failed légitimement pour une autre raison.
+	//
+	// Pas besoin du même traitement pour status=building : le devloop
+	// est autonome, il auto-reprend au prochain tick (cf. stories
+	// rewound à pending ci-dessus).
+	if res, err := s.db.ExecContext(ctx,
+		`UPDATE projects
+		 SET failure_stage = COALESCE(NULLIF(failure_stage, ''), 'interrupted'),
+		     failure_error = COALESCE(NULLIF(failure_error, ''), 'Serveur redémarré pendant une skill BMAD — clique "Reprendre au step suivant".'),
+		     updated_at = datetime('now')
+		 WHERE status = 'planning'
+		   AND id IN (
+		     SELECT DISTINCT project_id FROM bmad_phase_steps
+		     WHERE status = 'failed'
+		       AND error_text = 'interrompu par un restart serveur'
+		   )`,
+	); err != nil {
+		slog.Warn("devloop: projects interrupt-flag failed", "error", err)
+	} else if n, _ := res.RowsAffected(); n > 0 {
+		slog.Info("devloop: flagged projects as interrupted", "count", n)
+	}
 	go func() {
 		t := time.NewTicker(s.interval)
 		defer t.Stop()
