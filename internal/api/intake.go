@@ -143,19 +143,32 @@ func (s *Server) handleIntakeFinalize(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "NOT_FOUND", err.Error())
 		return
 	}
-	conv, err := s.intakeStore.GetOrStart(r.Context(), p.ID, p.Idea, s.intakeAgentFor(p))
+	agent := s.intakeAgentFor(p)
+	conv, err := s.intakeStore.GetOrStart(r.Context(), p.ID, p.Idea, agent)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "INTAKE_START_FAILED", err.Error())
 		return
 	}
 
-	// Flip to planning right away so the dashboard shows the spinner
-	// while BMAD runs. The PRD itself is produced by bmad-create-prd
-	// inside runBMADAsync — the old scripted PM agent that used to
-	// Finalize() into a fake PRD is gone.
+	// Le PM produit lui-même le Product Brief SCOPE LOCKED, qu'on
+	// pré-écrit dans planning-artifacts pour que /bmad-create-prd le
+	// consomme tel quel. C'est le fix du bug "BMAD analyse "todolist
+	// basique" → sort un concurrent Notion" : l'agent Analyst BMAD
+	// élargissait systématiquement la portée. Maintenant il est
+	// bypassé, le PM du chat d'intake (qui a discuté avec l'opérateur)
+	// est la source de vérité.
+	brief, err := s.intakeStore.Finalize(r.Context(), conv.ID, p.Idea, agent)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "BRIEF_BUILD_FAILED", err.Error())
+		return
+	}
+
+	// Flip to planning + persist le brief comme PRD initial. /bmad-create-prd
+	// pourra le reformatter selon ses checklists mais la substance (scope,
+	// non-goals, stack) restera inchangée.
 	if _, err := s.db().ExecContext(r.Context(),
-		`UPDATE projects SET status = ?, updated_at = datetime('now') WHERE id = ?`,
-		project.StatusPlanning, p.ID,
+		`UPDATE projects SET status = ?, prd = ?, updated_at = datetime('now') WHERE id = ?`,
+		project.StatusPlanning, brief, p.ID,
 	); err != nil {
 		writeError(w, http.StatusInternalServerError, "PROJECT_UPDATE_FAILED", err.Error())
 		return
@@ -165,7 +178,7 @@ func (s *Server) handleIntakeFinalize(w http.ResponseWriter, r *http.Request) {
 	// `claude --print` invocations each take minutes. Detach so the
 	// HTTP request returns immediately; progress is broadcast via WS
 	// (project.architect_started / _done / _failed events).
-	go s.runArchitectAsync(p.ID, p.Idea, flattenConversation(conv)) //nolint:gosec // G118: request ctx dies with the handler
+	go s.runArchitectAsync(p.ID, p.Idea, brief) //nolint:gosec // G118: request ctx dies with the handler
 
 	writeJSON(w, map[string]any{
 		"project_id": p.ID,
@@ -680,15 +693,26 @@ func (s *Server) runArchitectAsyncInternal(projectID, idea, seedDoc string, from
 		return
 	}
 
-	// Seed BMAD with the intake transcript so its create-prd workflow
-	// has a product brief to work from. BMAD scans the planning dir
-	// for input docs at step-02-discovery — we drop this one there.
-	briefPath := filepath.Join(workdir, bmad.PlanningDir, "_intake.md")
-	if err := os.MkdirAll(filepath.Dir(briefPath), 0o755); err != nil {
+	// Pré-écrit le brief dans planning-artifacts. seedDoc est le
+	// Product Brief SCOPE LOCKED produit par le PM agent de l'intake.
+	// On l'écrit sous deux chemins pour que /bmad-create-prd le trouve
+	// sans qu'on ait à patcher la skill BMAD :
+	//   - _intake.md : conservé pour audit + fallback si create-prd lit ce nom
+	//   - product-brief-<slug>.md : nom standard que BMAD utilisait
+	//     quand /bmad-product-brief tournait, à présent c'est le PM qui
+	//     l'écrit directement.
+	if err := os.MkdirAll(filepath.Join(workdir, bmad.PlanningDir), 0o755); err != nil {
 		fail("prepare", err)
 		return
 	}
-	if err := os.WriteFile(briefPath, []byte(buildIntakeDoc(idea, seedDoc)), 0o644); err != nil {
+	slug := projectSlug(proj.Name)
+	intakePath := filepath.Join(workdir, bmad.PlanningDir, "_intake.md")
+	if err := os.WriteFile(intakePath, []byte(buildIntakeDoc(idea, seedDoc)), 0o644); err != nil {
+		fail("prepare", err)
+		return
+	}
+	briefPath := filepath.Join(workdir, bmad.PlanningDir, "product-brief-"+slug+".md")
+	if err := os.WriteFile(briefPath, []byte(seedDoc), 0o644); err != nil {
 		fail("prepare", err)
 		return
 	}
@@ -875,6 +899,31 @@ func countBMADStories(epics []bmadEpic) int {
 		n += len(e.Stories)
 	}
 	return n
+}
+
+// projectSlug produit un nom de fichier friendly à partir du nom du
+// projet, utilisé pour écrire product-brief-<slug>.md au format que
+// BMAD attendait quand /bmad-product-brief tournait. Préserve uniquement
+// [a-z0-9-]. Fallback "project" si la normalisation ne laisse rien.
+func projectSlug(name string) string {
+	name = strings.ToLower(strings.TrimSpace(name))
+	var b strings.Builder
+	for _, r := range name {
+		switch {
+		case r >= 'a' && r <= 'z', r >= '0' && r <= '9':
+			b.WriteRune(r)
+		case r == ' ' || r == '_' || r == '-':
+			b.WriteRune('-')
+		}
+	}
+	out := strings.Trim(b.String(), "-")
+	if out == "" {
+		return "project"
+	}
+	if len(out) > 60 {
+		out = out[:60]
+	}
+	return out
 }
 
 // buildIntakeDoc formats the user's web chat as a product brief BMAD

@@ -17,16 +17,19 @@ import (
 // `claude --print` — la doc BMAD indique explicitement que chaque
 // skill doit tourner dans un chat neuf (« fresh chat each »).
 
-// AnalysisSequence (Phase 1) — on active l'agent Analyst puis on
-// produit un product brief à partir de l'idée du user + l'intake
-// chat. `bmad-brainstorming` est optionnelle et interactive, on la
-// saute en mode non-interactive ; même raison pour les trois
-// research skills. Le brief produit nourrit la skill create-prd qui
-// suit en Phase 2.
-var AnalysisSequence = []string{
-	"/bmad-agent-analyst",
-	"/bmad-product-brief",
-}
+// AnalysisSequence (Phase 1) — vide par design. Avant, on lançait
+// /bmad-agent-analyst + /bmad-product-brief pour générer un product
+// brief à partir de l'idée + l'intake chat. Mais l'agent Analyst
+// élargissait systématiquement la portée ("todolist basique" →
+// concurrent de Notion avec IA de triage) parce que son rôle
+// intrinsèque est de prospecter marché et positionnement.
+//
+// Maintenant, Hive pré-écrit lui-même product-brief-<slug>.md via le
+// PM agent du chat d'intake (voir intake/claude_code.go FinalPRD qui
+// produit un brief SCOPE LOCKED). BMAD démarre donc directement à
+// /bmad-agent-pm + /bmad-create-prd, qui lit le brief pré-écrit et
+// s'y tient.
+var AnalysisSequence = []string{}
 
 // PlanningSequence (Phase 2) — PM prend la main, rédige le PRD,
 // valide, puis passe le relais au designer UX (bmad considère l'UX

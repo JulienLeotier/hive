@@ -21,9 +21,19 @@ func TestPlanningSequenceNonEmpty(t *testing.T) {
 }
 
 func TestFullPlanningPipelineConcatOrdered(t *testing.T) {
-	// La première commande doit être celle de Analysis, puis Planning, etc.
-	if FullPlanningPipeline[0] != "/bmad-agent-analyst" {
-		t.Errorf("FullPlanningPipeline doit commencer par /bmad-agent-analyst, pas %q", FullPlanningPipeline[0])
+	// Le pipeline démarre désormais directement sur /bmad-agent-pm.
+	// AnalysisSequence est vide par design : Hive pré-écrit lui-même le
+	// Product Brief via son PM agent d'intake pour éviter que l'Analyst
+	// BMAD élargisse systématiquement la portée.
+	if FullPlanningPipeline[0] != "/bmad-agent-pm" {
+		t.Errorf("FullPlanningPipeline doit commencer par /bmad-agent-pm, pas %q", FullPlanningPipeline[0])
+	}
+	// Vérifie que /bmad-product-brief n'est PLUS dans le pipeline —
+	// sinon la régression "analyst réinvente la portée" revient.
+	for _, cmd := range FullPlanningPipeline {
+		if cmd == "/bmad-product-brief" || cmd == "/bmad-agent-analyst" {
+			t.Errorf("FullPlanningPipeline ne doit plus contenir %q — Hive pré-écrit le brief via son PM", cmd)
+		}
 	}
 	// sprint-planning en dernier = init Phase 4.
 	last := FullPlanningPipeline[len(FullPlanningPipeline)-1]

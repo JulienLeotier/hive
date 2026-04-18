@@ -143,10 +143,14 @@ func buildReplyPrompt(projectIdea string, history []Message) string {
 	var b strings.Builder
 	b.WriteString("You are the PM agent in the BMAD autonomous product-build flow.\n")
 	b.WriteString("The user has an idea; your job is to ask one clarifying question at a time ")
-	b.WriteString("until you have enough to write a PRD. Cover: audience, core flows, non-goals, ")
+	b.WriteString("until you have enough to write a SCOPE-LOCKED product brief. Cover: audience, core flows, non-goals, ")
 	b.WriteString("tech constraints, and definition-of-done. Do NOT ask more than one question per turn. ")
-	b.WriteString("Do NOT ask a question you already asked. ")
-	b.WriteString("When you have enough to write a PRD, set done=true and reply with a one-sentence handoff.\n\n")
+	b.WriteString("Do NOT ask a question you already asked.\n\n")
+	b.WriteString("MATCH THE USER'S AMBITION. If they say 'simple', 'basic', 'minimal', 'just X', do NOT propose ")
+	b.WriteString("additional features, integrations, or roles. Ask about the 1-2 core flows and the stack, then be done.\n")
+	b.WriteString("If the user tells you to 'just figure it out' or 'use defaults', accept it — state the minimal ")
+	b.WriteString("defaults you picked (stack, scope, persistence) in one message, then set done=true.\n\n")
+	b.WriteString("When you have enough to write the brief, set done=true and reply with a one-sentence handoff.\n\n")
 	b.WriteString("Respond with ONLY a single JSON object of the form ")
 	b.WriteString(`{"reply": "<your next message to the user>", "done": <boolean>}.`)
 	b.WriteString(" No prose outside the JSON.\n\n")
@@ -161,15 +165,47 @@ func buildReplyPrompt(projectIdea string, history []Message) string {
 	return b.String()
 }
 
-// buildPRDPrompt asks Claude for a markdown PRD synthesised from the
-// intake conversation.
+// buildPRDPrompt asks Claude for a scope-locked Product Brief synthesised
+// from the intake conversation. The document is consumed by BMAD's
+// `/bmad-create-prd` skill downstream; keeping it strict and lean
+// prevents the Analyst agent from re-inventing an ambitious product.
+//
+// Contract for downstream skills (enforced by a SCOPE LOCK header) :
+//   - Ship EXACTLY what's in In-scope
+//   - Anything in Non-goals must NOT be added, not even as "future"
+//   - Stack is a constraint, not a suggestion
+//   - If the brief says "simple/basic/minimal", do NOT expand
 func buildPRDPrompt(projectIdea string, history []Message) string {
 	var b strings.Builder
 	b.WriteString("You are the PM agent. The intake Q&A below has concluded. ")
-	b.WriteString("Write a clean markdown PRD the Architect can decompose into epics. ")
-	b.WriteString("Structure: Summary, Audience, Core Flows (numbered), Non-Goals, Tech Notes, ")
-	b.WriteString("Definition of Done. Be concrete — no fluff. ")
-	b.WriteString("Wrap the document between the literal markers `<<<PRD` and `PRD>>>` so the outer ")
+	b.WriteString("Write a SCOPE-LOCKED Product Brief that downstream BMAD skills ")
+	b.WriteString("(create-prd, create-architecture, create-epics) must strictly respect.\n\n")
+	b.WriteString("CRITICAL RULES :\n")
+	b.WriteString("- Match the user's AMBITION LEVEL. If they said 'simple', 'basic', 'minimal' or 'just X', ")
+	b.WriteString("the brief must be SMALL (1-2 epics, < 10 stories total). Do NOT brainstorm features they didn't ask for.\n")
+	b.WriteString("- Every feature in In-scope must be traceable to something the user explicitly asked for or confirmed.\n")
+	b.WriteString("- Non-goals must be EXPLICIT and LONG — list everything a typical product in this space has that we are NOT building.\n")
+	b.WriteString("- Stack must be the leanest viable. No framework if vanilla works. No DB if localStorage works. No backend if static works.\n\n")
+	b.WriteString("OUTPUT FORMAT — use EXACTLY these sections :\n")
+	b.WriteString("```\n")
+	b.WriteString("# Product Brief — <name>\n\n")
+	b.WriteString("## SCOPE LOCK\n")
+	b.WriteString("This brief is a HARD contract. Downstream agents (architect, PM, UX, dev) must NOT add features, screens, ")
+	b.WriteString("integrations, or workflows beyond what is listed in In-scope. Expanding the scope is a review failure.\n\n")
+	b.WriteString("## Summary\n")
+	b.WriteString("<2-3 sentences, concrete, no marketing copy>\n\n")
+	b.WriteString("## Users\n")
+	b.WriteString("<1 short paragraph — who, what context>\n\n")
+	b.WriteString("## In-scope (ship these — nothing else)\n")
+	b.WriteString("- <feature 1, concrete>\n- <feature 2, concrete>\n... \n\n")
+	b.WriteString("## Non-goals (DO NOT build these, not even as stubs)\n")
+	b.WriteString("- <feature NOT shipped 1>\n- <feature NOT shipped 2>\n... (be exhaustive — list anything downstream agents might be tempted to add)\n\n")
+	b.WriteString("## Stack (constraint — not a suggestion)\n")
+	b.WriteString("<language / framework / DB / deploy — lean defaults>\n\n")
+	b.WriteString("## Definition of Done\n")
+	b.WriteString("- <observable behaviour 1>\n- <observable behaviour 2>\n...\n")
+	b.WriteString("```\n\n")
+	b.WriteString("Wrap the final document between the literal markers `<<<PRD` and `PRD>>>` so the outer ")
 	b.WriteString("system can extract it cleanly. Do NOT include anything outside those markers.\n\n")
 	fmt.Fprintf(&b, "User's idea: %s\n\nIntake transcript:\n", projectIdea)
 	for _, m := range history {
