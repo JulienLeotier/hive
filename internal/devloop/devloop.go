@@ -52,6 +52,13 @@ const (
 // loop forever and burn Claude tokens.
 const MaxIterations = 3
 
+// MaxArchitectEscalations caps les escalations /bmad-agent-architect
+// par story. Au-delà, si la review continue à tag decision-needed,
+// on laisse la story retomber dans le flow normal (iterations
+// consommée) — sinon une review bugguée pourrait boucler à l'infini
+// en forçant l'architect à trancher puis trancher encore.
+const MaxArchitectEscalations = 2
+
 // Story is the minimal story shape devloop needs. Mirror of the stories
 // table (+ ACs eagerly loaded) so agents don't have to poke at SQL.
 // Branch/PRURL are populated when a prior iteration of the same story
@@ -118,6 +125,18 @@ type ReviewVerdict struct {
 	Pass     bool
 	Feedback string              // free-form notes for the dev on failure
 	ACs      []ReviewedCriterion // one-to-one with story.ACs
+	// NeedsArchitect = true quand la review a tagged "decision-needed"
+	// sur au moins 1 finding. Dans ce cas le supervisor escalade à
+	// /bmad-agent-architect + /bmad-correct-course AVANT de relancer
+	// le dev, et cette itération ne compte PAS dans le cap
+	// MaxIterations (sinon on bloquerait sur des questions légitimes
+	// d'architecture).
+	NeedsArchitect bool
+	// DecisionCount = nombre de findings "decision-needed" détectés
+	// dans le feedback. Utile pour décider si on doit forcer une
+	// escalation même quand le reviewer lui-même dit "pass" (rare mais
+	// possible sur un code-review qui catégorise sans bloquer).
+	DecisionCount int
 }
 
 // ReviewedCriterion pairs an AC with the reviewer's pass/fail call.
@@ -133,6 +152,23 @@ type ReviewerAgent interface {
 	Review(ctx context.Context, proj ProjectContext, story Story, output DevOutput) (ReviewVerdict, error)
 }
 
+// ArchitectAgent tranche les findings "decision-needed" quand le
+// reviewer tombe sur une question d'architecture qu'il ne peut pas
+// régler seul. En mode autonome c'est Claude qui joue l'architecte
+// (via /bmad-agent-architect + /bmad-correct-course) ; en mode
+// scripté c'est un no-op qui retourne nil.
+//
+// Contrat :
+//   - Resolve() lit les findings courants sur la story, prend position
+//     (avec argumentation), et committe la décision dans la story.md
+//     via /bmad-correct-course.
+//   - Ne doit PAS modifier le code directement — juste la spec.
+//   - Le Dev reprendra ensuite avec la nouvelle direction.
+type ArchitectAgent interface {
+	Name() string
+	Resolve(ctx context.Context, proj ProjectContext, story Story, reviewFeedback string) error
+}
+
 // Publisher is the minimum event-bus surface the supervisor needs to
 // broadcast state transitions. Matches event.Bus.PublishErr. Kept as a
 // callback so this package doesn't import event and avoids cycle risk.
@@ -144,12 +180,13 @@ type Publisher func(ctx context.Context, eventType, source string, payload any) 
 // project are strictly sequential — Foundations must land before Core
 // Flows touch the same files.
 type Supervisor struct {
-	db       *sql.DB
-	dev      DevAgent
-	reviewer ReviewerAgent
-	git      *GitCommitter
-	publish  Publisher
-	interval time.Duration
+	db        *sql.DB
+	dev       DevAgent
+	reviewer  ReviewerAgent
+	architect ArchitectAgent // nil = pas d'escalation decision-needed
+	git       *GitCommitter
+	publish   Publisher
+	interval  time.Duration
 }
 
 // NewSupervisor builds a supervisor. Pass the deterministic Scripted
@@ -179,6 +216,15 @@ func (s *Supervisor) WithPublisher(p Publisher) *Supervisor {
 // that don't want to touch the filesystem with real git state.
 func (s *Supervisor) WithGit(g *GitCommitter) *Supervisor {
 	s.git = g
+	return s
+}
+
+// WithArchitect branche l'escalation /bmad-agent-architect +
+// /bmad-correct-course sur les findings "decision-needed". Sans
+// architect, le devloop bloque la story quand le reviewer demande une
+// décision (ancien comportement). Avec, il escalade et continue.
+func (s *Supervisor) WithArchitect(a ArchitectAgent) *Supervisor {
+	s.architect = a
 	return s
 }
 
@@ -359,6 +405,47 @@ func (s *Supervisor) advance(ctx context.Context, proj ProjectContext) error {
 	verdict, err := s.reviewer.Review(ctx, proj, *story, output)
 	if err != nil {
 		return fmt.Errorf("reviewer: %w", err)
+	}
+
+	// Escalation autonome : si le reviewer a tagged des findings
+	// "decision-needed" ET qu'on a un Architect wire, on l'invoque
+	// pour trancher. Cette itération ne compte PAS dans le cap
+	// MaxIterations — sinon on bloquerait sur des questions légitimes
+	// d'architecture qui méritent une vraie décision, pas un
+	// "blocked" silencieux. Après Resolve(), la story reste "review"
+	// et sera relancée au prochain tick du supervisor en dev pour
+	// appliquer la décision de l'architecte.
+	if !verdict.Pass && verdict.NeedsArchitect && s.architect != nil && s.architectEscalations(ctx, story.ID) < MaxArchitectEscalations {
+		slog.Info("devloop: architect escalation",
+			"project", proj.ID, "story", story.Title,
+			"decision_count", verdict.DecisionCount, "iter", story.Iterations)
+		if err := s.architect.Resolve(ctx, proj, *story, verdict.Feedback); err != nil {
+			slog.Warn("architect resolve failed, falling back to normal iter",
+				"error", err)
+			// on laisse la review tomber dans le flow classique
+		} else {
+			// Ré-enregistre l'itération en tant que "architected"
+			// (pas un fail dev) et rewind la story à dev pour que
+			// le prochain tick la reprenne fresh avec la décision.
+			_, _ = s.db.ExecContext(ctx,
+				`INSERT INTO reviews (story_id, iteration, reviewer_agent_id, verdict, feedback)
+				 VALUES (?, ?, ?, 'architect_resolved', ?)`,
+				story.ID, newIteration, s.reviewer.Name(),
+				"Architect a tranché — "+firstLine(verdict.Feedback))
+			// iterations NE bouge PAS : l'escalation architecte est une
+			// étape méta qui ne doit pas consommer le budget d'itérations.
+			_, _ = s.db.ExecContext(ctx,
+				`UPDATE stories SET status = ?, iterations = ?, updated_at = datetime('now')
+				 WHERE id = ?`,
+				storyStatusPending, story.Iterations, story.ID)
+			s.emit(ctx, "story.architect_resolved", map[string]any{
+				"project_id": proj.ID,
+				"story_id":   story.ID,
+				"story":      story.Title,
+				"iter":       story.Iterations,
+			})
+			return nil
+		}
 	}
 
 	// Record the review row + each AC update.
@@ -545,6 +632,19 @@ func (s *Supervisor) epicComplete(ctx context.Context, epicID string) bool {
 		return false
 	}
 	return pending == 0
+}
+
+// architectEscalations compte les escalations déjà effectuées sur une
+// story (lignes reviews avec verdict = 'architect_resolved'). Utilisé
+// pour capper MaxArchitectEscalations et éviter qu'une review bugguée
+// ne force un cycle d'escalation sans fin.
+func (s *Supervisor) architectEscalations(ctx context.Context, storyID string) int {
+	var n int
+	_ = s.db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM reviews WHERE story_id = ? AND verdict = 'architect_resolved'`,
+		storyID,
+	).Scan(&n)
+	return n
 }
 
 // previousFeedback pulls the latest failing review feedback so the next

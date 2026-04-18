@@ -152,6 +152,17 @@ var CorrectCourseSequence = []string{
 	"/bmad-correct-course",
 }
 
+// ArchitectEscalationSequence est invoquée quand un code-review BMAD
+// a tagged des findings "decision-needed" et que le devloop Hive veut
+// trancher de manière autonome plutôt que de bloquer la story. On
+// réveille l'agent Architect puis on ouvre /bmad-correct-course pour
+// qu'il committe sa décision dans la story.md. Le Dev reprend ensuite
+// au prochain tick avec la nouvelle spec.
+var ArchitectEscalationSequence = []string{
+	"/bmad-agent-architect",
+	"/bmad-correct-course",
+}
+
 func concat(slices ...[]string) []string {
 	total := 0
 	for _, s := range slices {

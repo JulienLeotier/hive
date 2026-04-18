@@ -3,6 +3,7 @@ package devloop
 import (
 	"context"
 	"database/sql"
+	"fmt"
 	"log/slog"
 	"strings"
 	"time"
@@ -224,19 +225,103 @@ func (r *ClaudeCodeReviewer) Review(ctx context.Context, proj ProjectContext, st
 	}
 
 	feedback := ""
+	combined := ""
 	if len(history) > 0 {
 		feedback = firstLine(history[len(history)-1].Reply)
+		for _, step := range history {
+			combined += step.Reply + "\n\n"
+		}
 	}
 	if feedback == "" {
 		feedback = reason
 	}
-	verdict := ReviewVerdict{Pass: pass, Feedback: feedback}
+	decisions := countDecisionNeeded(combined)
+	verdict := ReviewVerdict{
+		Pass:           pass,
+		Feedback:       feedback,
+		NeedsArchitect: !pass && decisions > 0,
+		DecisionCount:  decisions,
+	}
 	for _, ac := range story.ACs {
 		verdict.ACs = append(verdict.ACs, ReviewedCriterion{
 			ID: ac.ID, Passed: pass, Reason: reason,
 		})
 	}
 	return verdict, nil
+}
+
+// countDecisionNeeded scanne le feedback d'un /bmad-code-review pour
+// compter les findings tagged "decision-needed". BMAD utilise cette
+// catégorie quand un finding ne peut pas être réglé par le dev seul :
+// il faut un arbitrage d'architecte (choix d'API, trade-off perf vs
+// lisibilité, rupture de compat). On matche large — BMAD formate
+// parfois en "Category: decision-needed" ou "[decision-needed]" ou
+// juste "decision needed" dans les PRs.
+func countDecisionNeeded(reply string) int {
+	if reply == "" {
+		return 0
+	}
+	lowered := strings.ToLower(reply)
+	count := strings.Count(lowered, "decision-needed")
+	count += strings.Count(lowered, "decision_needed")
+	// "decision needed" sans tiret : on le compte aussi, mais on
+	// soustrait les occurrences déjà couvertes par "decision-needed"
+	// pour éviter le double-compte (le tiret compte comme match du
+	// pattern sans tiret si on lowercase). En pratique les deux formes
+	// co-existent rarement ; on garde simple.
+	loose := strings.Count(lowered, "decision needed")
+	if loose > count {
+		count = loose
+	}
+	return count
+}
+
+// ClaudeCodeArchitect pilote l'escalation autonome : quand le
+// Reviewer a tagged des findings "decision-needed", Hive invoque
+// cet agent pour réveiller /bmad-agent-architect et lancer
+// /bmad-correct-course qui committe la décision dans la story.md.
+// Après ça, le Dev reprendra avec la nouvelle spec au prochain tick.
+type ClaudeCodeArchitect struct {
+	runner *bmad.Runner
+	db     *sql.DB
+}
+
+// NewClaudeCodeArchitect construit l'agent. Retourne nil si le Claude
+// CLI n'est pas disponible — l'appelant vérifie et skip l'escalation.
+func NewClaudeCodeArchitect() *ClaudeCodeArchitect {
+	r := bmad.NewRunner()
+	if r == nil {
+		slog.Info("devloop architect: claude CLI absent — escalation désactivée")
+		return nil
+	}
+	return &ClaudeCodeArchitect{runner: r}
+}
+
+// WithDB active le tracking cost + reply_preview pour les skills
+// architect via le même makeDevloopObserver que dev/review.
+func (a *ClaudeCodeArchitect) WithDB(db *sql.DB) *ClaudeCodeArchitect {
+	a.db = db
+	return a
+}
+
+func (*ClaudeCodeArchitect) Name() string { return "bmad-architect" }
+
+// Resolve lance /bmad-agent-architect puis /bmad-correct-course avec
+// le feedback de review en contexte, pour que l'architect puisse
+// trancher sur les findings decision-needed et mettre à jour la
+// story.md. BMAD fait le commit de la modification de spec ; Hive ne
+// touche pas au code.
+func (a *ClaudeCodeArchitect) Resolve(ctx context.Context, proj ProjectContext, story Story, reviewFeedback string) error {
+	if a == nil || a.runner == nil {
+		return fmt.Errorf("architect: runner indisponible")
+	}
+	workdir := pickWorkdir(proj)
+	obs := makeDevloopObserver(a.db, proj.ID, workdir, "architect")
+	_, err := a.runner.RunSequenceObserved(ctx, workdir, bmad.ArchitectEscalationSequence, obs)
+	if err != nil {
+		return fmt.Errorf("architect escalation: %w", err)
+	}
+	return nil
 }
 
 func firstLine(s string) string {

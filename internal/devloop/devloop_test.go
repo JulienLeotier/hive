@@ -152,6 +152,96 @@ func TestSupervisorRecoversStuckStoriesOnStart(t *testing.T) {
 	assert.NotEqual(t, "review", status, "the original stuck state must have been cleared")
 }
 
+// decisionNeededReviewer simule un /bmad-code-review qui retourne un
+// finding tagged "decision-needed" : pass=false, NeedsArchitect=true,
+// DecisionCount=1. Sert à tester l'escalation autonome vers Architect.
+type decisionNeededReviewer struct{ calls int }
+
+func (*decisionNeededReviewer) Name() string { return "decision-reviewer" }
+func (r *decisionNeededReviewer) Review(_ context.Context, _ ProjectContext, story Story, _ DevOutput) (ReviewVerdict, error) {
+	r.calls++
+	v := ReviewVerdict{
+		Pass:           false,
+		Feedback:       "Choix de cache: Redis vs in-process — decision-needed",
+		NeedsArchitect: true,
+		DecisionCount:  1,
+	}
+	for _, ac := range story.ACs {
+		v.ACs = append(v.ACs, ReviewedCriterion{ID: ac.ID, Passed: false, Reason: "decision pending"})
+	}
+	return v, nil
+}
+
+// recordingArchitect note ses invocations pour qu'on puisse asserter
+// qu'il a été appelé sans dépendre de BMAD réel.
+type recordingArchitect struct{ calls int }
+
+func (*recordingArchitect) Name() string { return "test-architect" }
+func (a *recordingArchitect) Resolve(_ context.Context, _ ProjectContext, _ Story, _ string) error {
+	a.calls++
+	return nil
+}
+
+func TestSupervisorEscalatesDecisionNeededToArchitect(t *testing.T) {
+	st, err := storage.Open(t.TempDir())
+	require.NoError(t, err)
+	defer st.Close()
+	workdir := filepath.Join(t.TempDir(), "work")
+	_ = seedProject(t, st.DB, workdir)
+
+	reviewer := &decisionNeededReviewer{}
+	arch := &recordingArchitect{}
+	sup := NewSupervisor(st.DB, NewScriptedDev(), reviewer, time.Second).
+		WithArchitect(arch)
+
+	// Premier tick : decision-needed → escalation, iteration NE doit PAS
+	// bouger, story doit revenir à pending.
+	sup.tick(context.Background())
+	assert.Equal(t, 1, arch.calls, "architect doit être invoqué sur decision-needed")
+	var status string
+	var iterations int
+	require.NoError(t, st.DB.QueryRow(
+		`SELECT status, iterations FROM stories WHERE id = 'sty_1'`,
+	).Scan(&status, &iterations))
+	assert.Equal(t, "pending", status, "après escalation, story revient à pending")
+	assert.Equal(t, 0, iterations, "l'escalation ne consomme PAS le budget d'itérations")
+
+	// Un review 'architect_resolved' doit avoir été écrit.
+	var resolvedRows int
+	require.NoError(t, st.DB.QueryRow(
+		`SELECT COUNT(*) FROM reviews WHERE story_id = 'sty_1' AND verdict = 'architect_resolved'`,
+	).Scan(&resolvedRows))
+	assert.Equal(t, 1, resolvedRows, "un review architect_resolved doit avoir été inséré")
+}
+
+func TestSupervisorCapsArchitectEscalations(t *testing.T) {
+	st, err := storage.Open(t.TempDir())
+	require.NoError(t, err)
+	defer st.Close()
+	workdir := filepath.Join(t.TempDir(), "work")
+	_ = seedProject(t, st.DB, workdir)
+
+	reviewer := &decisionNeededReviewer{}
+	arch := &recordingArchitect{}
+	sup := NewSupervisor(st.DB, NewScriptedDev(), reviewer, time.Second).
+		WithArchitect(arch)
+
+	// MaxArchitectEscalations + N ticks : l'architect ne doit JAMAIS être
+	// appelé plus de MaxArchitectEscalations fois, et la story doit
+	// finir blocked (cap d'itérations atteint après l'escalation).
+	for i := 0; i < MaxArchitectEscalations+MaxIterations+2; i++ {
+		sup.tick(context.Background())
+	}
+	assert.LessOrEqual(t, arch.calls, MaxArchitectEscalations,
+		"le cap d'escalations architect doit tenir")
+	var status string
+	require.NoError(t, st.DB.QueryRow(
+		`SELECT status FROM stories WHERE id = 'sty_1'`,
+	).Scan(&status))
+	assert.Equal(t, storyStatusBlocked, status,
+		"après le cap d'escalations + cap d'itérations, la story doit être blocked")
+}
+
 func TestSupervisorIgnoresNonBuildingProjects(t *testing.T) {
 	st, err := storage.Open(t.TempDir())
 	require.NoError(t, err)

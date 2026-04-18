@@ -114,11 +114,25 @@ var serveCmd = &cobra.Command{
 				loopInterval = d
 			}
 		}
-		devloop.NewSupervisor(store.DB, devAgent, reviewerAgent, loopInterval).
-			WithPublisher(devloop.Publisher(bus.PublishErr)).
-			Start(supervisorCtx)
+		supervisor := devloop.NewSupervisor(store.DB, devAgent, reviewerAgent, loopInterval).
+			WithPublisher(devloop.Publisher(bus.PublishErr))
+		// Escalation architect autonome : quand un /bmad-code-review
+		// tag des findings "decision-needed", Hive invoque
+		// /bmad-agent-architect + /bmad-correct-course pour trancher
+		// sans consommer le cap d'itérations. Pas d'architect en mode
+		// scripté (CLI claude absent ou HIVE_DEV_AGENT=scripted).
+		architectName := "none"
+		if os.Getenv("HIVE_DEV_AGENT") != "scripted" {
+			if arch := devloop.NewClaudeCodeArchitect(); arch != nil {
+				arch.WithDB(store.DB)
+				supervisor.WithArchitect(arch)
+				architectName = arch.Name()
+			}
+		}
+		supervisor.Start(supervisorCtx)
 		slog.Info("devloop supervisor armed",
-			"dev", devAgent.Name(), "reviewer", reviewerAgent.Name(), "interval", loopInterval)
+			"dev", devAgent.Name(), "reviewer", reviewerAgent.Name(),
+			"architect", architectName, "interval", loopInterval)
 
 		apiSrv := api.NewServer(bus).
 			WithProjectStore(project.NewStore(store.DB)).
