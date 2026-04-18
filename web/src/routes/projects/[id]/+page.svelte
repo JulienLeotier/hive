@@ -528,61 +528,67 @@
 	{:else if !project}
 		<p class="empty">Projet introuvable.</p>
 	{:else}
-		<header>
-			<h1>{project.name}</h1>
-			<div class="meta">
-				<span class="badge" style="background:{statusColor(project.status)}">{project.status}</span>
+		<header class="hero">
+			<div class="hero-top">
+				<span class="badge status" style="background:{statusColor(project.status)}">{project.status}</span>
 				{#if project.is_existing}
-					<span class="badge brownfield" title="Projet basé sur un repo existant — BMAD tourne en mode brownfield (document-project + edit-prd)">
+					<span class="chip brownfield" title="Projet basé sur un repo existant — BMAD tourne en mode brownfield">
 						🏗 brownfield
 					</span>
 				{/if}
-				{#if project.repo_url}
-					<a class="repo-link" href={project.repo_url} target="_blank" rel="noopener" title="Repo GitHub">
-						↗ repo
-					</a>
-				{/if}
 				{#if (project.total_cost_usd ?? 0) > 0}
-					<span class="cost-pill" title="Cumul de tokens Claude consommés">
-						💰 ${(project.total_cost_usd ?? 0).toFixed(3)}
+					<span class="chip cost" title="Cumul tokens Claude consommés">
+						${(project.total_cost_usd ?? 0).toFixed(2)}
 					</span>
 				{/if}
-				<span class="muted">mis à jour {fmtRelative(project.updated_at)}</span>
-				<code class="id">{project.id}</code>
+				<span class="hero-time">mis à jour {fmtRelative(project.updated_at)}</span>
 			</div>
-			<p class="idea">{project.idea}</p>
-			<nav class="tabs">
-				<a href="/projects/{project.id}/files">📁 Fichiers</a>
-				{#if project.status === 'shipped' || project.status === 'building'}
-					<a class="iter" href="/projects/{project.id}/iterate">➕ Nouvelle itération</a>
+			<h1 class="hero-name">{project.name}</h1>
+			<p class="hero-idea">{project.idea}</p>
+
+			<div class="hero-actions">
+				<a class="btn ghost" href="/projects/{project.id}/files">
+					<span class="btn-icon">📁</span> Fichiers
+				</a>
+				{#if project.repo_url}
+					<a class="btn ghost" href={project.repo_url} target="_blank" rel="noopener">
+						<span class="btn-icon">↗</span> Repo GitHub
+					</a>
 				{/if}
-				{#if project.status === 'shipped' || project.status === 'building'}
-					<button type="button" class="retro" onclick={runRetrospective} disabled={runningRetro}>
-						{runningRetro ? 'Rétro…' : '📝 Rétrospective'}
-					</button>
-				{/if}
-			</nav>
-			{#if project.bmad_output_path || project.repo_path || project.workdir}
-				<dl class="refs">
-					{#if project.workdir}
-						<dt>Répertoire</dt><dd><code>{project.workdir}</code></dd>
-					{/if}
-					{#if project.repo_path}
-						<dt>Repo existant</dt><dd><code>{project.repo_path}</code></dd>
-					{/if}
-					{#if project.bmad_output_path}
-						<dt>Sortie BMAD</dt><dd><code>{project.bmad_output_path}</code></dd>
-					{/if}
-				</dl>
-			{/if}
-			<div class="header-actions">
-				<a class="export-btn"
+				<a class="btn ghost"
 					href={`/api/v1/projects/${encodeURIComponent(project.id)}/export`}
 					download
 					title="Télécharge un .tar.gz : workdir + PRD + epics + historique phases + intake">
-					↓ Exporter (.tar.gz)
+					<span class="btn-icon">↓</span> Export .tar.gz
 				</a>
+				{#if project.status === 'shipped' || project.status === 'building'}
+					<a class="btn accent" href="/projects/{project.id}/iterate">
+						<span class="btn-icon">➕</span> Nouvelle itération
+					</a>
+					<button type="button" class="btn ghost" onclick={runRetrospective} disabled={runningRetro}>
+						<span class="btn-icon">📝</span>
+						{runningRetro ? 'Rétro en cours…' : 'Rétrospective'}
+					</button>
+				{/if}
 			</div>
+
+			{#if project.workdir || project.repo_path || project.bmad_output_path}
+				<details class="hero-details">
+					<summary>Détails techniques</summary>
+					<dl class="refs">
+						{#if project.workdir}
+							<dt>Répertoire</dt><dd><code>{project.workdir}</code></dd>
+						{/if}
+						{#if project.repo_path}
+							<dt>Repo existant</dt><dd><code>{project.repo_path}</code></dd>
+						{/if}
+						{#if project.bmad_output_path}
+							<dt>Sortie BMAD</dt><dd><code>{project.bmad_output_path}</code></dd>
+						{/if}
+						<dt>Project ID</dt><dd><code>{project.id}</code></dd>
+					</dl>
+				</details>
+			{/if}
 		</header>
 
 		{#if project.failure_stage}
@@ -617,51 +623,78 @@
 		{/if}
 
 		{#if (project.status === 'planning' || project.status === 'building') && phases.length > 0}
-			{@const latest = phases[0]}
 			{@const running = phases.find((s) => s.status === 'running')}
 			{@const done = phases.filter((s) => s.status === 'done').length}
 			{@const total = phases.length}
+			{@const totalCost = phases.reduce((a, s) => a + (s.cost_usd ?? 0), 0)}
 			<section class="phases">
 				<div class="phases-head">
-					<h2>
-						BMAD
+					<div class="phases-title">
+						<span class="phases-icon">⚙</span>
+						<h2>Pipeline BMAD</h2>
 						{#if running}
 							<span class="running-pill">
 								<span class="spinner"></span>
-								<code>{running.command}</code>
-								<span class="muted">({running.phase})</span>
+								en cours
 							</span>
-						{:else if latest.status === 'done'}
-							<span class="done-pill">✓ <code>{latest.command}</code></span>
-						{/if}
-					</h2>
-					<div class="phases-actions">
-						<span class="muted">{done}/{total} étapes terminées</span>
-						{#if running || project.status === 'planning'}
-							<button type="button" class="cancel-btn" onclick={cancelRun} disabled={cancelling}>
-								{cancelling ? 'Annulation…' : '✕ Annuler'}
-							</button>
 						{/if}
 					</div>
+					{#if running || project.status === 'planning'}
+						<button type="button" class="btn danger sm" onclick={cancelRun} disabled={cancelling}>
+							{cancelling ? 'Annulation…' : '✕ Annuler'}
+						</button>
+					{/if}
 				</div>
-				<ul class="phase-list">
+
+				<div class="phases-summary">
+					<div class="sum-item">
+						<span class="sum-num">{done}<span class="sum-total">/{total}</span></span>
+						<span class="sum-label">étapes</span>
+					</div>
+					<div class="sum-item">
+						<span class="sum-num mono">${totalCost.toFixed(2)}</span>
+						<span class="sum-label">Claude</span>
+					</div>
+					{#if running}
+						<div class="sum-item flex-fill">
+							<span class="sum-num mono small">{running.command}</span>
+							<span class="sum-label">running · {running.phase}</span>
+						</div>
+					{/if}
+				</div>
+
+				{#if total > 0}
+					<div class="progress-bar">
+						<div class="progress-fill" style="width:{(done / Math.max(total, 1)) * 100}%"></div>
+					</div>
+				{/if}
+
+				<ol class="phase-list">
 					{#each phases.slice(0, 15) as s (s.id)}
-						<li class={s.status}>
-							<span class="status-dot" class:running={s.status === 'running'}
-								class:done={s.status === 'done'}
-								class:failed={s.status === 'failed'}></span>
-							<code>{s.command}</code>
-							<span class="muted small">{s.phase}</span>
-							{#if s.cost_usd > 0}
-								<span class="muted small">· ${s.cost_usd.toFixed(4)}</span>
-							{/if}
-							{#if s.input_tokens > 0 || s.output_tokens > 0}
-								<span class="muted small">· {s.input_tokens}↓ / {s.output_tokens}↑ tokens</span>
-							{/if}
-							<span class="muted small">· {fmtRelative(s.started_at)}</span>
+						<li class="phase-item {s.status}">
+							<span class="phase-status">
+								{#if s.status === 'running'}
+									<span class="spinner"></span>
+								{:else if s.status === 'done'}
+									✓
+								{:else if s.status === 'failed'}
+									✕
+								{:else}
+									·
+								{/if}
+							</span>
+							<code class="phase-cmd">{s.command}</code>
+							<span class="phase-phase">{s.phase}</span>
+							<span class="phase-meta">
+								{#if s.cost_usd > 0}<span>${s.cost_usd.toFixed(3)}</span>{/if}
+								{#if s.input_tokens > 0 || s.output_tokens > 0}
+									<span class="tokens">{Math.round((s.input_tokens + s.output_tokens) / 1000)}k tok</span>
+								{/if}
+								<span class="phase-time">{fmtRelative(s.started_at)}</span>
+							</span>
 						</li>
 					{/each}
-				</ul>
+				</ol>
 			</section>
 		{/if}
 
@@ -921,58 +954,133 @@
 		font-size: 0.85rem;
 	}
 	.back:hover { color: var(--accent); }
-	h1 { margin: 0 0 0.5rem 0; }
 	h2 { font-size: 1.05rem; margin: 0 0 0.75rem 0; }
 	h3 { font-size: 0.95rem; margin: 0 0 0.5rem 0; }
-	.meta {
-		display: flex;
-		gap: 0.75rem;
-		align-items: center;
-		flex-wrap: wrap;
-		font-size: 0.85rem;
-	}
 	.muted { color: var(--muted); }
-	.id { font-size: 0.75rem; color: var(--muted); }
-	.idea {
-		margin: 0.5rem 0 0;
-		font-size: 1rem;
-		color: var(--text);
-		line-height: 1.5;
-	}
-	.tabs {
-		display: flex;
-		gap: 0.5rem;
-		margin: 0.75rem 0 0;
-		flex-wrap: wrap;
-	}
-	.tabs a {
-		padding: 0.3rem 0.7rem;
-		background: var(--bg-alt);
+
+	/* ===== Hero header ===== */
+	.hero {
+		background:
+			radial-gradient(ellipse at top right, color-mix(in srgb, var(--accent) 10%, transparent), transparent 60%),
+			var(--bg-panel);
 		border: 1px solid var(--border);
-		border-radius: 4px;
-		color: inherit;
-		text-decoration: none;
-		font-size: 0.8rem;
+		border-radius: 10px;
+		padding: 1.5rem 1.75rem;
 	}
-	.tabs a:hover { border-color: var(--accent); color: var(--accent); }
-	.tabs a.iter {
-		background: color-mix(in srgb, var(--accent) 16%, var(--bg-alt));
-		border-color: var(--accent);
+	.hero-top {
+		display: flex;
+		align-items: center;
+		gap: 0.5rem;
+		flex-wrap: wrap;
+		margin-bottom: 0.9rem;
+	}
+	.hero-top .status {
+		font-size: 0.72rem;
+		padding: 0.2rem 0.7rem;
+		border-radius: 999px;
+		font-weight: 700;
+		text-transform: lowercase;
+		letter-spacing: 0.04em;
+	}
+	.chip {
+		display: inline-flex;
+		align-items: center;
+		gap: 0.35rem;
+		padding: 0.2rem 0.7rem;
+		background: var(--bg-hover);
+		border: 1px solid var(--border);
+		border-radius: 999px;
+		font-size: 0.72rem;
+		color: var(--text);
+		font-weight: 500;
+	}
+	.chip.brownfield {
+		background: color-mix(in srgb, var(--accent) 12%, transparent);
+		border-color: color-mix(in srgb, var(--accent) 40%, transparent);
 		color: var(--accent);
+	}
+	.chip.cost {
+		background: color-mix(in srgb, var(--warn) 14%, transparent);
+		border-color: color-mix(in srgb, var(--warn) 40%, transparent);
+		color: var(--warn);
+		font-family: ui-monospace, monospace;
 		font-weight: 600;
 	}
-	.tabs .retro {
-		padding: 0.3rem 0.7rem;
-		background: var(--bg-alt);
-		border: 1px solid var(--border);
-		border-radius: 4px;
-		color: inherit;
-		font: inherit;
-		font-size: 0.8rem;
-		cursor: pointer;
+	.hero-time {
+		margin-left: auto;
+		font-size: 0.75rem;
+		color: var(--text-muted);
 	}
-	.tabs .retro:hover { border-color: var(--accent); color: var(--accent); }
-	.tabs .retro:disabled { opacity: 0.5; cursor: not-allowed; }
+	.hero-name {
+		font-size: 1.8rem;
+		line-height: 1.15;
+		margin: 0 0 0.5rem;
+		font-weight: 700;
+		letter-spacing: -0.02em;
+	}
+	.hero-idea {
+		margin: 0 0 1.1rem;
+		font-size: 0.95rem;
+		color: var(--text-muted);
+		line-height: 1.55;
+		max-width: 720px;
+	}
+	.hero-actions {
+		display: flex;
+		gap: 0.5rem;
+		flex-wrap: wrap;
+	}
+	.btn {
+		display: inline-flex;
+		align-items: center;
+		gap: 0.4rem;
+		padding: 0.5rem 0.9rem;
+		border-radius: 6px;
+		font-size: 0.82rem;
+		font-weight: 600;
+		cursor: pointer;
+		text-decoration: none;
+		border: 1px solid var(--border);
+		background: var(--bg-panel);
+		color: var(--text);
+		transition: border-color 0.1s, background 0.1s, color 0.1s;
+	}
+	.btn:hover { border-color: var(--accent); color: var(--accent); }
+	.btn.accent {
+		background: color-mix(in srgb, var(--accent) 14%, transparent);
+		border-color: color-mix(in srgb, var(--accent) 40%, transparent);
+		color: var(--accent);
+	}
+	.btn.accent:hover {
+		background: color-mix(in srgb, var(--accent) 22%, transparent);
+	}
+	.btn:disabled { opacity: 0.5; cursor: not-allowed; }
+	.btn-icon { font-size: 0.9rem; line-height: 1; }
+
+	.hero-details {
+		margin-top: 1rem;
+		padding-top: 0.9rem;
+		border-top: 1px dashed var(--border);
+	}
+	.hero-details > summary {
+		cursor: pointer;
+		font-size: 0.78rem;
+		color: var(--text-muted);
+		list-style: none;
+		user-select: none;
+		display: inline-flex;
+		align-items: center;
+		gap: 0.35rem;
+	}
+	.hero-details > summary::-webkit-details-marker { display: none; }
+	.hero-details > summary::before {
+		content: '▸';
+		font-size: 0.7rem;
+		transition: transform 0.15s;
+	}
+	.hero-details[open] > summary::before { transform: rotate(90deg); display: inline-block; }
+	.hero-details[open] > summary { margin-bottom: 0.6rem; }
+	.hero-details:hover > summary { color: var(--text); }
 	.refs {
 		display: grid;
 		grid-template-columns: max-content 1fr;
@@ -1110,47 +1218,224 @@
 		color: var(--accent);
 	}
 
-	.phases { padding: 0.75rem 1rem; background: var(--bg-alt); border: 1px solid var(--border); border-radius: 6px; }
-	.phases-head { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 0.5rem; margin-bottom: 0.5rem; }
-	.phases-head h2 { display: flex; align-items: center; gap: 0.5rem; margin: 0; }
+	/* ===== Phases panel ===== */
+	.phases {
+		background: var(--bg-panel);
+		border: 1px solid var(--border);
+		border-radius: 10px;
+		padding: 1.25rem 1.4rem;
+	}
+	.phases-head {
+		display: flex;
+		justify-content: space-between;
+		align-items: center;
+		flex-wrap: wrap;
+		gap: 0.75rem;
+		margin-bottom: 1rem;
+	}
+	.phases-title {
+		display: flex;
+		align-items: center;
+		gap: 0.6rem;
+	}
+	.phases-title h2 {
+		margin: 0;
+		font-size: 0.9rem;
+		text-transform: uppercase;
+		letter-spacing: 0.08em;
+		color: var(--text);
+		font-weight: 700;
+	}
+	.phases-icon {
+		width: 28px;
+		height: 28px;
+		border-radius: 8px;
+		background: color-mix(in srgb, var(--accent) 15%, transparent);
+		color: var(--accent);
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		font-size: 0.9rem;
+		flex-shrink: 0;
+	}
 	.running-pill {
-		display: inline-flex; align-items: center; gap: 0.4rem;
-		padding: 0.15rem 0.6rem;
-		background: color-mix(in srgb, var(--accent) 15%, var(--bg));
-		border: 1px solid var(--accent);
+		display: inline-flex;
+		align-items: center;
+		gap: 0.4rem;
+		padding: 0.25rem 0.7rem;
+		background: color-mix(in srgb, var(--accent) 14%, transparent);
+		border: 1px solid color-mix(in srgb, var(--accent) 40%, transparent);
 		border-radius: 999px;
-		font-size: 0.8rem;
+		font-size: 0.72rem;
+		color: var(--accent);
+		font-weight: 600;
+		text-transform: uppercase;
+		letter-spacing: 0.04em;
+	}
+	.btn.danger {
+		border-color: color-mix(in srgb, var(--err) 40%, var(--border));
+		color: var(--err);
+	}
+	.btn.danger:hover {
+		background: color-mix(in srgb, var(--err) 15%, transparent);
+		border-color: var(--err);
+		color: var(--err);
+	}
+	.btn.sm {
+		padding: 0.4rem 0.75rem;
+		font-size: 0.75rem;
+	}
+
+	/* Summary cards */
+	.phases-summary {
+		display: flex;
+		gap: 0.75rem;
+		flex-wrap: wrap;
+		margin-bottom: 0.85rem;
+	}
+	.sum-item {
+		padding: 0.6rem 0.9rem;
+		background: var(--bg);
+		border: 1px solid var(--border);
+		border-radius: 8px;
+		display: flex;
+		flex-direction: column;
+		gap: 0.1rem;
+		min-width: 110px;
+	}
+	.sum-item.flex-fill { flex: 1 1 200px; min-width: 0; }
+	.sum-num {
+		font-size: 1.15rem;
+		font-weight: 700;
+		line-height: 1;
+		font-variant-numeric: tabular-nums;
+	}
+	.sum-num.mono {
+		font-family: ui-monospace, monospace;
+		font-size: 1rem;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+	}
+	.sum-num.mono.small {
+		font-size: 0.85rem;
+		font-weight: 600;
+	}
+	.sum-total {
+		font-size: 0.85rem;
+		color: var(--text-muted);
 		font-weight: 500;
 	}
-	.done-pill {
-		display: inline-flex; align-items: center; gap: 0.3rem;
-		padding: 0.1rem 0.5rem;
-		background: color-mix(in srgb, var(--ok) 15%, var(--bg));
-		border: 1px solid var(--ok);
+	.sum-label {
+		font-size: 0.7rem;
+		color: var(--text-muted);
+		text-transform: uppercase;
+		letter-spacing: 0.05em;
+	}
+
+	/* Progress bar */
+	.progress-bar {
+		height: 6px;
+		background: var(--bg-hover);
 		border-radius: 999px;
+		overflow: hidden;
+		margin-bottom: 1rem;
+	}
+	.progress-fill {
+		height: 100%;
+		background: linear-gradient(90deg, var(--accent), color-mix(in srgb, var(--accent) 70%, var(--ok)));
+		border-radius: 999px;
+		transition: width 0.4s ease;
+	}
+
+	/* Phase list — vertical stepped timeline */
+	.phase-list {
+		list-style: none;
+		padding: 0;
+		margin: 0;
+		display: flex;
+		flex-direction: column;
+		gap: 0.3rem;
+		max-height: 340px;
+		overflow-y: auto;
+	}
+	.phase-item {
+		display: grid;
+		grid-template-columns: 24px 1fr auto;
+		align-items: center;
+		gap: 0.6rem;
+		padding: 0.55rem 0.75rem;
+		background: var(--bg);
+		border: 1px solid var(--border);
+		border-radius: 6px;
+		font-size: 0.82rem;
+		transition: border-color 0.1s;
+	}
+	.phase-item.running {
+		background: color-mix(in srgb, var(--accent) 8%, var(--bg));
+		border-color: color-mix(in srgb, var(--accent) 30%, var(--border));
+	}
+	.phase-item.failed {
+		background: color-mix(in srgb, var(--err) 10%, var(--bg));
+		border-color: color-mix(in srgb, var(--err) 40%, var(--border));
+	}
+	.phase-status {
+		width: 24px;
+		height: 24px;
+		border-radius: 50%;
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
 		font-size: 0.75rem;
+		font-weight: 700;
+		flex-shrink: 0;
+	}
+	.phase-item.done .phase-status {
+		background: color-mix(in srgb, var(--ok) 20%, transparent);
 		color: var(--ok);
 	}
-	.phases-actions { display: flex; gap: 0.5rem; align-items: center; }
-	.cancel-btn {
-		padding: 0.3rem 0.65rem;
-		background: transparent;
-		border: 1px solid var(--err);
+	.phase-item.failed .phase-status {
+		background: color-mix(in srgb, var(--err) 20%, transparent);
 		color: var(--err);
-		border-radius: 4px;
-		cursor: pointer;
-		font-size: 0.75rem;
 	}
-	.cancel-btn:hover { background: color-mix(in srgb, var(--err) 15%, transparent); }
-	.cancel-btn:disabled { opacity: 0.5; cursor: not-allowed; }
-	.phase-list { list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 0.25rem; max-height: 260px; overflow-y: auto; }
-	.phase-list li { display: flex; align-items: center; gap: 0.5rem; padding: 0.3rem 0.5rem; background: var(--bg); border-radius: 4px; font-size: 0.82rem; }
-	.phase-list li.failed { background: color-mix(in srgb, var(--err) 10%, var(--bg)); }
-	.phase-list li.running { background: color-mix(in srgb, var(--accent) 12%, var(--bg)); }
-	.status-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); }
-	.status-dot.running { background: var(--accent); animation: pulse-dot 1.5s ease-in-out infinite; }
-	.status-dot.done { background: var(--ok); }
-	.status-dot.failed { background: var(--err); }
+	.phase-item.running .phase-status {
+		background: color-mix(in srgb, var(--accent) 20%, transparent);
+		color: var(--accent);
+	}
+	.phase-cmd {
+		font-family: ui-monospace, monospace;
+		font-size: 0.82rem;
+		font-weight: 500;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+		grid-column: 2;
+		background: transparent;
+		padding: 0;
+		color: var(--text);
+	}
+	.phase-phase {
+		grid-column: 2;
+		grid-row: 2;
+		font-size: 0.68rem;
+		color: var(--text-muted);
+		text-transform: uppercase;
+		letter-spacing: 0.05em;
+	}
+	.phase-meta {
+		display: flex;
+		flex-direction: column;
+		align-items: flex-end;
+		gap: 0.15rem;
+		font-size: 0.72rem;
+		color: var(--text-muted);
+		font-variant-numeric: tabular-nums;
+		grid-column: 3;
+		grid-row: 1 / span 2;
+	}
+	.phase-meta .tokens { opacity: 0.7; }
+	.phase-time { opacity: 0.6; }
+
 	.small { font-size: 0.72rem; }
 	@keyframes pulse-dot { 0%,100% { opacity: 1; } 50% { opacity: 0.3; } }
 	.empty {
