@@ -14,6 +14,37 @@
 	let testStatus = $state<'idle' | 'ok' | 'err'>('idle');
 	let testMessage = $state('');
 
+	type AdminStats = Record<string, number>;
+	let stats = $state<AdminStats | null>(null);
+	let sweeping = $state(false);
+	let sweepStatus = $state<'idle' | 'ok' | 'err'>('idle');
+	let sweepMessage = $state('');
+
+	async function loadStats() {
+		try {
+			stats = await apiGet<AdminStats>('/api/v1/admin/stats');
+		} catch {
+			stats = null;
+		}
+	}
+
+	async function runSweep() {
+		sweeping = true;
+		sweepStatus = 'idle';
+		sweepMessage = '';
+		try {
+			const r = (await apiPost('/api/v1/admin/sweep', {})) as { rows_deleted: number };
+			sweepStatus = 'ok';
+			sweepMessage = `${r.rows_deleted} ligne${r.rows_deleted > 1 ? 's' : ''} supprimée${r.rows_deleted > 1 ? 's' : ''}.`;
+			await loadStats();
+		} catch (e) {
+			sweepStatus = 'err';
+			sweepMessage = e instanceof Error ? e.message : String(e);
+		} finally {
+			sweeping = false;
+		}
+	}
+
 	async function load() {
 		try {
 			settings = await apiGet<NotifySettings>('/api/v1/settings/notify');
@@ -40,7 +71,10 @@
 		}
 	}
 
-	onMount(load);
+	onMount(() => {
+		load();
+		loadStats();
+	});
 </script>
 
 <svelte:head><title>Réglages · Hive</title></svelte:head>
@@ -96,6 +130,34 @@
 			</a>, colle l'URL ici puis relance <code>hive serve</code>.
 		</p>
 	{/if}
+</section>
+
+<section class="card">
+	<header class="card-header">
+		<span class="card-icon">🗃</span>
+		<h2 class="card-title">Base de données</h2>
+	</header>
+	{#if stats}
+		<dl class="env">
+			{#each Object.entries(stats) as [t, n] (t)}
+				<dt><code>{t}</code></dt>
+				<dd>{n.toLocaleString('fr-FR')} ligne{n > 1 ? 's' : ''}</dd>
+			{/each}
+		</dl>
+	{/if}
+	<p class="muted">
+		Nettoyer les events (&gt; 90 jours) et l'audit_log (&gt; 365 jours). Idempotent — rien de sensible n'est touché.
+	</p>
+	<div class="test-row">
+		<button type="button" onclick={runSweep} disabled={sweeping}>
+			{sweeping ? 'Nettoyage…' : 'Nettoyer maintenant'}
+		</button>
+		{#if sweepStatus === 'ok'}
+			<span class="test-msg ok">✓ {sweepMessage}</span>
+		{:else if sweepStatus === 'err'}
+			<span class="test-msg err">✗ {sweepMessage}</span>
+		{/if}
+	</div>
 </section>
 
 <section class="card">

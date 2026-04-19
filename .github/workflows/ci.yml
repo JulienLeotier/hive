@@ -188,6 +188,9 @@ jobs:
       - name: svelte-check
         working-directory: web
         run: npm run check
+      - name: Unit tests (vitest)
+        working-directory: web
+        run: npm test
       - name: Build
         working-directory: web
         run: npm run build

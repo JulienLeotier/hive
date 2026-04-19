@@ -8,6 +8,10 @@ revue de code, rétrospective — jusqu'à ce que le produit soit livré.
 Un seul binaire Go, un dashboard SvelteKit, une base SQLite. Tout se
 pilote depuis le navigateur.
 
+**Nouveau sur Hive ?** → [`docs/walkthrough.md`](docs/walkthrough.md)
+pour un guide pas-à-pas de l'idée au projet `shipped`, avec les
+actions manuelles disponibles et le troubleshooting.
+
 ---
 
 ## Flow

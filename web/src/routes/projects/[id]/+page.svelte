@@ -976,8 +976,9 @@
 									onclick={() => cancelStep(s.id, s.command)}
 									disabled={cancellingStep[s.id]}
 									title="Annuler uniquement ce skill ({s.command}) — le reste du projet continue"
+									aria-label="Annuler le skill {s.command}"
 								>
-									{cancellingStep[s.id] ? '⏳' : '✕'}
+									<span aria-hidden="true">{cancellingStep[s.id] ? '⏳' : '✕'}</span>
 								</button>
 							{:else}
 								<button
@@ -986,8 +987,9 @@
 									onclick={() => rerunStep(s.id, s.command)}
 									disabled={rerunning[s.id]}
 									title="Relancer ce skill BMAD ({s.command}) — crée une nouvelle invocation"
+									aria-label="Relancer le skill {s.command}"
 								>
-									{rerunning[s.id] ? '⏳' : '↻'}
+									<span aria-hidden="true">{rerunning[s.id] ? '⏳' : '↻'}</span>
 								</button>
 							{/if}
 						</li>

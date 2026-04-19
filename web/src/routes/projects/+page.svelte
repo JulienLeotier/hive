@@ -25,6 +25,21 @@
 
 	let projects = $state<Project[]>([]);
 	let loading = $state(true);
+	let filter = $state('');
+
+	// Client-side filter sur nom + idée. Pour un volume projects < 200,
+	// le filtrage en mémoire est plus réactif qu'un round-trip API à
+	// chaque frappe.
+	let filtered = $derived.by(() => {
+		const q = filter.trim().toLowerCase();
+		if (!q) return projects;
+		return projects.filter(
+			(p) =>
+				p.name.toLowerCase().includes(q) ||
+				p.idea.toLowerCase().includes(q) ||
+				p.status.toLowerCase().includes(q)
+		);
+	});
 	let showForm = $state(false);
 	let formError = $state('');
 	let submitting = $state(false);
@@ -538,8 +553,24 @@
 		</form>
 	{/if}
 
+	{#if projects.length > 5}
+		<div class="filter-row">
+			<input
+				type="search"
+				class="filter-input"
+				placeholder="Filtrer par nom, idée ou statut…"
+				bind:value={filter}
+				aria-label="Rechercher dans les projets"
+			/>
+			{#if filter}
+				<span class="filter-count">
+					{filtered.length} / {projects.length}
+				</span>
+			{/if}
+		</div>
+	{/if}
 	<ul class="pj-list">
-		{#each projects as p (p.id)}
+		{#each filtered as p (p.id)}
 			<li class="pj-card" class:shipped={p.status === 'shipped'}
 				class:failed={p.status === 'failed'}
 				class:running={p.status === 'planning' || p.status === 'building' || p.status === 'review'}>
@@ -884,6 +915,31 @@
 		font-size: 0.85rem;
 	}
 	/* ===== Liste de projets : cards modernes ===== */
+	.filter-row {
+		display: flex;
+		align-items: center;
+		gap: 0.75rem;
+		margin-bottom: 0.75rem;
+	}
+	.filter-input {
+		flex: 1;
+		padding: 0.55rem 0.85rem;
+		border: 1px solid var(--border);
+		border-radius: 8px;
+		background: var(--bg-panel);
+		color: var(--text);
+		font-family: inherit;
+		font-size: 0.9rem;
+	}
+	.filter-input:focus {
+		outline: none;
+		border-color: var(--accent);
+	}
+	.filter-count {
+		font-size: 0.8rem;
+		color: var(--text-muted);
+		font-variant-numeric: tabular-nums;
+	}
 	.pj-list {
 		list-style: none;
 		padding: 0;

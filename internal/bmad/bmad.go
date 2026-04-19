@@ -261,6 +261,28 @@ func buildPrompt(goal string) string {
 	b.WriteString("Toutes tes réponses textuelles (résumés, feedback, logs) doivent être EN FRANÇAIS. ")
 	b.WriteString("Utilise tes outils d'édition directement — les permissions sont déjà accordées. ")
 	b.WriteString("À la fin, renvoie un résumé court (moins de 10 lignes, en français) listant les fichiers que tu as produits.\n\n")
+
+	// Instructions additionnelles qui ciblent les skills problématiques :
+	//
+	// 1. Pour le code-review : Hive parse la réponse avec parseACVerdicts
+	//    qui cherche des mentions explicites "AC1: ✓" / "AC2: ✗". Sans
+	//    ces mentions, toutes les ACs sont marquées avec le verdict
+	//    global (fail), et l'opérateur n'a pas de granularité story-par-
+	//    story. On demande donc une section structurée.
+	// 2. Pour dev-story : on rappelle la convention de branche pour que
+	//    BMAD n'aille pas commiter sur main (où Hive fallback ensuite).
+	if strings.Contains(goal, "bmad-code-review") {
+		b.WriteString("RAPPORT DE REVIEW (obligatoire dans ta réponse finale) :\n")
+		b.WriteString("Pour chaque acceptance criterion, écris une ligne du format exact :\n")
+		b.WriteString("  AC<N>: ✓ <raison courte>   (si satisfait)\n")
+		b.WriteString("  AC<N>: ✗ <ce qui manque>   (si non satisfait)\n")
+		b.WriteString("Liste-les TOUS, y compris ceux qui passent. Hive parse cette section pour cocher les ACs un par un.\n\n")
+	}
+	if strings.Contains(goal, "bmad-dev-story") {
+		b.WriteString("GIT : crée une branche feature `feat/<slug-story>` AVANT de commiter. ")
+		b.WriteString("Ne commite JAMAIS directement sur main — tous les changements doivent passer par PR.\n\n")
+	}
+
 	b.WriteString("Tâche :\n")
 	b.WriteString(goal)
 	return b.String()

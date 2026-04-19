@@ -73,6 +73,36 @@ func RunRetention(ctx context.Context, db *sql.DB, cfg RetentionConfig) {
 	}()
 }
 
+// SweepNow déclenche un passage de retention hors de la boucle
+// périodique. Utilisé par l'endpoint admin "Nettoyer maintenant"
+// qui permet à l'opérateur de forcer un sweep sans attendre le
+// prochain tick. Renvoie le nombre total de lignes supprimées
+// (events + audit_log) pour feedback UI.
+func SweepNow(ctx context.Context, db *sql.DB, cfg RetentionConfig) int64 {
+	total := int64(0)
+	if days, ok := resolvedDays(cfg.EventsDays, 90); ok {
+		total += deleteOlderThanCount(ctx, db, "events", "created_at", days)
+	}
+	if days, ok := resolvedDays(cfg.AuditDays, 365); ok {
+		total += deleteOlderThanCount(ctx, db, "audit_log", "created_at", days)
+	}
+	return total
+}
+
+// deleteOlderThanCount = deleteOlderThan mais renvoie le count supprimé
+// pour que SweepNow puisse le remonter à l'UI.
+func deleteOlderThanCount(ctx context.Context, db *sql.DB, table, column string, days int) int64 {
+	cutoff := time.Now().UTC().Add(-time.Duration(days) * 24 * time.Hour).Format("2006-01-02 15:04:05")
+	q := fmt.Sprintf(`DELETE FROM %s WHERE %s < ?`, table, column)
+	res, err := db.ExecContext(ctx, q, cutoff)
+	if err != nil {
+		slog.Warn("retention sweep failed", "table", table, "error", err)
+		return 0
+	}
+	n, _ := res.RowsAffected()
+	return n
+}
+
 func sweepRetention(ctx context.Context, db *sql.DB, cfg RetentionConfig) {
 	if days, ok := resolvedDays(cfg.EventsDays, 90); ok {
 		deleteOlderThan(ctx, db, "events", "created_at", days, "")

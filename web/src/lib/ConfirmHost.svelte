@@ -8,6 +8,7 @@
 	import { confirmState, closeConfirm } from './confirm';
 
 	let confirmBtn: HTMLButtonElement | undefined = $state(undefined);
+	let cancelBtn: HTMLButtonElement | undefined = $state(undefined);
 
 	// Focus le bouton Confirmer dès qu'une modal s'ouvre pour que
 	// Enter la valide (raccourci clavier par défaut).
@@ -25,6 +26,14 @@
 		} else if (e.key === 'Enter') {
 			e.preventDefault();
 			closeConfirm(true);
+		} else if (e.key === 'Tab') {
+			// Focus trap : seulement 2 boutons dans la modal, on
+			// cycle entre eux. Empêche Tab de sortir vers le DOM
+			// en arrière-plan.
+			e.preventDefault();
+			const active = document.activeElement;
+			if (active === confirmBtn) cancelBtn?.focus();
+			else confirmBtn?.focus();
 		}
 	}
 
@@ -53,7 +62,7 @@
 		{/if}
 		<p id="confirm-message" class="message">{s.message}</p>
 		<div class="actions">
-			<button type="button" class="btn ghost" onclick={() => closeConfirm(false)}>
+			<button bind:this={cancelBtn} type="button" class="btn ghost" onclick={() => closeConfirm(false)}>
 				{s.cancelLabel ?? 'Annuler'}
 			</button>
 			<button
