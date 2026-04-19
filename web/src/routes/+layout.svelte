@@ -152,7 +152,8 @@
 		class="burger"
 		onclick={() => (drawerOpen = !drawerOpen)}
 		aria-label="Menu"
-		aria-expanded={drawerOpen}>
+		aria-expanded={drawerOpen}
+		aria-controls="app-sidebar">
 		<span></span><span></span><span></span>
 	</button>
 	<a href="/" class="topbar-brand">
@@ -173,7 +174,7 @@
 			aria-label="Fermer le menu"></button>
 	{/if}
 
-	<aside class="sidebar" class:open={drawerOpen}>
+	<aside id="app-sidebar" class="sidebar" class:open={drawerOpen}>
 		<a href="/" class="brand">
 			<svg class="logo" viewBox="0 0 28 32" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
 				<path d="M14 2 L26 9 L26 23 L14 30 L2 23 L2 9 Z"

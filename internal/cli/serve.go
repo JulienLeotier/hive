@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -175,9 +176,20 @@ var serveCmd = &cobra.Command{
 				return r.Method + " " + r.URL.Path
 			}))
 
+		// HostGuard parade le DNS rebinding : seul localhost / IP
+		// privée / *.local est accepté par défaut. L'opérateur peut
+		// étendre via HIVE_EXTRA_HOSTS="host1,host2".
+		var extraHosts []string
+		if raw := os.Getenv("HIVE_EXTRA_HOSTS"); raw != "" {
+			for _, h := range strings.Split(raw, ",") {
+				if h = strings.TrimSpace(h); h != "" {
+					extraHosts = append(extraHosts, h)
+				}
+			}
+		}
 		httpSrv := &http.Server{
 			Addr:              addr,
-			Handler:           api.SecurityHeaders(tracedMux),
+			Handler:           api.HostGuard(extraHosts, api.SecurityHeaders(tracedMux)),
 			ReadHeaderTimeout: 15 * time.Second,
 		}
 
