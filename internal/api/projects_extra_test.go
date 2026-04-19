@@ -177,6 +177,105 @@ func TestHandleRerunPhaseStepBadCommand(t *testing.T) {
 	}
 }
 
+// TestHandleCreateProject couvre le happy path + validation idea manquante.
+func TestHandleCreateProject(t *testing.T) {
+	st, err := storage.Open(t.TempDir())
+	require.NoError(t, err)
+	defer st.Close()
+	srv := NewServer(event.NewBus(st.DB)).
+		WithProjectStore(project.NewStore(st.DB))
+
+	t.Run("happy path", func(t *testing.T) {
+		body := strings.NewReader(`{"idea":"test idée","name":"demo"}`)
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/projects", body)
+		req.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+		srv.Handler().ServeHTTP(w, req)
+		assert.Equal(t, http.StatusCreated, w.Code)
+		var env struct {
+			Data struct {
+				ID     string `json:"id"`
+				Name   string `json:"name"`
+				Idea   string `json:"idea"`
+				Status string `json:"status"`
+			} `json:"data"`
+		}
+		require.NoError(t, json.Unmarshal(w.Body.Bytes(), &env))
+		assert.NotEmpty(t, env.Data.ID)
+		assert.Equal(t, "demo", env.Data.Name)
+		assert.Equal(t, "draft", env.Data.Status)
+	})
+
+	t.Run("idea missing", func(t *testing.T) {
+		body := strings.NewReader(`{"name":"no-idea"}`)
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/projects", body)
+		req.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+		srv.Handler().ServeHTTP(w, req)
+		assert.GreaterOrEqual(t, w.Code, 400)
+	})
+
+	t.Run("malformed json", func(t *testing.T) {
+		body := strings.NewReader(`{not-json`)
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/projects", body)
+		req.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+		srv.Handler().ServeHTTP(w, req)
+		assert.Equal(t, http.StatusBadRequest, w.Code)
+	})
+}
+
+// TestHandleListProjects : liste vide puis peuplée.
+func TestHandleListProjects(t *testing.T) {
+	st, err := storage.Open(t.TempDir())
+	require.NoError(t, err)
+	defer st.Close()
+	srv := NewServer(event.NewBus(st.DB)).
+		WithProjectStore(project.NewStore(st.DB))
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/projects", nil)
+	w := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, req)
+	assert.Equal(t, http.StatusOK, w.Code)
+	var env struct {
+		Data []any `json:"data"`
+	}
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &env))
+	assert.Empty(t, env.Data)
+
+	// Ajoute 2 projets.
+	store := project.NewStore(st.DB)
+	_, _ = store.Create(context.Background(), "default", "a", project.CreateOpts{})
+	_, _ = store.Create(context.Background(), "default", "b", project.CreateOpts{})
+
+	w = httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/api/v1/projects", nil))
+	_ = json.Unmarshal(w.Body.Bytes(), &env)
+	assert.Len(t, env.Data, 2)
+}
+
+// TestHandleGetProject : 200 + shape, 404 si absent.
+func TestHandleGetProject(t *testing.T) {
+	st, err := storage.Open(t.TempDir())
+	require.NoError(t, err)
+	defer st.Close()
+	srv := NewServer(event.NewBus(st.DB)).
+		WithProjectStore(project.NewStore(st.DB))
+
+	id := seedSimpleProject(t, st)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/projects/"+id, nil)
+	w := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, req)
+	assert.Equal(t, http.StatusOK, w.Code)
+
+	// 404
+	req = httptest.NewRequest(http.MethodGet, "/api/v1/projects/prj_ghost", nil)
+	w = httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, req)
+	assert.Equal(t, http.StatusNotFound, w.Code)
+}
+
 // strOf local pour éviter la dépendance à devloop.strOf.
 func strOf(n int64) string {
 	if n == 0 {

@@ -105,7 +105,8 @@
 		{
 			label: 'Système',
 			items: [
-				{ href: '/settings', label: 'Réglages', icon: '⚙' }
+				{ href: '/settings', label: 'Réglages', icon: '⚙' },
+				{ href: '/api-docs', label: 'API', icon: '⌘' }
 			]
 		}
 	];
