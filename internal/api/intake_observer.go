@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/JulienLeotier/hive/internal/bmad"
+	"github.com/JulienLeotier/hive/internal/git"
 	"github.com/JulienLeotier/hive/internal/metrics"
 )
 
@@ -32,6 +33,10 @@ func (s *Server) trackedInvoke(
 	projectID, phase, label, workdir, goal string,
 ) (bmad.Result, error) {
 	start := time.Now()
+	// Git audit : snapshot HEAD + branche AVANT le skill. À la fin on
+	// compare pour détecter si BMAD a commité directement sur main
+	// (comportement non-désiré : devrait passer par une feat branch).
+	gitBefore := git.Snapshot(ctx, workdir)
 	res, err := s.db().ExecContext(ctx,
 		`INSERT INTO bmad_phase_steps (project_id, phase, command, status)
 		 VALUES (?, ?, ?, 'running')`,
@@ -88,6 +93,23 @@ func (s *Server) trackedInvoke(
 	if invErr != nil {
 		status = "failed"
 		errText = invErr.Error()
+	}
+	// Git audit post-skill : détecte si BMAD a commité direct sur main
+	// (cas indésirable). On log + annote error_text pour que
+	// l'opérateur voie la dérive dans la console. Non-bloquant — la
+	// skill reste "done" s'il n'y a pas d'autre erreur, mais le step
+	// porte la trace.
+	gitAfter := git.Snapshot(ctx, workdir)
+	drift := gitBefore.Drift(gitAfter)
+	if len(drift) > 0 && gitAfter.IsOnDefaultBranch() {
+		slog.Warn("bmad: skill a commité sur la branche par défaut",
+			"project", projectID, "skill", label, "drift", drift)
+		driftMsg := "⚠ BMAD a touché " + gitAfter.Branch + " : " + strings.Join(drift, ", ")
+		if errText == "" {
+			errText = driftMsg
+		} else {
+			errText = errText + "\n" + driftMsg
+		}
 	}
 	preview := out.Text
 	if len(preview) > 600 {

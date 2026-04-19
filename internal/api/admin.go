@@ -3,6 +3,7 @@ package api
 import (
 	"net/http"
 
+	"github.com/JulienLeotier/hive/internal/bmad"
 	"github.com/JulienLeotier/hive/internal/storage"
 )
 
@@ -92,5 +93,15 @@ func (s *Server) handleAdminStats(w http.ResponseWriter, r *http.Request) {
 		}
 		stats[t] = n
 	}
-	writeJSON(w, stats)
+	// Canari : version du CLI claude détectée au boot. L'UI l'affiche
+	// en mode discret pour que l'opérateur identifie rapidement un
+	// mismatch (nouvelle version → stream-json peut bouger).
+	claudeVersion := ""
+	if runner := bmad.NewRunner(); runner != nil {
+		claudeVersion = runner.Version()
+	}
+	writeJSON(w, map[string]any{
+		"tables":         stats,
+		"claude_version": claudeVersion,
+	})
 }

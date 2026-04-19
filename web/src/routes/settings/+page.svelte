@@ -14,7 +14,10 @@
 	let testStatus = $state<'idle' | 'ok' | 'err'>('idle');
 	let testMessage = $state('');
 
-	type AdminStats = Record<string, number>;
+	type AdminStats = {
+		tables: Record<string, number>;
+		claude_version?: string;
+	};
 	let stats = $state<AdminStats | null>(null);
 	let sweeping = $state(false);
 	let sweepStatus = $state<'idle' | 'ok' | 'err'>('idle');
@@ -185,10 +188,14 @@
 	</header>
 	{#if stats}
 		<dl class="env">
-			{#each Object.entries(stats) as [t, n] (t)}
+			{#each Object.entries(stats.tables) as [t, n] (t)}
 				<dt><code>{t}</code></dt>
 				<dd>{n.toLocaleString('fr-FR')} ligne{n > 1 ? 's' : ''}</dd>
 			{/each}
+			{#if stats.claude_version}
+				<dt><code>claude CLI</code></dt>
+				<dd>{stats.claude_version}</dd>
+			{/if}
 		</dl>
 	{/if}
 	<p class="muted">

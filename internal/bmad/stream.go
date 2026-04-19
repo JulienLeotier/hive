@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"time"
 	"path/filepath"
 	"strings"
 )
@@ -53,14 +54,28 @@ func (r *Runner) InvokeStream(
 	if r == nil {
 		return Result{}, errors.New("bmad: runner unavailable")
 	}
+	// Dead-man timeout. HIVE_SKILL_TIMEOUT (ex "45m") cap chaque skill.
+	// Défaut 0 = pas de cap (hérite du parent ctx). Évite les skills
+	// qui pendent 3h silencieusement sans renvoyer un result.
 	callCtx := ctx
 	cancel := func() {}
-	if r.timeout > 0 {
-		callCtx, cancel = context.WithTimeout(ctx, r.timeout)
+	timeout := r.timeout
+	if timeout == 0 {
+		if env := os.Getenv("HIVE_SKILL_TIMEOUT"); env != "" {
+			if d, err := time.ParseDuration(env); err == nil && d > 0 {
+				timeout = d
+			}
+		}
+	}
+	if timeout > 0 {
+		callCtx, cancel = context.WithTimeout(ctx, timeout)
 	}
 	defer cancel()
 
 	prompt := buildPrompt(goal)
+	// #nosec G702 -- r.cliPath est résolu via exec.LookPath au boot
+	// (NewRunner). Les autres args sont des constantes. L'env
+	// HIVE_SKILL_TIMEOUT lu plus haut ne touche pas à cmd.
 	cmd := exec.CommandContext(callCtx, r.cliPath,
 		"--print",
 		"--output-format", "stream-json",
@@ -93,10 +108,14 @@ func (r *Runner) InvokeStream(
 		} `json:"usage"`
 	}
 	sawResult := false
+	parsedCount := 0 // nombre d'events parseables (canari format CLI)
 
 	for scanner.Scan() {
 		line := scanner.Bytes()
 		evt := parseStreamLine(line)
+		if evt.Type != "raw" && evt.Type != "" {
+			parsedCount++
+		}
 		if evt.Type == "result" {
 			// Le CLI émet un event type=result à la toute fin.
 			_ = json.Unmarshal(line, &final)
@@ -122,6 +141,15 @@ func (r *Runner) InvokeStream(
 	if err := cmd.Wait(); err != nil {
 		return Result{}, fmt.Errorf("claude invoke: %w\nstderr: %s",
 			err, truncate(stderr.String(), 300))
+	}
+	// Canari format CLI : si on n'a reçu AUCUN event parseable, c'est
+	// très suspect. Soit le CLI a changé de format stream-json, soit
+	// il a renvoyé du bruit non-JSON. On lève une erreur explicite au
+	// lieu de silently returner Result{} qui serait interprété comme
+	// "skill passée avec zero output" par les appelants.
+	if parsedCount == 0 {
+		return Result{}, fmt.Errorf(
+			"claude stream-json : aucun event parseable (format CLI a peut-être changé — vérifier `claude --version`)")
 	}
 
 	// Si on a vu un event result, on l'utilise comme source de vérité

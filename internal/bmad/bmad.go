@@ -43,8 +43,9 @@ const (
 
 // Runner orchestrates BMAD against a single workdir.
 type Runner struct {
-	cliPath string        // resolved `claude`
-	timeout time.Duration // per-invocation cap, 0 = no timeout (inherit parent ctx)
+	cliPath    string        // resolved `claude`
+	cliVersion string        // captured via `claude --version` at NewRunner
+	timeout    time.Duration // per-invocation cap, 0 = no timeout (inherit parent ctx)
 }
 
 // NewRunner probes for the `claude` CLI and returns nil when it's
@@ -61,7 +62,36 @@ func NewRunner() *Runner {
 		slog.Info("bmad: claude CLI not on PATH — bmad disabled", "error", err)
 		return nil
 	}
-	return &Runner{cliPath: path, timeout: 0}
+	r := &Runner{cliPath: path, timeout: 0}
+	// Canari version au boot : si Anthropic change stream-json, on veut
+	// que l'opérateur le voie direct dans les logs + /settings, pas
+	// qu'il découvre après 30 min de silence. Non-fatal : on log et on
+	// continue même si claude --version foire (ancienne version, PATH
+	// weird, etc.).
+	if v := detectClaudeVersion(path); v != "" {
+		r.cliVersion = v
+		slog.Info("bmad: claude CLI detected", "version", v, "path", path)
+	}
+	return r
+}
+
+// Version retourne la version détectée du CLI claude au boot. "" si
+// inconnue. Lu par /api/v1/admin/stats pour l'afficher dans Settings.
+func (r *Runner) Version() string {
+	if r == nil {
+		return ""
+	}
+	return r.cliVersion
+}
+
+func detectClaudeVersion(path string) string {
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, path, "--version").Output()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(out))
 }
 
 // Install runs `npx bmad-method install` inside workdir. Safe to
