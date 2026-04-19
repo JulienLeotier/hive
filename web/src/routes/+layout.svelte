@@ -7,6 +7,8 @@
 	import { apiError } from '$lib/api';
 	import { wsStatus } from '$lib/wsStatus';
 	import ConfirmHost from '$lib/ConfirmHost.svelte';
+	import GlobalSearch from '$lib/GlobalSearch.svelte';
+	import { goto } from '$app/navigation';
 
 	let { children } = $props();
 
@@ -14,6 +16,63 @@
 	// bouton hamburger. Sur desktop la sidebar est toujours visible
 	// donc drawerOpen est ignoré par les media queries.
 	let drawerOpen = $state(false);
+
+	// Global search palette ouverte via "/" ou Cmd/Ctrl+K.
+	let searchOpen = $state(false);
+
+	// Keyboard shortcuts de navigation :
+	//   /          → ouvre la palette de recherche
+	//   Cmd/Ctrl+K → idem
+	//   g puis p   → navigue vers /projects
+	//   g puis e   → navigue vers /events
+	//   g puis h   → navigue vers /
+	//   g puis s   → navigue vers /settings
+	// Skippés quand l'user est en train de taper dans un input / textarea.
+	let gPressed = false;
+	let gTimer: ReturnType<typeof setTimeout> | null = null;
+
+	function isTypingTarget(el: EventTarget | null): boolean {
+		if (!(el instanceof HTMLElement)) return false;
+		const tag = el.tagName.toLowerCase();
+		return tag === 'input' || tag === 'textarea' || tag === 'select' || el.isContentEditable;
+	}
+
+	function onGlobalKeydown(e: KeyboardEvent) {
+		if (isTypingTarget(e.target)) return;
+		if ((e.key === 'k' || e.key === 'K') && (e.metaKey || e.ctrlKey)) {
+			e.preventDefault();
+			searchOpen = true;
+			return;
+		}
+		if (e.key === '/') {
+			e.preventDefault();
+			searchOpen = true;
+			return;
+		}
+		if (e.key === 'g' && !e.metaKey && !e.ctrlKey && !e.altKey) {
+			gPressed = true;
+			if (gTimer) clearTimeout(gTimer);
+			gTimer = setTimeout(() => (gPressed = false), 1200);
+			return;
+		}
+		if (gPressed) {
+			const target = { p: '/projects', e: '/events', h: '/', s: '/settings' }[e.key.toLowerCase()];
+			if (target) {
+				e.preventDefault();
+				goto(target);
+			}
+			gPressed = false;
+			if (gTimer) {
+				clearTimeout(gTimer);
+				gTimer = null;
+			}
+		}
+	}
+
+	onMount(() => {
+		window.addEventListener('keydown', onGlobalKeydown);
+		return () => window.removeEventListener('keydown', onGlobalKeydown);
+	});
 
 	// Scroll-to-top + close drawer sur chaque nav client-side.
 	afterNavigate(({ from, to }) => {
@@ -172,6 +231,7 @@
 </div>
 
 <ConfirmHost />
+<GlobalSearch bind:open={searchOpen} onClose={() => (searchOpen = false)} />
 
 <style>
 	:global(:root) {

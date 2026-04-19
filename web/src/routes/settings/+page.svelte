@@ -20,6 +20,10 @@
 	let sweepStatus = $state<'idle' | 'ok' | 'err'>('idle');
 	let sweepMessage = $state('');
 
+	let busy = $state<'delete-failed' | 'unwedge' | null>(null);
+	let busyStatus = $state<'idle' | 'ok' | 'err'>('idle');
+	let busyMessage = $state('');
+
 	async function loadStats() {
 		try {
 			stats = await apiGet<AdminStats>('/api/v1/admin/stats');
@@ -42,6 +46,48 @@
 			sweepMessage = e instanceof Error ? e.message : String(e);
 		} finally {
 			sweeping = false;
+		}
+	}
+
+	async function deleteFailed() {
+		const { confirmDialog } = await import('$lib/confirm');
+		const ok = await confirmDialog({
+			title: 'Supprimer tous les projets failed ?',
+			message: 'Cette action supprime définitivement tous les projets en status `failed` avec leurs epics/stories/reviews. Irréversible.',
+			confirmLabel: 'Supprimer',
+			danger: true
+		});
+		if (!ok) return;
+		busy = 'delete-failed';
+		busyStatus = 'idle';
+		busyMessage = '';
+		try {
+			const r = (await apiPost('/api/v1/admin/delete-failed', {})) as { deleted: number };
+			busyStatus = 'ok';
+			busyMessage = `${r.deleted} projet${r.deleted > 1 ? 's' : ''} supprimé${r.deleted > 1 ? 's' : ''}.`;
+			await loadStats();
+		} catch (e) {
+			busyStatus = 'err';
+			busyMessage = e instanceof Error ? e.message : String(e);
+		} finally {
+			busy = null;
+		}
+	}
+
+	async function unwedgeStories() {
+		busy = 'unwedge';
+		busyStatus = 'idle';
+		busyMessage = '';
+		try {
+			const r = (await apiPost('/api/v1/admin/unwedge', {})) as { unwedged: number };
+			busyStatus = 'ok';
+			busyMessage = `${r.unwedged} story${r.unwedged > 1 ? 'ies' : ''} remise en piste.`;
+			await loadStats();
+		} catch (e) {
+			busyStatus = 'err';
+			busyMessage = e instanceof Error ? e.message : String(e);
+		} finally {
+			busy = null;
 		}
 	}
 
@@ -156,6 +202,29 @@
 			<span class="test-msg ok">✓ {sweepMessage}</span>
 		{:else if sweepStatus === 'err'}
 			<span class="test-msg err">✗ {sweepMessage}</span>
+		{/if}
+	</div>
+</section>
+
+<section class="card">
+	<header class="card-header">
+		<span class="card-icon">🩺</span>
+		<h2 class="card-title">Maintenance</h2>
+	</header>
+	<p class="muted">
+		Actions groupées pour nettoyer l'état. À utiliser quand la DB contient plein de projets failed ou des stories coincées dev/review sans devloop actif.
+	</p>
+	<div class="test-row">
+		<button type="button" onclick={deleteFailed} disabled={busy !== null}>
+			{busy === 'delete-failed' ? 'Suppression…' : 'Supprimer tous les projets failed'}
+		</button>
+		<button type="button" onclick={unwedgeStories} disabled={busy !== null}>
+			{busy === 'unwedge' ? 'Rewind…' : 'Unwedge stories coincées'}
+		</button>
+		{#if busyStatus === 'ok'}
+			<span class="test-msg ok">✓ {busyMessage}</span>
+		{:else if busyStatus === 'err'}
+			<span class="test-msg err">✗ {busyMessage}</span>
 		{/if}
 	</div>
 </section>

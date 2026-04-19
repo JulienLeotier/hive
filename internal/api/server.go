@@ -297,6 +297,8 @@ func (s *Server) routes() {
 	s.mux.Handle("GET /api/v1/projects/{id}/report.md", http.HandlerFunc(s.handleProjectReport))
 	s.mux.Handle("GET /api/v1/admin/stats", http.HandlerFunc(s.handleAdminStats))
 	s.mux.Handle("POST /api/v1/admin/sweep", http.HandlerFunc(s.handleAdminSweep))
+	s.mux.Handle("POST /api/v1/admin/delete-failed", http.HandlerFunc(s.handleAdminBulkDeleteFailed))
+	s.mux.Handle("POST /api/v1/admin/unwedge", http.HandlerFunc(s.handleAdminUnwedgeStories))
 	s.mux.Handle("GET /api/v1/search", http.HandlerFunc(s.handleSearch))
 }
 
