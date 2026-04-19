@@ -11,6 +11,9 @@
 		created_at: string;
 		updated_at: string;
 		total_cost_usd?: number;
+		cost_cap_usd?: number;
+		paused?: boolean;
+		failure_stage?: string;
 	};
 	type Event = {
 		id: number;
@@ -170,16 +173,34 @@
 				<span>{active.length} actif{active.length > 1 ? 's' : ''}</span>
 			</span>
 		</div>
-		<ul class="active-list">
+		<ul class="active-grid">
 			{#each active as p (p.id)}
 				<li>
 					<a href="/projects/{p.id}" class="active-card">
-						<span class="status-dot" style="background:{statusColor(p.status)}"></span>
-						<div class="active-main">
-							<strong>{p.name}</strong>
-							<span class="muted">{p.idea}</span>
-						</div>
-						<span class="badge" style="background:{statusColor(p.status)}">{p.status}</span>
+						<header class="active-head">
+							<span class="status-dot" style="background:{statusColor(p.status)}"></span>
+							<span class="badge" style="background:{statusColor(p.status)}">{p.status}</span>
+							{#if p.paused}
+								<span class="chip paused">pause</span>
+							{/if}
+							{#if p.failure_stage}
+								<span class="chip failed">{p.failure_stage}</span>
+							{/if}
+							<span class="active-time">{fmtRelative(p.updated_at)}</span>
+						</header>
+						<strong class="active-name">{p.name}</strong>
+						<p class="active-idea">{p.idea}</p>
+						<footer class="active-foot">
+							{#if (p.total_cost_usd ?? 0) > 0}
+								<span class="cost">${(p.total_cost_usd ?? 0).toFixed(2)}{(p.cost_cap_usd ?? 0) > 0 ? ` / $${p.cost_cap_usd?.toFixed(0)}` : ''}</span>
+							{/if}
+							{#if (p.cost_cap_usd ?? 0) > 0 && (p.total_cost_usd ?? 0) > 0}
+								{@const pct = Math.min(100, Math.round(((p.total_cost_usd ?? 0) / (p.cost_cap_usd ?? 1)) * 100))}
+								<span class="mini-bar">
+									<span class="mini-fill" class:warn={pct >= 80} class:critical={pct >= 100} style="width:{pct}%"></span>
+								</span>
+							{/if}
+						</footer>
 					</a>
 				</li>
 			{/each}
@@ -400,55 +421,104 @@
 	}
 
 	/* ===== Active projects ===== */
-	.active-list {
+	.active-grid {
 		list-style: none;
 		padding: 0;
 		margin: 0;
+		display: grid;
+		grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+		gap: 0.8rem;
+	}
+	.active-grid li a {
 		display: flex;
 		flex-direction: column;
-		gap: 0.5rem;
-	}
-	.active-card {
-		display: flex;
-		gap: 0.9rem;
-		align-items: center;
-		padding: 0.85rem 1rem;
-		background: var(--bg-panel);
+		gap: 0.4rem;
+		padding: 0.9rem 1rem;
 		border: 1px solid var(--border);
 		border-radius: 8px;
+		background: var(--bg-panel);
+		color: var(--text);
 		text-decoration: none;
-		color: inherit;
-		transition: border-color 0.15s, transform 0.1s;
+		transition: border-color 0.1s, transform 0.1s;
 	}
-	.active-card:hover {
+	.active-grid li a:hover {
 		border-color: var(--accent);
 		transform: translateY(-1px);
 	}
+	.active-head {
+		display: flex;
+		align-items: center;
+		gap: 0.4rem;
+		flex-wrap: wrap;
+	}
+	.active-time {
+		margin-left: auto;
+		font-size: 0.72rem;
+		color: var(--text-muted);
+	}
+	.active-name {
+		font-size: 1.02rem;
+	}
+	.active-idea {
+		font-size: 0.82rem;
+		color: var(--text-muted);
+		margin: 0;
+		display: -webkit-box;
+		-webkit-line-clamp: 2;
+		line-clamp: 2;
+		-webkit-box-orient: vertical;
+		overflow: hidden;
+	}
+	.active-foot {
+		display: flex;
+		align-items: center;
+		gap: 0.5rem;
+		margin-top: auto;
+	}
+	.active-foot .cost {
+		font-size: 0.78rem;
+		font-variant-numeric: tabular-nums;
+		color: var(--text-muted);
+	}
+	.mini-bar {
+		flex: 1;
+		height: 3px;
+		background: var(--border);
+		border-radius: 2px;
+		overflow: hidden;
+		min-width: 40px;
+	}
+	.mini-fill {
+		display: block;
+		height: 100%;
+		background: var(--accent);
+		transition: width 0.3s, background 0.2s;
+	}
+	.mini-fill.warn { background: #f59e0b; }
+	.mini-fill.critical { background: var(--err); }
+	.chip.paused {
+		background: color-mix(in srgb, var(--accent) 15%, transparent);
+		color: var(--accent);
+		border-radius: 10px;
+		padding: 1px 8px;
+		font-size: 0.68rem;
+		font-weight: 600;
+	}
+	.chip.failed {
+		background: color-mix(in srgb, var(--err) 15%, transparent);
+		color: var(--err);
+		border-radius: 10px;
+		padding: 1px 8px;
+		font-size: 0.68rem;
+		font-weight: 600;
+	}
+
 	.status-dot {
 		width: 10px;
 		height: 10px;
 		border-radius: 50%;
 		flex-shrink: 0;
 		box-shadow: 0 0 12px currentColor;
-	}
-	.active-main {
-		flex: 1;
-		min-width: 0;
-		display: flex;
-		flex-direction: column;
-		gap: 0.1rem;
-	}
-	.active-main strong {
-		font-size: 0.95rem;
-		overflow: hidden;
-		text-overflow: ellipsis;
-		white-space: nowrap;
-	}
-	.active-main .muted {
-		font-size: 0.8rem;
-		overflow: hidden;
-		text-overflow: ellipsis;
-		white-space: nowrap;
 	}
 
 	/* ===== Two-column layout ===== */
@@ -577,7 +647,6 @@
 		opacity: 0.5;
 	}
 
-	.muted { color: var(--text-muted); font-size: 0.8rem; }
 	.badge {
 		display: inline-block;
 		padding: 0.15rem 0.55rem;
@@ -603,7 +672,7 @@
 		.stat-num { font-size: 1.4rem; }
 		.two-col { grid-template-columns: 1fr; gap: 1rem; }
 		.timeline { max-height: none; }
-		.active-main .muted { font-size: 0.78rem; }
+		.active-idea { font-size: 0.78rem; }
 	}
 	@media (min-width: 768px) and (max-width: 1023px) {
 		.hero { margin: -1.5rem -1.75rem 2rem; padding: 2.5rem 1.75rem; }

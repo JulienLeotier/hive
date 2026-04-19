@@ -58,6 +58,7 @@
 		repo_url?: string;
 		is_existing?: boolean;
 		total_cost_usd?: number;
+		cost_cap_usd?: number;
 		failure_stage?: string;
 		failure_error?: string;
 		paused?: boolean;
@@ -512,12 +513,17 @@
 						evt.type === 'project.architect_done' ||
 						evt.type === 'project.architect_failed' ||
 						evt.type === 'project.cancelled' ||
+						evt.type === 'project.resumed' ||
 						evt.type === 'project.iteration_started' ||
 						evt.type === 'project.iteration_done' ||
 						evt.type === 'project.iteration_failed'
 					) load();
 					// BMAD step events : refresh phases panel.
-					if (evt.type === 'project.bmad_step_started' || evt.type === 'project.bmad_step_finished') {
+					if (
+						evt.type === 'project.bmad_step_started' ||
+						evt.type === 'project.bmad_step_finished' ||
+						evt.type === 'project.bmad_step_cancelled'
+					) {
 						loadPhases();
 					}
 					// Stream-json chunks : append au drawer console en live
@@ -728,11 +734,19 @@
 				{/if}
 				{#if (project.total_cost_usd ?? 0) > 0}
 					<span class="chip cost" title="Cumul tokens Claude consommés">
-						${(project.total_cost_usd ?? 0).toFixed(2)}
+						${(project.total_cost_usd ?? 0).toFixed(2)}{(project.cost_cap_usd ?? 0) > 0 ? ` / $${project.cost_cap_usd?.toFixed(2)}` : ''}
 					</span>
 				{/if}
 				<span class="hero-time">mis à jour {fmtRelative(project.updated_at)}</span>
 			</div>
+			{#if (project.cost_cap_usd ?? 0) > 0}
+				{@const total = project.total_cost_usd ?? 0}
+				{@const cap = project.cost_cap_usd ?? 1}
+				{@const pct = Math.min(100, Math.round((total / cap) * 100))}
+				<div class="budget-bar" title="Budget Claude consommé : {pct}%">
+					<div class="budget-fill" class:warn={pct >= 80} class:critical={pct >= 100} style="width:{pct}%"></div>
+				</div>
+			{/if}
 			<h1 class="hero-name">{project.name}</h1>
 			<p class="hero-idea">{project.idea}</p>
 
@@ -750,6 +764,12 @@
 					download
 					title="Télécharge un .tar.gz : workdir + PRD + epics + historique phases + intake">
 					<span class="btn-icon">↓</span> Export .tar.gz
+				</a>
+				<a class="btn ghost"
+					href={`/api/v1/projects/${encodeURIComponent(project.id)}/report.md`}
+					download
+					title="Rapport Markdown : PRD + plan + ACs + reviews + coûts">
+					<span class="btn-icon">▤</span> Rapport .md
 				</a>
 				{#if project.status === 'shipped' || project.status === 'building'}
 					<a class="btn accent" href="/projects/{project.id}/iterate">
@@ -1587,6 +1607,23 @@
 		font-size: 0.72rem;
 		font-weight: 600;
 	}
+	.budget-bar {
+		margin-top: 0.35rem;
+		height: 3px;
+		width: 100%;
+		max-width: 320px;
+		background: var(--border);
+		border-radius: 2px;
+		overflow: hidden;
+	}
+	.budget-fill {
+		height: 100%;
+		background: var(--accent);
+		transition: width 0.3s, background 0.2s;
+	}
+	.budget-fill.warn { background: #f59e0b; }
+	.budget-fill.critical { background: var(--err); }
+
 	.pause-banner {
 		display: flex;
 		align-items: center;
