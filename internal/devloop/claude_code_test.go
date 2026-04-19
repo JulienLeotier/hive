@@ -133,3 +133,57 @@ func TestMakeDevloopObserverNoDB(t *testing.T) {
 func TestResumeBuildStreamEventExposed(t *testing.T) {
 	_ = bmad.StreamEvent{Type: "assistant", Text: "hello"}
 }
+
+// TestParseACVerdicts : per-AC parsing du reply BMAD. Heuristique,
+// pas censé être parfaite — juste mieux que "toutes ACs same verdict".
+func TestParseACVerdicts(t *testing.T) {
+	t.Run("no ACs", func(t *testing.T) {
+		assert.Empty(t, parseACVerdicts("anything", 0, false))
+	})
+
+	t.Run("empty reply", func(t *testing.T) {
+		r := parseACVerdicts("", 3, false)
+		assert.Len(t, r, 3)
+		for _, ac := range r {
+			assert.False(t, ac.decided)
+		}
+	})
+
+	t.Run("explicit AC pass/fail", func(t *testing.T) {
+		reply := "AC1 : ✓ pass\nAC2 : ✗ fail\nAC3 : pas mentionné"
+		r := parseACVerdicts(reply, 3, false)
+		assert.True(t, r[0].decided)
+		assert.True(t, r[0].passed)
+		assert.True(t, r[1].decided)
+		assert.False(t, r[1].passed)
+		assert.False(t, r[2].decided, "AC3 pas de signal fort")
+	})
+
+	t.Run("Acceptance N syntax", func(t *testing.T) {
+		reply := "Acceptance 1 est validé dans le code. Acceptance 2 manque encore."
+		r := parseACVerdicts(reply, 2, false)
+		assert.True(t, r[0].decided && r[0].passed)
+		assert.True(t, r[1].decided && !r[1].passed)
+	})
+
+	t.Run("no signal → fallback", func(t *testing.T) {
+		reply := "AC1 apparaît mais sans verdict clair."
+		r := parseACVerdicts(reply, 1, false)
+		assert.False(t, r[0].decided)
+	})
+}
+
+func TestFindACMention(t *testing.T) {
+	assert.Equal(t, -1, findACMention("nothing", 1))
+	assert.Equal(t, 0, findACMention("ac1 blabla", 1))
+	assert.Equal(t, 0, findACMention("acceptance 3", 3))
+	// Plusieurs patterns → le PLUS PROCHE du début gagne.
+	assert.Equal(t, 5, findACMention("blah ac-2 plus tard [ac2]", 2))
+}
+
+func TestStrOf(t *testing.T) {
+	assert.Equal(t, "1", strOf(1))
+	assert.Equal(t, "9", strOf(9))
+	assert.Equal(t, "10", strOf(10))
+	assert.Equal(t, "42", strOf(42))
+}

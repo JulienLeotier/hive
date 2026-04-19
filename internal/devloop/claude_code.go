@@ -282,12 +282,140 @@ func (r *ClaudeCodeReviewer) Review(ctx context.Context, proj ProjectContext, st
 		NeedsArchitect: !pass && decisions > 0,
 		DecisionCount:  decisions,
 	}
-	for _, ac := range story.ACs {
+	// Per-AC parsing : scan le reply pour détecter des mentions
+	// explicites de chaque AC (AC1, AC #1, [AC1], "Acceptance 1", etc.)
+	// et capturer le signe pass/fail à proximité. Si rien trouvé pour
+	// un AC donné, on retombe sur le verdict global.
+	acVerdicts := parseACVerdicts(combined, len(story.ACs), pass)
+	for i, ac := range story.ACs {
+		acPass := pass
+		acReason := reason
+		if i < len(acVerdicts) && acVerdicts[i].decided {
+			acPass = acVerdicts[i].passed
+			acReason = acVerdicts[i].reason
+		}
 		verdict.ACs = append(verdict.ACs, ReviewedCriterion{
-			ID: ac.ID, Passed: pass, Reason: reason,
+			ID: ac.ID, Passed: acPass, Reason: acReason,
 		})
 	}
 	return verdict, nil
+}
+
+// acReviewResult : verdict individuel extrait du reply. decided=false
+// signifie qu'on n'a pas trouvé de signal clair → fallback global.
+type acReviewResult struct {
+	decided bool
+	passed  bool
+	reason  string
+}
+
+// parseACVerdicts scanne le combined reply des skills pour des
+// mentions individuelles de chaque AC. Heuristique fail-safe : ne
+// décide que quand un signal fort est présent (pass/fail keyword à
+// proximité d'un identifiant AC), sinon decided=false.
+//
+// Patterns reconnus (case-insensitive) :
+//   - "AC1", "AC #1", "[AC1]", "AC-1", "ac 1"
+//   - "Acceptance 1", "Critère 1", "Criterion 1"
+// Signaux pass : ✓ ✅ pass passes satisfait ok green met passant
+// Signaux fail : ✗ ❌ fail fails échoue manqu fail red missing
+func parseACVerdicts(reply string, nACs int, globalPass bool) []acReviewResult {
+	out := make([]acReviewResult, nACs)
+	if reply == "" || nACs == 0 {
+		return out
+	}
+	lowered := strings.ToLower(reply)
+	_ = globalPass
+
+	passTokens := []string{"✓", "✅", " pass", "passe", "satisfait", " ok", "green", "validé"}
+	failTokens := []string{"✗", "❌", " fail", "échou", "échec", "manqu", "missing", "red", "violat", "non-respect"}
+
+	for i := 0; i < nACs; i++ {
+		// i+1 = numéro humain (AC1 = 1er AC)
+		n := i + 1
+		// Cherche la première occurrence d'une mention de cet AC.
+		idx := findACMention(lowered, n)
+		if idx < 0 {
+			continue
+		}
+		// Fenêtre réduite (50 chars) pour éviter de capturer le
+		// verdict de l'AC suivant. Stoppée aussi à un saut de ligne
+		// double ou au prochain mention AC détectée.
+		end := idx + 50
+		if end > len(lowered) {
+			end = len(lowered)
+		}
+		// Coupe au prochain AC mention suivante si elle est plus proche.
+		for j := 1; j <= nACs; j++ {
+			if j == n {
+				continue
+			}
+			if k := findACMention(lowered[idx+1:], j); k >= 0 && idx+1+k < end {
+				end = idx + 1 + k
+			}
+		}
+		window := lowered[idx:end]
+
+		passed, ok := scoreWindow(window, passTokens, failTokens)
+		if !ok {
+			continue
+		}
+		reason := "AC " + strOf(n) + " : "
+		if passed {
+			reason += "validé dans le code-review"
+		} else {
+			reason += "mentionné en échec par le code-review"
+		}
+		out[i] = acReviewResult{decided: true, passed: passed, reason: reason}
+	}
+	return out
+}
+
+func findACMention(lowered string, n int) int {
+	nstr := strOf(n)
+	// Patterns : "ac1", "ac 1", "ac#1", "ac-1", "[ac1]", "acceptance 1", "critère 1", "criterion 1"
+	patterns := []string{
+		"ac" + nstr,
+		"ac " + nstr,
+		"ac#" + nstr,
+		"ac-" + nstr,
+		"[ac" + nstr,
+		"acceptance " + nstr,
+		"critère " + nstr,
+		"criterion " + nstr,
+	}
+	best := -1
+	for _, p := range patterns {
+		if idx := strings.Index(lowered, p); idx >= 0 && (best == -1 || idx < best) {
+			best = idx
+		}
+	}
+	return best
+}
+
+func scoreWindow(window string, passTokens, failTokens []string) (bool, bool) {
+	passCount := 0
+	failCount := 0
+	for _, t := range passTokens {
+		passCount += strings.Count(window, t)
+	}
+	for _, t := range failTokens {
+		failCount += strings.Count(window, t)
+	}
+	if passCount == 0 && failCount == 0 {
+		return false, false
+	}
+	return passCount > failCount, true
+}
+
+func strOf(n int) string {
+	// Évite strconv dans un helper aussi tight. Supporte AC1..AC99.
+	if n < 10 {
+		return string('0' + rune(n))
+	}
+	tens := n / 10
+	ones := n % 10
+	return string([]byte{byte('0' + tens), byte('0' + ones)})
 }
 
 // countDecisionNeeded scanne le feedback d'un /bmad-code-review pour
