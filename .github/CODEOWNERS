@@ -1,0 +1,7 @@
+# CODEOWNERS — qui review quoi par défaut.
+# Format : <glob> <@user ou @team>
+#
+# Solo owner pour l'instant. Quand des contributeurs rejoindront,
+# affiner par zone (ex: web/ → @frontendperson, internal/bmad/ → @bmadguru).
+
+*   @JulienLeotier
